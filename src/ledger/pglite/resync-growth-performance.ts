@@ -9,13 +9,16 @@
  *   npm run check:pglite-resync-growth
  *
  * PGLITE_RESYNC_RECORDS (default 200) and PGLITE_RESYNC_SYNCS (default 10)
- * size the run; PGLITE_RESYNC_MODE is `deposit`, `card-route`, `card-command`
- * or `all`. `deposit` and `card-route` go through the generic commit;
- * `card-route` uses a credit-card route and bucket coverage, one bucket per
- * day so a day leaves the inventory with the window. `card-command` drives
- * the credit-card command on the same records, with an instrument, statements
- * and each purchase's card details and lifecycle, so it also measures the
- * command's own rows.
+ * size the run; PGLITE_RESYNC_MODE is one of the modes below or `all`.
+ * `deposit` and `card-route` go through the generic commit; `card-route` uses
+ * a credit-card route and bucket coverage, one bucket per day so a day leaves
+ * the inventory with the window. `card-command` drives the credit-card
+ * command on the same records, with an instrument, statements and each
+ * purchase's card details and lifecycle, so it also measures the command's
+ * own rows. `einvoice`, `investment` and `loan` drive those domain commands
+ * on records in the same moving window: invoices; investment transactions
+ * with named securities and two holdings; loan payments with three
+ * repayment deposits linked to them.
  */
 import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
@@ -31,11 +34,21 @@ import {
   type PGliteCanonicalCreditCardCaptureRequest,
   type PGliteCanonicalCreditCardStatement,
 } from "./credit-card.ts";
+import {
+  commitPGliteCanonicalEInvoiceCapture,
+  PGLITE_EINVOICE_CONTRACT_VERSION,
+  PGLITE_EINVOICE_CURRENCY_AUTHORITY,
+  PGLITE_EINVOICE_ROUTE,
+} from "./einvoice.ts";
+import { commitPGliteCanonicalInvestmentCapture, type PGliteCanonicalInvestmentCommitRequest } from "./investment.ts";
+import { commitPGliteCanonicalLoanCapture, type PGliteCanonicalLoanCommitRequest } from "./loan.ts";
+import type { CanonicalEInvoiceCaptureInput } from "../canonical/einvoice-contract.ts";
+import { canonicalLoanOccurrenceScopeKey } from "../canonical/loan-admission.ts";
 import { installFinancialStore } from "./store-layout.ts";
 import type { PGliteStore } from "./transaction.ts";
 
-type Mode = "deposit" | "card-route" | "card-command";
-const ALL_MODES: readonly Mode[] = ["deposit", "card-route", "card-command"];
+const ALL_MODES = ["deposit", "card-route", "card-command", "einvoice", "investment", "loan"] as const;
+type Mode = (typeof ALL_MODES)[number];
 
 function positiveInteger(name: string, fallback: number, minimum: number): number {
   const value = Number(process.env[name] ?? fallback);
@@ -49,7 +62,7 @@ const MODES: readonly Mode[] = (() => {
   const mode = process.env.PGLITE_RESYNC_MODE ?? "all";
   if (mode === "all") return ALL_MODES;
   const chosen = ALL_MODES.find((candidate) => candidate === mode);
-  if (chosen === undefined) throw new Error("PGLITE_RESYNC_MODE must be deposit, card-route, card-command or all.");
+  if (chosen === undefined) throw new Error(`PGLITE_RESYNC_MODE must be ${ALL_MODES.join(", ")} or all.`);
   return [chosen];
 })();
 
@@ -264,9 +277,274 @@ function cardCommandCapture(sync: number): PGliteCanonicalCreditCardCaptureReque
   };
 }
 
+/** The synthetic rows inside a sync's window: one a day over 180 days, oldest first. */
+function windowRows(sync: number): readonly Readonly<{ index: number; date: string }>[] {
+  const startDate = day(sync - 1);
+  return Array.from({ length: RECORDS }, (_, index) => ({ index, date: day(index % 180) }))
+    .filter((row) => row.date >= startDate)
+    .sort((a, b) => a.date.localeCompare(b.date) || a.index - b.index);
+}
+
+const window = (sync: number) => ({ startDate: day(sync - 1), endDate: day(180 + sync) });
+
+/** The invoices inside the window, one issued revision each. */
+function einvoiceCapture(sync: number): CanonicalEInvoiceCaptureInput {
+  const money = (coefficient: string) => ({ coefficient, scale: 0, currency: "TWD" as const, currencyAuthority: PGLITE_EINVOICE_CURRENCY_AUTHORITY });
+  const invoices = windowRows(sync).map(({ index, date }) => ({
+    stableInvoiceKey: `AB${String(10_000_000 + index)}:${date}`,
+    sourceRevisionKey: `invoice-${index}-revision-1`,
+    revisionNumber: 1,
+    revisionKind: "issued" as const,
+    sourceIdentifiers: { invoiceNumber: `AB${String(10_000_000 + index)}`, randomNumber: "2468" },
+    seller: { taxId: "12345678", name: `SYNTHETIC SELLER ${index % 10}` },
+    total: money(String(100 + index)),
+    occurrence: { value: date, precision: "date" as const, timeZone: "Asia/Taipei", origin: "source-reported" as const },
+    items: [{
+      sequence: 1,
+      completeness: "complete" as const,
+      name: `SYNTHETIC ITEM ${index}`,
+      quantity: { coefficient: "1", scale: 0 },
+      unitPrice: money(String(100 + index)),
+      amount: money(String(100 + index)),
+    }],
+    authority: { routeKey: PGLITE_EINVOICE_ROUTE, contractVersion: PGLITE_EINVOICE_CONTRACT_VERSION },
+    provenance: { kind: "provider-record" as const, reference: `provider/invoice/${index}`, sourceField: "invoiceList" },
+    revocationReason: null,
+  }));
+  return {
+    captureId: `einvoice-capture-${sync}`,
+    sourceConnectionKey: token("einvoice-connection"),
+    identityEpoch: token("einvoice-epoch"),
+    subjectDigest: token("einvoice-subject"),
+    observedAt: "2026-09-30T00:00:00Z",
+    scope: {
+      ...window(sync),
+      kind: "bounded-range",
+      completeness: "complete-range",
+      invoiceCompleteness: "complete",
+      itemCompleteness: "complete",
+      absenceAuthority: "comparable-complete-range",
+    },
+    pages: [{ pageOrdinal: 0, responseCode: "200", rowCount: invoices.length, terminal: true, metadata: { pageCount: 1 } }],
+    invoices,
+  };
+}
+
+const INVESTMENT_CONTRACT = "yuanta-fund/investment/canonical-v1";
+const INVESTMENT_SECURITIES = 5;
+
+/**
+ * Investment transactions inside the window, over five securities, each
+ * named by its latest transaction, and a holding in each of the first two
+ * securities. A holding is a measurement as of the collection date, which
+ * moves with the window, so its record and observation are new each sync
+ * (ADR 0008).
+ */
+function investmentCapture(sync: number): PGliteCanonicalInvestmentCommitRequest {
+  const { startDate, endDate } = window(sync);
+  const scopeKey = token("investment-transaction-scope");
+  const observedAt = `${endDate}T01:00:00.000Z`;
+  const rows = windowRows(sync);
+  const slots = assignOccurrenceSlots({
+    rows,
+    complete: true,
+    scopeKey: () => scopeKey,
+    fingerprint: (row) => token(`investment-row-${row.index}`),
+    partitionDate: (row) => row.date,
+  });
+  const securityKey = (index: number) => `yuanta-fund:FUND${index % INVESTMENT_SECURITIES}`;
+  const transactions = slots.map(({ row, occurrenceKey, group }) => ({
+    sourceRecordKey: occurrenceKey,
+    occurrenceGroup: group,
+    transactionKey: token(`investment-transaction-${row.index}`),
+    securityKey: securityKey(row.index),
+    action: "buy" as const,
+    quantity: { coefficient: "5", scale: 0 },
+    cashEffect: { coefficient: String(1000 + row.index), scale: 0, currency: "TWD" },
+    effectiveOn: row.date,
+    description: `SYNTHETIC FUND BUY ${row.index}`,
+    fundingEvidence: { kind: "unresolved" as const, sourceRecordKey: occurrenceKey },
+  }));
+  const holdings = [0, 1].map((security) => {
+    const sourceRecordKey = token(`investment-holding-${security}-${endDate}`);
+    return {
+      measurementKey: token(`investment-holding-measurement-${sync}-${security}`),
+      measurementSubjectKey: token(`investment-holding-subject-${security}-${endDate}`),
+      sourceRecordKey,
+      securityKey: securityKey(security),
+      quantity: { coefficient: "50", scale: 0 },
+      valuation: { coefficient: "12500", scale: 0, currency: "TWD" },
+      effectiveOn: endDate,
+      observedAt,
+      effectiveTimeEvidence: { kind: "source-reported-as-of" as const, sourceRecordKey, sourceField: "asOfDate", value: endDate, contractVersion: INVESTMENT_CONTRACT },
+      lineage: { page: 1, row: security + 1, contractVersion: INVESTMENT_CONTRACT },
+    };
+  });
+  const securities = Array.from({ length: INVESTMENT_SECURITIES }, (_, security) => ({
+    securityKey: securityKey(security),
+    producerSecurityId: `FUND${security}`,
+    name: `Synthetic Fund ${security}`,
+    currency: "TWD",
+    securityType: "mutual_fund" as const,
+    identityEvidence: { kind: "producer-security-id" as const, contractVersion: INVESTMENT_CONTRACT },
+    nameEvidence: {
+      contractVersion: "yuanta-fund/security-name/source-reported-v1",
+      sourceRecordKey: transactions.findLast((transaction) => transaction.securityKey === securityKey(security))!.sourceRecordKey,
+    },
+  }));
+  return {
+    capture: {
+      captureId: `investment-capture-${sync}`,
+      sourceId: "yuanta-fund",
+      authorityRoute: INVESTMENT_CONTRACT,
+      contractVersion: INVESTMENT_CONTRACT,
+      observedAt,
+      identity: {
+        sourceConnectionKey: token("investment-connection"),
+        identityEpochKey: token("investment-epoch"),
+        accountKey: token("investment-account"),
+        accountType: "investment",
+        reportingCurrency: "TWD",
+      },
+      scope: { effectiveOn: endDate, complete: true, transactionHistory: { startDate, endDate, complete: true } },
+      occurrenceGroupCoverage: [{ scopeKey, startDate, endDate, contractVersion: INVESTMENT_CONTRACT }],
+      securities,
+      holdings,
+      transactions,
+    },
+  };
+}
+
+const LOAN_CONTRACT = "loan/canonical/v2.fubon";
+const COUNTERPART_CONTRACT = "loan/counterpart/v1.fubon";
+const LOAN_COUNTERPARTS = 3;
+
+/**
+ * Loan payments inside the window. The three latest are repaid from a
+ * deposit account, each through its own counterpart capture and a relation
+ * whose evidence is the deposit record. Each payment keeps its source
+ * sequence index from sync to sync. The Fubon and Yuanta adapters number
+ * rows by their position in the response instead, so a row that ages out
+ * renumbers the rows after it, and their records are stored again.
+ */
+function loanCapture(sync: number): PGliteCanonicalLoanCommitRequest {
+  const { startDate, endDate } = window(sync);
+  const accountKey = token("loan-account");
+  const scopeKey = canonicalLoanOccurrenceScopeKey("fubon", accountKey);
+  const rows = windowRows(sync);
+  const slots = assignOccurrenceSlots({
+    rows,
+    complete: true,
+    scopeKey: () => scopeKey,
+    fingerprint: (row) => token(`loan-row-${row.index}`),
+    partitionDate: (row) => row.date,
+  });
+  const records = slots.map(({ row, occurrenceKey, group }) => ({
+    sourceRecordKey: occurrenceKey,
+    occurrenceIndex: group.ordinal,
+    sourceSequenceIndex: row.index + 1,
+    occurrenceGroup: group,
+    occurrenceCollisionKey: token(`loan-collision-${row.index}`),
+    effectiveOn: row.date,
+    sourceTime: { localTime: "12:00:00", precision: "second" as const, timeOrigin: "source_reported" as const },
+    postingStatus: "posted" as const,
+    eventKind: "payment" as const,
+    eventEvidence: { kind: "source-coded-loan-event" as const, sourceRecordKey: occurrenceKey, sourceCode: "LOAN-PAYMENT", contractVersion: LOAN_CONTRACT },
+    direction: "inflow" as const,
+    amount: { coefficient: String(1000 + row.index), scale: 0 },
+    currency: "TWD" as const,
+    description: `SYNTHETIC LOAN PAYMENT ${row.index}`,
+  }));
+  const repaid = records.slice(-LOAN_COUNTERPARTS);
+  const counterpartAccountKey = token("loan-repayment-account");
+  const counterpartTransactions = repaid.map((record, index) => {
+    const sourceRecordKey = token(`loan-counterpart-${record.sourceRecordKey}`);
+    return {
+      captureId: `loan-counterpart-capture-${sync}-${index}`,
+      sourceRecordKey,
+      occurrenceIndex: 1,
+      sourceConnectionKey: token("loan-connection"),
+      identityEpochKey: token("loan-epoch"),
+      accountKey: counterpartAccountKey,
+      subjectDigest: token("loan-counterpart-subject"),
+      accountNo: token("loan-counterpart-number"),
+      accountType: "depository" as const,
+      stream: "domestic-deposit" as const,
+      recordKind: "fubon-loan-counterpart-deposit",
+      authorityRoute: "fubon/loan/counterpart-deposit-v1",
+      contractVersion: COUNTERPART_CONTRACT,
+      effectiveOn: record.effectiveOn,
+      sourceTime: record.sourceTime,
+      postingStatus: "posted" as const,
+      direction: "outflow" as const,
+      amount: record.amount,
+      currency: "TWD" as const,
+      description: "SYNTHETIC REPAYMENT",
+      sourceEvidence: { kind: "source-linked-counterpart" as const, sourceRecordKey, relationId: token(`loan-relation-${sourceRecordKey}`), contractVersion: COUNTERPART_CONTRACT },
+    };
+  });
+  return {
+    capture: {
+      captureId: `loan-capture-${sync}`,
+      sourceId: "fubon",
+      authorityRoute: "fubon/loan/canonical-v2",
+      contractVersion: LOAN_CONTRACT,
+      identity: {
+        sourceConnectionKey: token("loan-connection"),
+        identityEpochKey: token("loan-epoch"),
+        accountKey,
+        subjectDigest: token("loan-subject"),
+        accountType: "loan",
+        accountNo: token("loan-display-identity"),
+        stream: "loan",
+        recordKind: "fubon-loan-transaction",
+        currency: "TWD",
+      },
+      observedAt: "2026-09-30T00:00:00.000Z",
+      scope: {
+        startDate,
+        endDate,
+        completeness: "complete-range",
+        completenessBasis: "source-declared-terminal-range",
+        completenessRuleVersion: LOAN_CONTRACT,
+        pageCount: 1,
+        terminal: true,
+      },
+      semantics: { status: "posted", effectiveTimeBasis: "source-reported", effectiveTimeRuleVersion: LOAN_CONTRACT, timeZone: "Asia/Taipei" },
+      pages: [{ pageOrdinal: 0, responseCode: "200", terminal: true, rowCount: records.length, proofKind: "source-declared-terminal-range" }],
+      occurrenceGroupCoverage: [{ scopeKey, startDate, endDate, contractVersion: LOAN_CONTRACT }],
+      records,
+      counterpartTransactions,
+      balanceObservations: [],
+      relations: repaid.map((record, index) => ({
+        kind: "transfer_counterpart" as const,
+        fromSourceRecordKey: record.sourceRecordKey,
+        toSourceRecordKey: counterpartTransactions[index]!.sourceRecordKey,
+        fromAccountKey: accountKey,
+        toAccountKey: counterpartAccountKey,
+        fromDirection: "inflow" as const,
+        toDirection: "outflow" as const,
+        evidence: {
+          kind: "explicit-source-linkage" as const,
+          sourceRecordKey: counterpartTransactions[index]!.sourceRecordKey,
+          relationId: counterpartTransactions[index]!.sourceEvidence.relationId,
+          contractVersion: LOAN_CONTRACT,
+        },
+      })),
+      relationCoverage: "source-linked-complete",
+    },
+  };
+}
+
 async function commit(store: PGliteStore, mode: Mode, sync: number): Promise<void> {
-  if (mode === "card-command") await commitPGliteCanonicalCreditCardCapture(store, cardCommandCapture(sync));
-  else await commitPGliteCanonicalFinancialCapture(store, capture(mode, sync));
+  switch (mode) {
+    case "card-command": await commitPGliteCanonicalCreditCardCapture(store, cardCommandCapture(sync)); return;
+    case "einvoice": await commitPGliteCanonicalEInvoiceCapture(store, einvoiceCapture(sync)); return;
+    case "investment": await commitPGliteCanonicalInvestmentCapture(store, investmentCapture(sync)); return;
+    case "loan": await commitPGliteCanonicalLoanCapture(store, loanCapture(sync)); return;
+    case "deposit":
+    case "card-route": await commitPGliteCanonicalFinancialCapture(store, capture(mode, sync));
+  }
 }
 
 async function rowCounts(store: PGliteStore): Promise<Map<string, number>> {

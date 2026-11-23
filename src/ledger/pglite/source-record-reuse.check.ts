@@ -9,7 +9,8 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
-import { assignOccurrenceSlots } from "../canonical/occurrence-groups.ts";
+import { assignOccurrenceSlots, canonicalOccurrenceGroupKey } from "../canonical/occurrence-groups.ts";
+import { canonicalLoanOccurrenceScopeKey } from "../canonical/loan-admission.ts";
 import { encodeCreditCardQueryBucket } from "../canonical/credit-card-query-inventory.ts";
 import { createTestPGlite } from "./baseline-test-template.ts";
 import { resetPGliteCanonicalStore } from "./canonical-reset.ts";
@@ -29,6 +30,20 @@ import {
   type PGliteCanonicalCreditCardCaptureRequest,
   type PGliteCanonicalCreditCardCommitResult,
 } from "./credit-card.ts";
+import {
+  commitPGliteCanonicalEInvoiceCapture,
+  PGLITE_EINVOICE_CONTRACT_VERSION,
+  PGLITE_EINVOICE_CURRENCY_AUTHORITY,
+  PGLITE_EINVOICE_ROUTE,
+} from "./einvoice.ts";
+import type { CanonicalEInvoiceCaptureInput, CanonicalEInvoiceInput } from "../canonical/einvoice-contract.ts";
+import { commitPGliteCanonicalInvestmentCapture, type PGliteCanonicalInvestmentCommitRequest } from "./investment.ts";
+import { commitPGliteCanonicalLoanCapture, type PGliteCanonicalLoanCommitRequest } from "./loan.ts";
+import {
+  readTdccPositions,
+  tdccPassbookMovementCapture,
+  tdccSecuritiesHoldingCapture,
+} from "../canonical/tdcc-investment-admission.ts";
 import { resolvePGliteCanonicalLoanRepaymentRelations } from "./relations.ts";
 import { PGliteCanonicalSourceAdmissionError } from "./source-admission-validation.ts";
 import { PGliteStore } from "./transaction.ts";
@@ -320,6 +335,12 @@ type Ledger = Readonly<{
   commitCardBalance(request: PGliteCanonicalCreditCardBalanceCaptureRequest): Promise<void>;
   /** The card command must fail the same way in both arms. */
   rejectsCard(request: PGliteCanonicalCreditCardCaptureRequest, message: RegExp): Promise<void>;
+  /** Commit through the e-invoice command, which also writes its observations only on change. */
+  commitEInvoice(input: CanonicalEInvoiceCaptureInput): Promise<void>;
+  /** Commit through the loan command, which also writes its relation provenance only on change. */
+  commitLoan(request: PGliteCanonicalLoanCommitRequest): Promise<void>;
+  /** Commit through the investment command, which also writes its name observations only on change. */
+  commitInvestment(request: PGliteCanonicalInvestmentCommitRequest): Promise<void>;
 }>;
 
 function openLedger(store: PGliteStore, arm: PGliteDomainRecordCitation): Ledger {
@@ -336,12 +357,22 @@ function openLedger(store: PGliteStore, arm: PGliteDomainRecordCitation): Ledger
     });
   };
   const cardOptions = () => ({ clock, ...(arm === "any" ? { reuseSourceRecords: false as const } : {}) });
+  const domainOptions = cardOptions;
   return {
     arm,
     store,
     clock,
     commit,
     commitCard: (request) => commitPGliteCanonicalCreditCardCapture(store, request, cardOptions()),
+    async commitEInvoice(input) {
+      await commitPGliteCanonicalEInvoiceCapture(store, input, domainOptions());
+    },
+    async commitLoan(request) {
+      await commitPGliteCanonicalLoanCapture(store, request, domainOptions());
+    },
+    async commitInvestment(request) {
+      await commitPGliteCanonicalInvestmentCapture(store, request, domainOptions());
+    },
     async commitCardBalance(request) {
       await commitPGliteCanonicalCreditCardBalanceCapture(store, request, cardOptions());
     },
@@ -399,9 +430,9 @@ const RECORD_COPY_TABLES = new Set([
 
 /**
  * Columns no two runs agree on: a Canonical Reset stamps its commit with the
- * wall clock, and the other two are digests over generated ids.
+ * wall clock, and the others are digests over generated ids.
  */
-const UNSTABLE_COLUMNS = new Set(["recorded_at_utc_us", "event_digest", "resolution_key"]);
+const UNSTABLE_COLUMNS = new Set(["recorded_at_utc_us", "event_digest", "resolution_key", "relation_key"]);
 
 const digest = (value: unknown): string =>
   createHash("sha256").update(JSON.stringify(value), "utf8").digest("hex").slice(0, 16);
@@ -542,6 +573,17 @@ async function assertEvidenceCitesItsOwnCapture(store: PGliteStore, arm: PGliteD
     ["canonical_credit_card_transaction_lifecycle", "source_record_id"],
     ["canonical_credit_card_statement_summary_evidence", "evidence_source_record_id"],
     ["canonical_credit_card_relations", "evidence_source_record_id"],
+    ["einvoice_invoice_revisions", "source_record_id"],
+    ["einvoice_revision_observations", "source_record_id"],
+    ["einvoice_revision_events", "source_record_id"],
+    ["loan_transaction_facts", "source_record_id"],
+    // The loan command's and the repayment resolver's, which cites the record of an endpoint's revision.
+    ["transaction_relation_provenance", "source_record_id"],
+    ["investment_security_name_observations", "source_record_id"],
+    ["investment_holding_observations", "source_record_id"],
+    ["investment_transactions", "source_record_id"],
+    ["investment_passbook_movements", "source_record_id"],
+    ["investment_margin_balance_observations", "source_record_id"],
   ] as const) {
     const { rows: [row] } = await store.query<{ rows: number; foreign: number }>(
       `SELECT count(*)::int AS rows,
@@ -1491,6 +1533,784 @@ equivalent("a current used-credit reading beside an unchanged card re-sync", asy
   assert.equal(revisions.rows[0]!.count, 2);
   await cardCommit(ledger, cardSync("sync-3", CARD_PURCHASES));
   await ledger.holds("sync-3", { stored: 0, reused: 6 });
+});
+
+const EINVOICE_MONEY = (coefficient: string) =>
+  ({ coefficient, scale: 0, currency: "TWD" as const, currencyAuthority: PGLITE_EINVOICE_CURRENCY_AUTHORITY });
+
+/** Revision `revision` of invoice `key`; each revision has its own total. */
+function einvoice(key: string, revision = 1): CanonicalEInvoiceInput {
+  const total = String(100 * revision + key.charCodeAt(0));
+  return {
+    stableInvoiceKey: `AB-${key}`,
+    sourceRevisionKey: `${key}-revision-${revision}`,
+    revisionNumber: revision,
+    revisionKind: revision === 1 ? "issued" : "revised",
+    sourceIdentifiers: { invoiceNumber: `AB-${key}`, randomNumber: "2468" },
+    seller: { taxId: "12345678", name: "SYNTHETIC SELLER" },
+    total: EINVOICE_MONEY(total),
+    occurrence: { value: "2026-09-01", precision: "date", timeZone: "Asia/Taipei", origin: "source-reported" },
+    items: [{
+      sequence: 1,
+      completeness: "complete",
+      name: `ITEM ${key}`,
+      quantity: { coefficient: "1", scale: 0 },
+      unitPrice: EINVOICE_MONEY(total),
+      amount: EINVOICE_MONEY(total),
+    }],
+    authority: { routeKey: PGLITE_EINVOICE_ROUTE, contractVersion: PGLITE_EINVOICE_CONTRACT_VERSION },
+    provenance: { kind: "provider-record", reference: `provider/invoice/${key}/${revision}`, sourceField: "invoiceList" },
+    revocationReason: null,
+  };
+}
+
+function einvoiceSync(captureId: string, invoices: readonly CanonicalEInvoiceInput[]): CanonicalEInvoiceCaptureInput {
+  return {
+    captureId,
+    sourceConnectionKey: token("einvoice-connection"),
+    identityEpoch: token("einvoice-epoch"),
+    subjectDigest: token("einvoice-subject"),
+    observedAt: "2026-09-30T00:00:00Z",
+    scope: {
+      startDate: "2026-09-01",
+      endDate: "2026-09-30",
+      kind: "bounded-range",
+      completeness: "complete-range",
+      invoiceCompleteness: "complete",
+      itemCompleteness: "complete",
+      absenceAuthority: "comparable-complete-range",
+    },
+    pages: [{ pageOrdinal: 0, responseCode: "200", rowCount: invoices.length, terminal: true, metadata: { fixture: "reuse" } }],
+    invoices,
+  };
+}
+
+async function einvoiceRowCounts(store: PGliteStore): Promise<Record<string, number>> {
+  const { rows: [row] } = await store.query<Record<string, number>>(
+    `SELECT (SELECT count(*) FROM einvoice_invoice_revisions)::int AS revisions,
+            (SELECT count(*) FROM einvoice_revision_observations)::int AS observations,
+            (SELECT count(*) FROM einvoice_revision_events)::int AS events`,
+  );
+  return { ...row! };
+}
+
+/**
+ * Each invoice's latest observing commit observed exactly the revisions the
+ * last capture listed for it. A commit that skips an observation it should
+ * have written leaves an older set here, which both arms would share.
+ */
+async function assertLatestObservations(store: PGliteStore, input: CanonicalEInvoiceCaptureInput): Promise<void> {
+  const { rows } = await store.query<{ stable_invoice_key: string; revisions: string[] }>(
+    `WITH observed AS (
+       SELECT invoice.stable_invoice_key, revision.source_revision_key, commit_row.commit_sequence,
+              MAX(commit_row.commit_sequence) OVER (PARTITION BY invoice.invoice_id) AS latest_sequence
+         FROM einvoice_invoices invoice
+         JOIN einvoice_invoice_revisions revision ON revision.invoice_id = invoice.invoice_id
+         JOIN einvoice_revision_observations observation ON observation.revision_id = revision.revision_id
+         JOIN canonical_commits commit_row ON commit_row.commit_id = observation.commit_id
+     )
+     SELECT stable_invoice_key, array_agg(DISTINCT source_revision_key ORDER BY source_revision_key) AS revisions
+       FROM observed WHERE commit_sequence = latest_sequence GROUP BY stable_invoice_key`,
+  );
+  const latest = new Map(rows.map((row) => [row.stable_invoice_key, row.revisions]));
+  const listed = new Map<string, string[]>();
+  for (const invoice of input.invoices)
+    listed.set(invoice.stableInvoiceKey, [...(listed.get(invoice.stableInvoiceKey) ?? []), invoice.sourceRevisionKey].sort());
+  for (const [key, revisions] of listed)
+    assert.deepEqual(latest.get(key), revisions, `the latest observations of ${key} are what ${input.captureId} listed`);
+}
+
+async function einvoiceCommit(ledger: Ledger, input: CanonicalEInvoiceCaptureInput): Promise<void> {
+  await ledger.commitEInvoice(input);
+  await assertLatestObservations(ledger.store, input);
+}
+
+equivalent("an unchanged e-invoice re-sync", async (ledger) => {
+  const invoices = [einvoice("x"), einvoice("y")];
+  await einvoiceCommit(ledger, einvoiceSync("sync-1", invoices));
+  await ledger.holds("sync-1", { stored: 2, reused: 0 });
+  const written = await einvoiceRowCounts(ledger.store);
+  assert.deepEqual(written, { revisions: 2, observations: 2, events: 2 });
+  for (const sync of ["sync-2", "sync-3"]) {
+    await einvoiceCommit(ledger, einvoiceSync(sync, invoices));
+    await ledger.holds(sync, { stored: 0, reused: 2 });
+  }
+  assert.deepEqual(await einvoiceRowCounts(ledger.store), written, "an unchanged re-sync writes no observation");
+});
+
+equivalent("an e-invoice revised, then seen at its earlier revision again", async (ledger) => {
+  await einvoiceCommit(ledger, einvoiceSync("sync-1", [einvoice("x"), einvoice("y")]));
+  // A new revision is a new record, a revision row, its observation and a superseded event.
+  await einvoiceCommit(ledger, einvoiceSync("sync-2", [einvoice("x", 2), einvoice("y")]));
+  await ledger.holds("sync-2", { stored: 1, reused: 1 });
+  assert.deepEqual(await einvoiceRowCounts(ledger.store), { revisions: 3, observations: 3, events: 4 });
+  await einvoiceCommit(ledger, einvoiceSync("sync-3", [einvoice("x", 2), einvoice("y")]));
+  await ledger.holds("sync-3", { stored: 0, reused: 2 });
+  // The source lists the earlier revision again: its unchanged record is observed, so stored again.
+  await einvoiceCommit(ledger, einvoiceSync("sync-4", [einvoice("x"), einvoice("y")]));
+  await ledger.holds("sync-4", { stored: 1, reused: 1 });
+  assert.deepEqual(await einvoiceRowCounts(ledger.store), { revisions: 3, observations: 4, events: 5 });
+  await einvoiceCommit(ledger, einvoiceSync("sync-5", [einvoice("x"), einvoice("y")]));
+  await ledger.holds("sync-5", { stored: 0, reused: 2 });
+  // And the later one again.
+  await einvoiceCommit(ledger, einvoiceSync("sync-6", [einvoice("x", 2), einvoice("y")]));
+  await ledger.holds("sync-6", { stored: 1, reused: 1 });
+  assert.deepEqual(await einvoiceRowCounts(ledger.store), { revisions: 3, observations: 5, events: 6 });
+});
+
+equivalent("an e-invoice listed at two revisions at once", async (ledger) => {
+  await einvoiceCommit(ledger, einvoiceSync("sync-1", [einvoice("x")]));
+  // Both revisions in one capture: the set of observed revisions changed, so both are observed.
+  const both = [einvoice("x"), einvoice("x", 2)];
+  await einvoiceCommit(ledger, einvoiceSync("sync-2", both));
+  await ledger.holds("sync-2", { stored: 2, reused: 0 });
+  await einvoiceCommit(ledger, einvoiceSync("sync-3", both));
+  await ledger.holds("sync-3", { stored: 0, reused: 2 });
+  // Listing only one of them is a different set again.
+  await einvoiceCommit(ledger, einvoiceSync("sync-4", [einvoice("x", 2)]));
+  await ledger.holds("sync-4", { stored: 1, reused: 0 });
+  await einvoiceCommit(ledger, einvoiceSync("sync-5", [einvoice("x", 2)]));
+  await ledger.holds("sync-5", { stored: 0, reused: 1 });
+});
+
+equivalent("an e-invoice that vanishes and returns", async (ledger) => {
+  await einvoiceCommit(ledger, einvoiceSync("sync-1", [einvoice("x"), einvoice("y")]));
+  // E-invoices have no withdrawal by omission: a capture without `y` writes nothing for it.
+  await einvoiceCommit(ledger, einvoiceSync("sync-2", [einvoice("x")]));
+  await ledger.holds("sync-2", { stored: 0, reused: 1 });
+  // Seen again, `y` is what its latest observation holds, so its record is reused.
+  await einvoiceCommit(ledger, einvoiceSync("sync-3", [einvoice("x"), einvoice("y")]));
+  await ledger.holds("sync-3", { stored: 0, reused: 2 });
+  assert.deepEqual(await einvoiceRowCounts(ledger.store), { revisions: 2, observations: 2, events: 2 });
+});
+const LOAN_CONTRACT = "loan/canonical/v2.fubon";
+const LOAN_ACCOUNT = token("loan-account");
+const LOAN_COUNTERPART_CONTRACT = "loan/counterpart/v1.fubon";
+
+type LoanSync = Readonly<{
+  /** Payment ids, each on its own day of September. */
+  payments: readonly string[];
+  /** The payment repaid from the deposit account, linked by a relation. */
+  repaid?: string;
+  /** Which record evidences the relation. */
+  evidence?: "deposit" | "loan";
+  /** Description of each payment by id, a field the source may revise (ADR 0117). */
+  descriptions?: Readonly<Record<string, string>>;
+}>;
+
+/** A Fubon loan capture of September, with at most one repayment deposit in its own counterpart capture. */
+function loanSync(captureId: string, sync: LoanSync): PGliteCanonicalLoanCommitRequest {
+  const scopeKey = canonicalLoanOccurrenceScopeKey("fubon", LOAN_ACCOUNT);
+  const records = sync.payments.map((id, index) => {
+    const occurrenceGroup = { scopeKey, fingerprint: token(`loan-${id}`), partitionDate: september(index + 1), ordinal: 1 };
+    const sourceRecordKey = canonicalOccurrenceGroupKey(occurrenceGroup);
+    return {
+      sourceRecordKey,
+      occurrenceIndex: 1,
+      sourceSequenceIndex: index + 1,
+      occurrenceGroup,
+      occurrenceCollisionKey: token(`loan-collision-${id}`),
+      effectiveOn: september(index + 1),
+      sourceTime: { localTime: "12:00:00", precision: "second" as const, timeOrigin: "source_reported" as const },
+      postingStatus: "posted" as const,
+      eventKind: "payment" as const,
+      eventEvidence: { kind: "source-coded-loan-event" as const, sourceRecordKey, sourceCode: "LOAN-PAYMENT", contractVersion: LOAN_CONTRACT },
+      direction: "inflow" as const,
+      amount: { coefficient: "1000", scale: 0 },
+      currency: "TWD" as const,
+      sourceDescription: sync.descriptions?.[id] ?? `PAYMENT ${id}`,
+    };
+  });
+  const repaid = records.find((_, index) => sync.payments[index] === sync.repaid);
+  const depositKey = token(`loan-deposit-${sync.repaid}`);
+  const relationId = token(`loan-relation-${sync.repaid}`);
+  const counterpartAccountKey = token("loan-repayment-account");
+  const counterpartTransactions = repaid ? [{
+    captureId: `${captureId}-deposit`,
+    sourceRecordKey: depositKey,
+    occurrenceIndex: 1,
+    sourceConnectionKey: token("loan-connection"),
+    identityEpochKey: token("loan-epoch"),
+    accountKey: counterpartAccountKey,
+    subjectDigest: token("loan-counterpart-subject"),
+    accountNo: token("loan-counterpart-number"),
+    accountType: "depository" as const,
+    stream: "domestic-deposit" as const,
+    recordKind: "fubon-loan-counterpart-deposit",
+    authorityRoute: "fubon/loan/counterpart-deposit-v1",
+    contractVersion: LOAN_COUNTERPART_CONTRACT,
+    effectiveOn: repaid.effectiveOn,
+    sourceTime: repaid.sourceTime,
+    postingStatus: "posted" as const,
+    direction: "outflow" as const,
+    amount: repaid.amount,
+    currency: "TWD" as const,
+    description: "REPAYMENT",
+    sourceEvidence: { kind: "source-linked-counterpart" as const, sourceRecordKey: depositKey, relationId, contractVersion: LOAN_COUNTERPART_CONTRACT },
+  }] : [];
+  return {
+    capture: {
+      captureId,
+      sourceId: "fubon",
+      authorityRoute: "fubon/loan/canonical-v2",
+      contractVersion: LOAN_CONTRACT,
+      identity: {
+        sourceConnectionKey: token("loan-connection"),
+        identityEpochKey: token("loan-epoch"),
+        accountKey: LOAN_ACCOUNT,
+        subjectDigest: token("loan-subject"),
+        accountType: "loan",
+        accountNo: token("loan-display-identity"),
+        stream: "loan",
+        recordKind: "fubon-loan-transaction",
+        currency: "TWD",
+      },
+      observedAt: "2026-09-30T00:00:00.000Z",
+      scope: {
+        startDate: september(1),
+        endDate: september(30),
+        completeness: "complete-range",
+        completenessBasis: "source-declared-terminal-range",
+        completenessRuleVersion: LOAN_CONTRACT,
+        pageCount: 1,
+        terminal: true,
+      },
+      semantics: { status: "posted", effectiveTimeBasis: "source-reported", effectiveTimeRuleVersion: LOAN_CONTRACT, timeZone: "Asia/Taipei" },
+      pages: [{ pageOrdinal: 0, responseCode: "200", terminal: true, rowCount: records.length, proofKind: "source-declared-terminal-range" }],
+      occurrenceGroupCoverage: [{ scopeKey, startDate: september(1), endDate: september(30), contractVersion: LOAN_CONTRACT }],
+      records,
+      counterpartTransactions,
+      balanceObservations: [],
+      relations: repaid ? [{
+        kind: "transfer_counterpart" as const,
+        fromSourceRecordKey: repaid.sourceRecordKey,
+        toSourceRecordKey: depositKey,
+        fromAccountKey: LOAN_ACCOUNT,
+        toAccountKey: counterpartAccountKey,
+        fromDirection: "inflow" as const,
+        toDirection: "outflow" as const,
+        evidence: {
+          kind: "explicit-source-linkage" as const,
+          sourceRecordKey: sync.evidence === "loan" ? repaid.sourceRecordKey : depositKey,
+          relationId,
+          contractVersion: LOAN_CONTRACT,
+        },
+      }] : [],
+      relationCoverage: repaid ? "source-linked-complete" : "not-asserted",
+    },
+  };
+}
+
+async function loanRowCounts(store: PGliteStore): Promise<Record<string, number>> {
+  const { rows: [row] } = await store.query<Record<string, number>>(
+    `SELECT (SELECT count(*) FROM loan_transaction_facts)::int AS facts,
+            (SELECT count(*) FROM transaction_relations)::int AS relations,
+            (SELECT count(*) FROM transaction_relation_provenance)::int AS provenance`,
+  );
+  return { ...row! };
+}
+
+/**
+ * The latest provenance row of each relation, by highest commit sequence,
+ * names the evidence the last request gave it, and every payment's current
+ * revision has typed facts.
+ */
+async function assertLatestLoanRows(store: PGliteStore, request: PGliteCanonicalLoanCommitRequest): Promise<void> {
+  for (const relation of request.capture.relations) {
+    const { rows } = await store.query<{ evidence_source_record_key: string; evidence_relation_id: string }>(
+      `SELECT provenance.evidence_source_record_key, provenance.evidence_relation_id
+         FROM transaction_relations relation
+         JOIN LATERAL (
+           SELECT entry.* FROM transaction_relation_provenance entry
+             JOIN canonical_commits commit_row ON commit_row.commit_id = entry.commit_id
+            WHERE entry.relation_id = relation.relation_id
+            ORDER BY commit_row.commit_sequence DESC LIMIT 1
+         ) provenance ON TRUE
+        WHERE relation.from_source_record_key = $1 AND relation.to_source_record_key = $2`,
+      [relation.fromSourceRecordKey, relation.toSourceRecordKey],
+    );
+    assert.deepEqual(rows, [{ evidence_source_record_key: relation.evidence.sourceRecordKey, evidence_relation_id: relation.evidence.relationId }],
+      `the latest provenance of the relation from ${relation.fromSourceRecordKey}`);
+  }
+  const { rows: [missing] } = await store.query<{ count: number }>(
+    `SELECT count(*)::int AS count
+       FROM financial_transactions financial
+       JOIN LATERAL (SELECT revision_id FROM transaction_revisions revision
+                      WHERE revision.transaction_id = financial.transaction_id
+                      ORDER BY revision_number DESC LIMIT 1) latest ON TRUE
+      WHERE financial.source_sequence IN (SELECT jsonb_array_elements_text($1::jsonb))
+        AND NOT EXISTS (SELECT 1 FROM loan_transaction_facts fact WHERE fact.revision_id = latest.revision_id)`,
+    [JSON.stringify(request.capture.records.map((record) => record.sourceRecordKey))],
+  );
+  assert.equal(missing!.count, 0, "every payment's current revision has typed facts");
+}
+
+async function loanCommit(ledger: Ledger, request: PGliteCanonicalLoanCommitRequest): Promise<void> {
+  await ledger.commitLoan(request);
+  await assertLatestLoanRows(ledger.store, request);
+}
+
+equivalent("an unchanged loan re-sync", async (ledger) => {
+  const sync = { payments: ["p1", "p2"], repaid: "p2" };
+  await loanCommit(ledger, loanSync("sync-1", sync));
+  await ledger.holds("sync-1", { stored: 2, reused: 0 });
+  await ledger.holds("sync-1-deposit", { stored: 1, reused: 0 });
+  const written = await loanRowCounts(ledger.store);
+  assert.deepEqual(written, { facts: 2, relations: 1, provenance: 1 });
+  for (const captureId of ["sync-2", "sync-3"]) {
+    await loanCommit(ledger, loanSync(captureId, sync));
+    await ledger.holds(captureId, { stored: 0, reused: 2 });
+    await ledger.holds(`${captureId}-deposit`, { stored: 0, reused: 1 });
+  }
+  assert.deepEqual(await loanRowCounts(ledger.store), written, "an unchanged re-sync writes no loan row");
+});
+
+equivalent("a new loan payment", async (ledger) => {
+  await loanCommit(ledger, loanSync("sync-1", { payments: ["p1"] }));
+  // The new payment's revision gets typed facts, which cite its new record.
+  await loanCommit(ledger, loanSync("sync-2", { payments: ["p1", "p2"] }));
+  await ledger.holds("sync-2", { stored: 1, reused: 1 });
+  assert.deepEqual(await loanRowCounts(ledger.store), { facts: 2, relations: 0, provenance: 0 });
+  await loanCommit(ledger, loanSync("sync-3", { payments: ["p1", "p2"] }));
+  await ledger.holds("sync-3", { stored: 0, reused: 2 });
+});
+
+equivalent("a loan payment whose revision has no typed facts", async (ledger) => {
+  await loanCommit(ledger, loanSync("sync-1", { payments: ["p1", "p2"] }));
+  // A revision without typed facts, as one admitted before the command wrote them.
+  const [p1] = loanSync("sync-1", { payments: ["p1"] }).capture.records;
+  await ledger.store.query(
+    `DELETE FROM loan_transaction_facts
+      WHERE transaction_id = (SELECT transaction_id FROM financial_transactions WHERE source_sequence = $1)`,
+    [p1!.sourceRecordKey],
+  );
+  // The unchanged revision gets its facts, which cite the record, so it is stored again.
+  await loanCommit(ledger, loanSync("sync-2", { payments: ["p1", "p2"] }));
+  await ledger.holds("sync-2", { stored: 1, reused: 1 });
+  await loanCommit(ledger, loanSync("sync-3", { payments: ["p1", "p2"] }));
+  await ledger.holds("sync-3", { stored: 0, reused: 2 });
+});
+
+equivalent("a revised loan payment", async (ledger) => {
+  const sync = (description?: string) => ({ payments: ["p1", "p2"], ...(description ? { descriptions: { p1: description } } : {}) });
+  await loanCommit(ledger, loanSync("sync-1", sync()));
+  // A revised description opens a new revision, whose typed facts cite the new record.
+  await loanCommit(ledger, loanSync("sync-2", sync("PAYMENT p1 REVISED")));
+  await ledger.holds("sync-2", { stored: 1, reused: 1 });
+  assert.deepEqual(await loanRowCounts(ledger.store), { facts: 3, relations: 0, provenance: 0 });
+  await loanCommit(ledger, loanSync("sync-3", sync("PAYMENT p1 REVISED")));
+  await ledger.holds("sync-3", { stored: 0, reused: 2 });
+  // Only the current revision's facts count: without them, the next sync writes them again.
+  const [p1] = loanSync("sync-1", sync()).capture.records;
+  await ledger.store.query(
+    `DELETE FROM loan_transaction_facts
+      WHERE revision_id = (SELECT revision.revision_id FROM transaction_revisions revision
+                             JOIN financial_transactions financial ON financial.transaction_id = revision.transaction_id
+                            WHERE financial.source_sequence = $1 ORDER BY revision.revision_number DESC LIMIT 1)`,
+    [p1!.sourceRecordKey],
+  );
+  await loanCommit(ledger, loanSync("sync-4", sync("PAYMENT p1 REVISED")));
+  await ledger.holds("sync-4", { stored: 1, reused: 1 });
+  // And back to the first description: another revision.
+  await loanCommit(ledger, loanSync("sync-5", sync()));
+  await ledger.holds("sync-5", { stored: 1, reused: 1 });
+  assert.deepEqual(await loanRowCounts(ledger.store), { facts: 4, relations: 0, provenance: 0 });
+});
+
+equivalent("loan relation evidence that changes and changes back", async (ledger) => {
+  const sync = (evidence: "deposit" | "loan") => ({ payments: ["p1", "p2"], repaid: "p2", evidence });
+  await loanCommit(ledger, loanSync("sync-1", sync("deposit")));
+  // The loan payment now evidences the relation: its unchanged record is cited, so stored again.
+  await loanCommit(ledger, loanSync("sync-2", sync("loan")));
+  await ledger.holds("sync-2", { stored: 1, reused: 1 });
+  await ledger.holds("sync-2-deposit", { stored: 0, reused: 1 });
+  assert.deepEqual(await loanRowCounts(ledger.store), { facts: 2, relations: 1, provenance: 2 });
+  await loanCommit(ledger, loanSync("sync-3", sync("loan")));
+  await ledger.holds("sync-3", { stored: 0, reused: 2 });
+  // And back to the deposit: the latest provenance names the loan record, so this differs.
+  await loanCommit(ledger, loanSync("sync-4", sync("deposit")));
+  await ledger.holds("sync-4", { stored: 0, reused: 2 });
+  await ledger.holds("sync-4-deposit", { stored: 1, reused: 0 });
+  assert.deepEqual(await loanRowCounts(ledger.store), { facts: 2, relations: 1, provenance: 3 });
+  await loanCommit(ledger, loanSync("sync-5", sync("deposit")));
+  await ledger.holds("sync-5-deposit", { stored: 0, reused: 1 });
+});
+
+equivalent("a loan relation that vanishes and returns", async (ledger) => {
+  const linked = { payments: ["p1", "p2"], repaid: "p2" };
+  await loanCommit(ledger, loanSync("sync-1", linked));
+  // Loans infer no withdrawal: a capture without the deposit writes nothing for the relation.
+  await loanCommit(ledger, loanSync("sync-2", { payments: ["p1", "p2"] }));
+  await ledger.holds("sync-2", { stored: 0, reused: 2 });
+  // Back again, its latest provenance names the same evidence, so nothing is written.
+  await loanCommit(ledger, loanSync("sync-3", linked));
+  await ledger.holds("sync-3", { stored: 0, reused: 2 });
+  await ledger.holds("sync-3-deposit", { stored: 0, reused: 1 });
+  assert.deepEqual(await loanRowCounts(ledger.store), { facts: 2, relations: 1, provenance: 1 });
+});
+
+equivalent("a loan repayment resolved beside an unchanged loan re-sync", async (ledger) => {
+  // The repayment resolver writes relation provenance of its own, which the
+  // loan command's comparison must neither suppress nor be confused by.
+  const linked = { payments: ["p1", "p2"], repaid: "p2" };
+  await loanCommit(ledger, loanSync("sync-1", linked));
+  await loanCommit(ledger, loanSync("sync-2", linked));
+  const resolve = (fromCaptureId: string, toCaptureId: string) => resolvePGliteCanonicalLoanRepaymentRelations(ledger.store, {
+    sourceConnectionKey: token("loan-connection"),
+    explicitLinks: [{
+      fromCaptureId,
+      fromSourceRecordKey: token("loan-deposit-p2"),
+      toCaptureId,
+      toSourceRecordKey: loanSync(toCaptureId, linked).capture.relations[0]!.fromSourceRecordKey,
+      relationId: token("loan-relation-p2"),
+      contractVersion: LOAN_CONTRACT,
+    }],
+    observedAt: "2026-09-30T00:00:00.000Z",
+  }, { clock: ledger.clock });
+  // An explicit link names the captures that created the endpoints' revisions.
+  assert.equal((await resolve("sync-1-deposit", "sync-1")).outcome, "changed");
+  await loanCommit(ledger, loanSync("sync-3", linked));
+  await ledger.holds("sync-3", { stored: 0, reused: 2 });
+  await ledger.holds("sync-3-deposit", { stored: 0, reused: 1 });
+  assert.equal((await resolve("sync-1-deposit", "sync-1")).outcome, "unchanged");
+});
+const INVESTMENT_SCOPE_KEY = token("investment-scope");
+
+type InvestmentSync = Readonly<{
+  /** Transaction ids; the first letter names the Security, `a` or `b`, and the digit the day. */
+  transactions: readonly string[];
+  /** Each Security's reported name, by letter. */
+  names?: Readonly<Partial<Record<"a" | "b", string>>>;
+  /**
+   * A holding of `a` measured on this day of September, in its own record.
+   * Its measurement key is the record's unless `measurement` names one, as
+   * the Yuanta and TDCC adapters derive one from each capture.
+   */
+  holding?: Readonly<{ day: number; valuation?: string; measurement?: string }>;
+  /** The day of a declared complete holding snapshot (ADR 0042); with no holding, an empty one. */
+  snapshot?: number;
+  /** The balance of an independent margin loan account, committed as its own capture. */
+  independentMargin?: string;
+  /**
+   * An embedded margin balance, under its own record key. Its financial fact
+   * has no occurrence group, so the capture comes from MaiCoin, whose route
+   * does not require one.
+   */
+  margin?: Readonly<{ key: string; amount: string }>;
+}>;
+
+/** An investment capture of September whose Securities are named by their first transaction. */
+function investmentSync(captureId: string, sync: InvestmentSync): PGliteCanonicalInvestmentCommitRequest {
+  const sourceId = sync.margin ? "maicoin" : "yuanta-fund";
+  const contractVersion = `${sourceId}/investment/canonical-v1`;
+  const grouped = sourceId === "yuanta-fund";
+  const securityKey = (letter: string) => `${sourceId}:FUND-${letter.toUpperCase()}`;
+  const transactions = sync.transactions.map((id) => {
+    const occurrenceGroup = { scopeKey: INVESTMENT_SCOPE_KEY, fingerprint: token(`investment-${id}`), partitionDate: september(Number(id.slice(1))), ordinal: 1 };
+    const sourceRecordKey = grouped ? canonicalOccurrenceGroupKey(occurrenceGroup) : token(`investment-${id}`);
+    return {
+      sourceRecordKey,
+      ...(grouped ? { occurrenceGroup } : {}),
+      transactionKey: token(`investment-transaction-${id}`),
+      securityKey: securityKey(id[0]!),
+      action: "buy" as const,
+      quantity: { coefficient: "5", scale: 0 },
+      cashEffect: { coefficient: "1000", scale: 0, currency: "TWD" },
+      effectiveOn: occurrenceGroup.partitionDate,
+      description: `BUY ${id}`,
+      fundingEvidence: { kind: "unresolved" as const, sourceRecordKey },
+    };
+  });
+  const effectiveOn = september(sync.holding?.day ?? sync.snapshot ?? 30);
+  const holdingKey = token(`investment-holding-${effectiveOn}`);
+  const holdings = sync.holding ? [{
+    measurementKey: sync.holding.measurement ? token(sync.holding.measurement) : holdingKey,
+    measurementSubjectKey: token(`investment-holding-subject-${effectiveOn}`),
+    sourceRecordKey: holdingKey,
+    securityKey: securityKey("a"),
+    quantity: { coefficient: "5", scale: 0 },
+    valuation: { coefficient: sync.holding.valuation ?? "1200", scale: 0, currency: "TWD" },
+    effectiveOn,
+    observedAt: "2026-09-30T01:00:00.000Z",
+    effectiveTimeEvidence: { kind: "source-reported-as-of" as const, sourceRecordKey: holdingKey, sourceField: "asOfDate", value: effectiveOn, contractVersion },
+    lineage: { page: 1, row: 1, contractVersion },
+  }] : [];
+  const securities = (["a", "b"] as const)
+    .filter((letter) => transactions.some((row) => row.securityKey === securityKey(letter)))
+    .map((letter) => ({
+      securityKey: securityKey(letter),
+      producerSecurityId: `FUND-${letter.toUpperCase()}`,
+      name: sync.names?.[letter] ?? `Fund ${letter.toUpperCase()}`,
+      currency: "TWD",
+      securityType: "mutual_fund" as const,
+      identityEvidence: { kind: "producer-security-id" as const, contractVersion },
+      // Only the Yuanta name contract reports names (ADR 0004).
+      ...(grouped ? {
+        nameEvidence: {
+          contractVersion: `${sourceId}/security-name/source-reported-v1`,
+          sourceRecordKey: transactions.find((row) => row.securityKey === securityKey(letter))!.sourceRecordKey,
+        },
+      } : {}),
+    }));
+  return {
+    capture: {
+      captureId,
+      sourceId,
+      authorityRoute: contractVersion,
+      contractVersion,
+      observedAt: "2026-09-30T01:00:00.000Z",
+      identity: {
+        sourceConnectionKey: token("investment-connection"),
+        identityEpochKey: token("investment-epoch"),
+        accountKey: token("investment-account"),
+        accountType: "investment",
+        reportingCurrency: "TWD",
+      },
+      scope: {
+        effectiveOn,
+        complete: true,
+        transactionHistory: { startDate: september(1), endDate: september(30), complete: true },
+        ...(sync.snapshot ? { holdingSnapshot: { sourceField: "asOfDate", value: effectiveOn, contractVersion } } : {}),
+      },
+      ...(grouped ? { occurrenceGroupCoverage: [{ scopeKey: INVESTMENT_SCOPE_KEY, startDate: september(1), endDate: september(30), contractVersion }] } : {}),
+      securities,
+      holdings,
+      transactions,
+      ...(sync.independentMargin ? {
+        margin: {
+          kind: "independent-account" as const,
+          accountKey: token("investment-margin-account"),
+          accountType: "loan" as const,
+          amount: { coefficient: sync.independentMargin, scale: 0, currency: "TWD" },
+          effectiveOn: september(30),
+          sourceRecordKey: token(`investment-margin-balance-${sync.independentMargin}`),
+          identityEvidence: { kind: "producer-margin-account-id" as const, producerAccountId: "MARGIN-LOAN-001", contractVersion: `${sourceId}/investment/margin-credit-canonical-v1` },
+          sourceEventCode: "LOAN-DISBURSEMENT",
+        },
+      } : {}),
+      ...(sync.margin ? {
+        margin: {
+          kind: "embedded" as const,
+          amount: { coefficient: sync.margin.amount, scale: 0, currency: "TWD" },
+          effectiveOn: september(30),
+          sourceRecordKey: token(`investment-margin-${sync.margin.key}`),
+        },
+      } : {}),
+    },
+  };
+}
+
+async function investmentRowCounts(store: PGliteStore): Promise<Record<string, number>> {
+  const { rows: [row] } = await store.query<Record<string, number>>(
+    `SELECT (SELECT count(*) FROM investment_security_name_observations)::int AS names,
+            (SELECT count(*) FROM investment_holding_observations)::int AS holdings,
+            (SELECT count(*) FROM investment_transactions)::int AS transactions,
+            (SELECT count(*) FROM investment_passbook_movements)::int AS movements,
+            (SELECT count(*) FROM investment_margin_balance_observations)::int AS margins`,
+  );
+  return { ...row! };
+}
+
+/**
+ * Each named Security's latest name observation, by highest commit sequence
+ * as the overview reads it, carries the name the last request gave it.
+ */
+async function assertLatestNames(store: PGliteStore, request: PGliteCanonicalInvestmentCommitRequest): Promise<void> {
+  for (const security of request.capture.securities) {
+    if (!security.nameEvidence) continue;
+    const { rows } = await store.query<{ name: string }>(
+      `SELECT observation.name
+         FROM investment_security_name_observations observation
+         JOIN investment_securities security ON security.security_id = observation.security_id
+         JOIN canonical_commits commit_row ON commit_row.commit_id = observation.commit_id
+        WHERE security.security_key = $1
+        ORDER BY commit_row.commit_sequence DESC, observation.capture_id DESC LIMIT 1`,
+      [security.securityKey],
+    );
+    assert.deepEqual(rows, [{ name: security.name }], `the latest name of ${security.securityKey}`);
+  }
+}
+
+async function investmentCommit(ledger: Ledger, request: PGliteCanonicalInvestmentCommitRequest): Promise<void> {
+  await ledger.commitInvestment(request);
+  await assertLatestNames(ledger.store, request);
+}
+
+const INVESTMENT_TRANSACTIONS = ["a1", "b2"];
+
+equivalent("an unchanged investment re-sync", async (ledger) => {
+  const sync = { transactions: INVESTMENT_TRANSACTIONS, margin: { key: "m1", amount: "500" } };
+  await investmentCommit(ledger, investmentSync("sync-1", sync));
+  await ledger.holds("sync-1", { stored: 3, reused: 0 });
+  const written = await investmentRowCounts(ledger.store);
+  assert.deepEqual(written, { names: 0, holdings: 0, transactions: 2, movements: 0, margins: 1 });
+  for (const captureId of ["sync-2", "sync-3"]) {
+    await investmentCommit(ledger, investmentSync(captureId, sync));
+    await ledger.holds(captureId, { stored: 0, reused: 3 });
+  }
+  assert.deepEqual(await investmentRowCounts(ledger.store), written, "an unchanged re-sync writes no investment row");
+});
+
+equivalent("investment rows that are new", async (ledger) => {
+  const margin = { key: "m1", amount: "500" };
+  await investmentCommit(ledger, investmentSync("sync-1", { transactions: ["a1"], margin }));
+  // A new transaction of a new Security: its transaction row and name both cite its record.
+  await investmentCommit(ledger, investmentSync("sync-2", { transactions: INVESTMENT_TRANSACTIONS, margin }));
+  await ledger.holds("sync-2", { stored: 1, reused: 2 });
+  // A new margin balance is a new record under its own key.
+  await investmentCommit(ledger, investmentSync("sync-3", { transactions: INVESTMENT_TRANSACTIONS, margin: { key: "m2", amount: "700" } }));
+  await ledger.holds("sync-3", { stored: 1, reused: 2 });
+  assert.deepEqual(await investmentRowCounts(ledger.store), { names: 0, holdings: 0, transactions: 2, movements: 0, margins: 2 });
+});
+
+equivalent("an unchanged investment re-sync with an independent margin account", async (ledger) => {
+  const sync = { transactions: INVESTMENT_TRANSACTIONS, independentMargin: "300" };
+  await investmentCommit(ledger, investmentSync("sync-1", sync));
+  for (const captureId of ["sync-2", "sync-3"]) {
+    await investmentCommit(ledger, investmentSync(captureId, sync));
+    await ledger.holds(captureId, { stored: 0, reused: 2 });
+    // No row of the command cites the margin account's record, so it is reused too.
+    await ledger.holds(`${captureId}:margin-credit`, { stored: 0, reused: 1 });
+  }
+});
+
+equivalent("investment rows missing beside stored facts", async (ledger) => {
+  const sync = { transactions: INVESTMENT_TRANSACTIONS, margin: { key: "m1", amount: "500" } };
+  await investmentCommit(ledger, investmentSync("sync-1", sync));
+  // Unchanged facts whose investment rows are gone, as before the command wrote them:
+  // the rows are written again and cite their records, which are stored again.
+  await ledger.store.exec(`
+    DELETE FROM investment_transactions;
+    DELETE FROM investment_margin_balance_observations;`);
+  await investmentCommit(ledger, investmentSync("sync-2", sync));
+  await ledger.holds("sync-2", { stored: 3, reused: 0 });
+  await investmentCommit(ledger, investmentSync("sync-3", sync));
+  await ledger.holds("sync-3", { stored: 0, reused: 3 });
+  assert.deepEqual(await investmentRowCounts(ledger.store), { names: 0, holdings: 0, transactions: 2, movements: 0, margins: 1 });
+});
+
+equivalent("a Security renamed and renamed back", async (ledger) => {
+  const sync = (name?: string) => ({ transactions: INVESTMENT_TRANSACTIONS, ...(name ? { names: { a: name } } : {}) });
+  await investmentCommit(ledger, investmentSync("sync-1", sync()));
+  // The name's evidence record is unchanged, but the new name observation cites it.
+  await investmentCommit(ledger, investmentSync("sync-2", sync("Fund A Renamed")));
+  await ledger.holds("sync-2", { stored: 1, reused: 1 });
+  assert.equal((await investmentRowCounts(ledger.store)).names, 3);
+  await investmentCommit(ledger, investmentSync("sync-3", sync("Fund A Renamed")));
+  await ledger.holds("sync-3", { stored: 0, reused: 2 });
+  // Back to the first name: the latest observation holds the other one, so this differs.
+  await investmentCommit(ledger, investmentSync("sync-4", sync()));
+  await ledger.holds("sync-4", { stored: 1, reused: 1 });
+  assert.equal((await investmentRowCounts(ledger.store)).names, 4);
+  await investmentCommit(ledger, investmentSync("sync-5", sync()));
+  await ledger.holds("sync-5", { stored: 0, reused: 2 });
+});
+
+equivalent("investment holdings measured each sync (ADR 0008)", async (ledger) => {
+  await investmentCommit(ledger, investmentSync("sync-1", { transactions: INVESTMENT_TRANSACTIONS, holding: { day: 28 } }));
+  // The same measurement again writes nothing and reuses its record.
+  await investmentCommit(ledger, investmentSync("sync-2", { transactions: INVESTMENT_TRANSACTIONS, holding: { day: 28 } }));
+  await ledger.holds("sync-2", { stored: 0, reused: 3 });
+  // A measurement on a new day is a new observation, even of the same value.
+  await investmentCommit(ledger, investmentSync("sync-3", { transactions: INVESTMENT_TRANSACTIONS, holding: { day: 29 } }));
+  await ledger.holds("sync-3", { stored: 1, reused: 2 });
+  await investmentCommit(ledger, investmentSync("sync-4", { transactions: INVESTMENT_TRANSACTIONS, holding: { day: 30, valuation: "1300" } }));
+  await ledger.holds("sync-4", { stored: 1, reused: 2 });
+  // The same day and value, measured by a later capture, is a new observation
+  // (ADR 0008): it cites the unchanged record, which is stored again.
+  await investmentCommit(ledger, investmentSync("sync-again", { transactions: INVESTMENT_TRANSACTIONS, holding: { day: 30, valuation: "1300", measurement: "sync-again" } }));
+  await ledger.holds("sync-again", { stored: 1, reused: 2 });
+  // No holding: transactions alone are reused.
+  await investmentCommit(ledger, investmentSync("sync-5", { transactions: INVESTMENT_TRANSACTIONS }));
+  await ledger.holds("sync-5", { stored: 0, reused: 2 });
+  assert.equal((await investmentRowCounts(ledger.store)).holdings, 4);
+});
+
+equivalent("an investment holding sold and bought back", async (ledger) => {
+  const sync = (day: number, held: boolean) => ({ transactions: INVESTMENT_TRANSACTIONS, snapshot: day, ...(held ? { holding: { day } } : {}) });
+  await investmentCommit(ledger, investmentSync("sync-1", sync(27, true)));
+  // An empty snapshot says the holding was sold; the transactions are reused beside it.
+  await investmentCommit(ledger, investmentSync("sync-2", sync(28, false)));
+  await ledger.holds("sync-2", { stored: 0, reused: 2 });
+  await investmentCommit(ledger, investmentSync("sync-3", sync(29, true)));
+  await ledger.holds("sync-3", { stored: 1, reused: 2 });
+  const { rows } = await ledger.store.query<{ snapshots: number; holdings: number }>(
+    `SELECT (SELECT count(*) FROM investment_holding_snapshots)::int AS snapshots,
+            (SELECT count(*) FROM investment_holding_observations)::int AS holdings`,
+  );
+  assert.deepEqual(rows, [{ snapshots: 3, holdings: 2 }]);
+});
+
+// TDCC fixtures, shaped like the redacted TR001 and TR002 inventories.
+const TDCC_CONNECTION = { sourceConnectionKey: token("tdcc-connection"), identityEpochKey: token("tdcc-epoch") };
+const TDCC_BROKER_ACCOUNT = ["98", "76543"].join("");
+const tdccAccountRow = (items: readonly unknown[] = []) => ({
+  accountEmail: "", accountName: "", accountStatus: "0", applyTime: "112/01/09", brokerAccount: TDCC_BROKER_ACCOUNT,
+  brokerName: "", brokerNo: "1020", isTisa: "N", items, mergeByNewAcct: "", mergeDate: "", phoneNumber: "",
+});
+const tdccPositions = (items: readonly unknown[], lastServerTime: string) =>
+  readTdccPositions({ accounts: [tdccAccountRow(items)], currCHNames: { TWD: "新台幣　" }, exchangeRates: { TWD: "1" }, lastServerTime });
+const tdccHolding = (quantity: string) => {
+  const row = Array.from({ length: 22 }, () => "");
+  Object.assign(row, { 0: "2330  ", 1: "台積電", 6: "00", 7: quantity, 17: "585.5", 19: "TWD" });
+  return row;
+};
+const tdccMovement = (overrides: Readonly<Record<number, string>> = {}) => {
+  const row = [
+    "01150805", "00012", "2330  ", "台積電", "0", "0", "0", "0", "00", "01150801",
+    "113", "買　　進          ", "1000.000000000000000000", "0E-18", "1", "0", "", "", "1", "01150801",
+    "TWD", "中", "",
+  ];
+  for (const [slot, value] of Object.entries(overrides)) row[Number(slot)] = value;
+  return row;
+};
+const TDCC_MOVEMENTS = [
+  tdccMovement(),
+  tdccMovement({ 0: "01150912", 1: "00031", 9: "01150910", 10: "123", 11: "賣　　出          ", 12: "400.000000000000000000" }),
+];
+function tdccMovementSync(captureId: string, movements: readonly string[][]): PGliteCanonicalInvestmentCommitRequest {
+  const positions = tdccPositions([], "20261009103000");
+  return {
+    capture: tdccPassbookMovementCapture({
+      captureId,
+      observedAt: "2026-10-09T02:31:00.000Z",
+      connection: TDCC_CONNECTION,
+      account: positions.accounts[0]!,
+      pages: [{ brokerAccount: TDCC_BROKER_ACCOUNT, brokerNo: "1020", exchangeRates: { TWD: "1" }, items: movements, lastServerTime: "20261009103000" }],
+    }),
+  };
+}
+function tdccHoldingSync(captureId: string, quantity: string, lastServerTime: string): PGliteCanonicalInvestmentCommitRequest {
+  const positions = tdccPositions([tdccHolding(quantity)], lastServerTime);
+  const at = `${lastServerTime.slice(0, 4)}-${lastServerTime.slice(4, 6)}-${lastServerTime.slice(6, 8)}T02:31:00.000Z`;
+  return { capture: tdccSecuritiesHoldingCapture({ captureId, observedAt: at, connection: TDCC_CONNECTION, positions, account: positions.accounts[0]! }) };
+}
+
+equivalent("TDCC passbook movements recollected", async (ledger) => {
+  // A stored movement whose row is gone is written again.
+  await investmentCommit(ledger, tdccMovementSync("sync-0", TDCC_MOVEMENTS.slice(0, 1)));
+  await ledger.store.exec("DELETE FROM investment_passbook_movements");
+  await investmentCommit(ledger, tdccMovementSync("sync-1", TDCC_MOVEMENTS.slice(0, 1)));
+  await ledger.holds("sync-1", { stored: 1, reused: 0 });
+  // A new movement is written once and cites its record.
+  await investmentCommit(ledger, tdccMovementSync("sync-2", TDCC_MOVEMENTS));
+  await ledger.holds("sync-2", { stored: 1, reused: 1 });
+  await investmentCommit(ledger, tdccMovementSync("sync-3", TDCC_MOVEMENTS));
+  await ledger.holds("sync-3", { stored: 0, reused: 2 });
+  assert.equal((await investmentRowCounts(ledger.store)).movements, 2);
+});
+
+equivalent("TDCC holdings, a new measurement every sync (ADR 0008)", async (ledger) => {
+  // Each TR001 response is a measurement at its server time: its record and
+  // observation are new even when the quantity is not, and the capture's
+  // empty-or-not snapshot needs its own holding rows (ADR 0042).
+  await investmentCommit(ledger, tdccHoldingSync("sync-1", "1000", "20261009103000"));
+  await investmentCommit(ledger, tdccHoldingSync("sync-2", "1000", "20261010103000"));
+  await ledger.holds("sync-2", { stored: 1, reused: 0 });
+  await investmentCommit(ledger, tdccHoldingSync("sync-3", "1200", "20261011103000"));
+  await investmentCommit(ledger, tdccHoldingSync("sync-4", "1000", "20261012103000"));
+  await ledger.holds("sync-4", { stored: 1, reused: 0 });
+  assert.equal((await investmentRowCounts(ledger.store)).holdings, 4);
 });
 
 test("the commit that reuses records is the one the app's deposit command runs", async () => {

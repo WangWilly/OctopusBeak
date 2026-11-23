@@ -2,7 +2,9 @@ import { createHash, randomUUID } from "node:crypto";
 import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
 import {
   assertPGliteCanonicalCommitNotCancelled,
+  assertPGliteStoredByThisCapture,
   admitPGliteCanonicalFinancialCaptureInTransaction,
+  findPGliteFinancialAccountId,
   refreshPGliteAdmittedFinancialProjection,
   type PGliteAdmittedFinancialCapture,
   type PGliteCanonicalCommitOptions,
@@ -501,12 +503,116 @@ async function persistFacts(transaction: PGliteTransaction, context: LoanCapture
       if (JSON.stringify(actual) !== JSON.stringify(expected)) fail("Typed loan transaction facts cannot be overwritten.");
       continue;
     }
+    assertPGliteStoredByThisCapture(context.capture, sourceRecordId, "typed loan facts");
     await query(transaction, `INSERT INTO loan_transaction_facts(transaction_id, revision_id, source_record_id, capture_id, commit_id, occurrence_index, event_kind, event_source_code, event_evidence_contract_version, principal_coefficient, principal_scale, interest_coefficient, interest_scale, fee_coefficient, fee_scale, component_evidence_source_record_key, component_evidence_contract_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [bytes(committed.transactionId, "Loan transaction"), bytes(committed.revisionId, "Loan revision"), sourceRecordId, context.capture.captureId, context.commitId, ...expected]);
   }
 }
 
-async function persistRelations(transaction: PGliteTransaction, context: LoanCaptureContext, capture: LoanCaptureInput, counterpartContexts: ReadonlyMap<string, LoanCaptureContext>, results: ReadonlyMap<string, PGliteCanonicalFinancialCommitResult>): Promise<void> {
-  for (const relation of capture.relations) {
+/** The evidence a relation provenance row names; the record and capture it cites are not part of it. */
+const relationEvidenceKey = (evidence: Readonly<{ sourceRecordKey: string; relationId: string; contractVersion: string }>): string =>
+  JSON.stringify([evidence.sourceRecordKey, evidence.relationId, evidence.contractVersion]);
+
+const relationKeyOf = (sourceConnectionId: string, fromAccountId: string, fromTransactionId: string, toAccountId: string, toTransactionId: string): string =>
+  digest(["loan-relation-v11", sourceConnectionId, fromAccountId, fromTransactionId, toAccountId, toTransactionId].join(":"));
+
+const hex = (value: unknown): string => Buffer.from(bytes(value, "Loan identity")).toString("hex");
+
+/**
+ * What the command's own rows cite, decided before any record is stored
+ * (ADR 0152): the loan records whose typed facts it will write, and the
+ * evidence records of the relations whose provenance it will write. A
+ * relation's provenance is written only when the relation is new or the
+ * evidence its latest provenance row names, by highest commit sequence,
+ * differs. Every other record may be reused.
+ */
+type LoanCitationPlan = Readonly<{
+  /** Occurrences of the loan capture its rows cite. */
+  loan: ReadonlySet<string>;
+  /** Occurrences each counterpart capture's records a relation provenance row cites, by counterpart capture id. */
+  counterparts: ReadonlyMap<string, ReadonlySet<string>>;
+  /** Indexes into the capture's relations whose provenance this commit writes. */
+  relationProvenance: ReadonlySet<number>;
+}>;
+
+async function planLoanCitations(transaction: PGliteTransaction, capture: LoanCaptureInput): Promise<LoanCitationPlan> {
+  const loan = new Set<string>();
+  const counterparts = new Map<string, Set<string>>();
+  const relationProvenance = new Set<number>();
+  const loanAccountId = await findPGliteFinancialAccountId(transaction, captureSource(capture), capture.identity.accountKey);
+  // Typed facts are written once per revision: a record whose latest revision
+  // has none is cited, as is every record the shared commit gives a new revision.
+  const factsWritten = new Set<string>();
+  if (loanAccountId && capture.records.length > 0)
+    for (const row of await query<{ source_sequence: string }>(transaction, `
+      SELECT financial.source_sequence
+        FROM financial_transactions financial
+        JOIN LATERAL (
+          SELECT revision.revision_id FROM transaction_revisions revision
+           WHERE revision.transaction_id = financial.transaction_id
+           ORDER BY revision.revision_number DESC LIMIT 1
+        ) latest ON TRUE
+       WHERE financial.account_id = ?
+         AND financial.source_sequence IN (SELECT jsonb_array_elements_text(?::jsonb))
+         AND EXISTS (SELECT 1 FROM loan_transaction_facts fact WHERE fact.revision_id = latest.revision_id)`,
+    [loanAccountId, JSON.stringify(capture.records.map((record) => record.sourceRecordKey))]))
+      factsWritten.add(row.source_sequence);
+  for (const record of capture.records) if (!factsWritten.has(record.sourceRecordKey)) loan.add(record.sourceRecordKey);
+  if (capture.relations.length === 0) return { loan, counterparts, relationProvenance };
+
+  // Each endpoint's stored account and transaction, so a relation's key can be found before admission.
+  const endpoints = new Map<string, { accountId: string; transactionId?: string }>();
+  const loanAccount = loanAccountId && await first<{ source_connection_id: unknown }>(transaction, "SELECT source_connection_id FROM financial_accounts WHERE account_id = ?", [loanAccountId]);
+  const accounts: [Uint8Array | undefined, readonly string[]][] = [[loanAccountId, capture.records.map((record) => record.sourceRecordKey)]];
+  for (const counterpart of capture.counterpartTransactions)
+    accounts.push([await findPGliteFinancialAccountId(transaction, counterpartSource(capture, counterpart), counterpart.accountKey), [counterpart.sourceRecordKey]]);
+  for (const [accountId, sequences] of accounts) {
+    if (!accountId) continue;
+    for (const sequence of sequences) endpoints.set(sequence, { accountId: hex(accountId) });
+    for (const row of await query<{ source_sequence: string; transaction_id: unknown }>(transaction,
+      "SELECT source_sequence, transaction_id FROM financial_transactions WHERE account_id = ? AND source_sequence IN (SELECT jsonb_array_elements_text(?::jsonb))",
+      [accountId, JSON.stringify(sequences)]))
+      endpoints.set(row.source_sequence, { accountId: hex(accountId), transactionId: hex(row.transaction_id) });
+  }
+  const relationKeys = capture.relations.map((relation) => {
+    const from = endpoints.get(relation.fromSourceRecordKey);
+    const to = endpoints.get(relation.toSourceRecordKey);
+    return loanAccount && from?.transactionId && to?.transactionId
+      ? relationKeyOf(hex(loanAccount.source_connection_id), from.accountId, from.transactionId, to.accountId, to.transactionId)
+      : undefined;
+  });
+  const latestEvidence = new Map<string, string>();
+  const known = relationKeys.filter((key): key is string => key !== undefined);
+  if (loanAccountId && known.length > 0)
+    for (const row of await query<{ relation_key: string; evidence_source_record_key: string; evidence_relation_id: string; evidence_contract_version: string }>(transaction, `
+      SELECT relation.relation_key, provenance.evidence_source_record_key, provenance.evidence_relation_id, provenance.evidence_contract_version
+        FROM transaction_relations relation
+        JOIN LATERAL (
+          SELECT entry.* FROM transaction_relation_provenance entry
+            JOIN canonical_commits commit_row ON commit_row.commit_id = entry.commit_id
+           WHERE entry.relation_id = relation.relation_id
+           ORDER BY commit_row.commit_sequence DESC, entry.source_record_id DESC
+           LIMIT 1
+        ) provenance ON TRUE
+       WHERE relation.account_id = ? AND relation.relation_key IN (SELECT jsonb_array_elements_text(?::jsonb))`,
+    [loanAccountId, JSON.stringify(known)]))
+      latestEvidence.set(row.relation_key, relationEvidenceKey({
+        sourceRecordKey: row.evidence_source_record_key,
+        relationId: row.evidence_relation_id,
+        contractVersion: row.evidence_contract_version,
+      }));
+  for (const [index, relation] of capture.relations.entries()) {
+    const key = relationKeys[index];
+    if (key !== undefined && latestEvidence.get(key) === relationEvidenceKey(relation.evidence)) continue;
+    relationProvenance.add(index);
+    const counterpart = capture.counterpartTransactions.find((row) => row.sourceRecordKey === relation.evidence.sourceRecordKey);
+    if (counterpart) counterparts.set(counterpart.captureId, (counterparts.get(counterpart.captureId) ?? new Set()).add(relation.evidence.sourceRecordKey));
+    else loan.add(relation.evidence.sourceRecordKey);
+  }
+  return { loan, counterparts, relationProvenance };
+}
+
+async function persistRelations(transaction: PGliteTransaction, context: LoanCaptureContext, capture: LoanCaptureInput, counterpartContexts: ReadonlyMap<string, LoanCaptureContext>, results: ReadonlyMap<string, PGliteCanonicalFinancialCommitResult>, plan: LoanCitationPlan): Promise<void> {
+  for (const [index, relation] of capture.relations.entries()) {
     const endpoint = (sourceRecordKey: string): { context: LoanCaptureContext; transactionId: Uint8Array; accountKey: string; direction: "inflow" | "outflow" } => {
       const own = results.get(capture.captureId)?.transactions.find((row) => row.sourceOccurrenceKey === sourceRecordKey);
       if (own) return { context, transactionId: bytes(own.transactionId, "Loan relation transaction"), accountKey: capture.identity.accountKey, direction: relation.fromSourceRecordKey === sourceRecordKey ? relation.fromDirection : relation.toDirection };
@@ -522,7 +628,7 @@ async function persistRelations(transaction: PGliteTransaction, context: LoanCap
     };
     const from = endpoint(relation.fromSourceRecordKey);
     const to = endpoint(relation.toSourceRecordKey);
-    const relationKey = digest(["loan-relation-v11", Buffer.from(from.context.sourceConnectionId).toString("hex"), Buffer.from(from.context.accountId).toString("hex"), Buffer.from(from.transactionId).toString("hex"), Buffer.from(to.context.accountId).toString("hex"), Buffer.from(to.transactionId).toString("hex")].join(":"));
+    const relationKey = relationKeyOf(hex(from.context.sourceConnectionId), hex(from.context.accountId), hex(from.transactionId), hex(to.context.accountId), hex(to.transactionId));
     const existing = await first<{ relation_id: unknown; from_account_id: unknown; to_account_id: unknown; from_transaction_id: unknown; to_transaction_id: unknown }>(transaction, "SELECT relation_id, from_account_id, to_account_id, from_transaction_id, to_transaction_id FROM transaction_relations WHERE account_id = ? AND relation_key = ?", [context.accountId, relationKey]);
     const relationId = existing?.relation_id ? bytes(existing.relation_id, "Loan relation") : uuidBytes();
     if (existing) {
@@ -531,11 +637,13 @@ async function persistRelations(transaction: PGliteTransaction, context: LoanCap
     } else {
       await query(transaction, `INSERT INTO transaction_relations(relation_id, account_id, source_connection_id, identity_epoch_id, commit_id, relation_key, relation_kind, from_account_id, to_account_id, from_source_record_key, to_source_record_key, from_transaction_id, to_transaction_id, from_direction, to_direction, evidence_source_record_key, evidence_relation_id, evidence_contract_version, from_identity_epoch_id, to_identity_epoch_id) VALUES (?, ?, ?, ?, ?, ?, 'transfer_counterpart', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [relationId, context.accountId, context.sourceConnectionId, context.identityEpochId, context.commitId, relationKey, from.context.accountId, to.context.accountId, relation.fromSourceRecordKey, relation.toSourceRecordKey, from.transactionId, to.transactionId, relation.fromDirection, relation.toDirection, relation.evidence.sourceRecordKey, relation.evidence.relationId, relation.evidence.contractVersion, from.context.identityEpochId, to.context.identityEpochId]);
     }
+    if (!plan.relationProvenance.has(index)) continue;
     const evidenceContext = capture.counterpartTransactions.find((row) => row.sourceRecordKey === relation.evidence.sourceRecordKey)?.captureId;
     const evidenceCapture = evidenceContext ? counterpartContexts.get(evidenceContext)?.capture : context.capture;
     const evidenceRecordId = evidenceCapture?.sourceRecordIdsByOccurrence.get(relation.evidence.sourceRecordKey);
     if (!evidenceRecordId) fail("Loan relation evidence source record is missing.");
     if (!evidenceCapture) fail("Loan relation evidence capture is missing.");
+    assertPGliteStoredByThisCapture(evidenceCapture, evidenceRecordId, "loan relation provenance");
     await query(transaction, `INSERT INTO transaction_relation_provenance(relation_id, source_record_id, capture_id, commit_id, evidence_source_record_key, evidence_relation_id, evidence_contract_version) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`, [relationId, evidenceRecordId, evidenceCapture.captureId, context.commitId, relation.evidence.sourceRecordKey, relation.evidence.relationId, relation.evidence.contractVersion]);
   }
 }
@@ -553,14 +661,26 @@ function counterpartAccount(counterpart: LoanCounterpartTransactionInput): PGlit
   return { sourceAccountKey: counterpart.accountKey, accountNo: null, accountType: "depository", currency: "TWD" };
 }
 
+/** A loan commit's options, and whether it reuses unchanged records. */
+export type PGliteCanonicalLoanCommitOptions = PGliteCanonicalCommitOptions & Readonly<{
+  /**
+   * `false` stores every record of the capture again, as before ADR 0152,
+   * while relation provenance is still written only where it changed. The
+   * reuse check compares a store built this way with one that reuses records.
+   */
+  reuseSourceRecords?: false;
+}>;
+
 /** Commit an independent loan spine inside a caller-owned transaction. */
 export async function commitPGliteCanonicalLoanCaptureInTransaction(
   transaction: PGliteTransaction,
   request: PGliteCanonicalLoanCommitRequest,
-  options: PGliteCanonicalCommitOptions = {},
+  options: PGliteCanonicalLoanCommitOptions = {},
 ): Promise<PGliteCanonicalLoanCommitResult> {
   const snapshot = structuredClone(request);
   validateLoanCapture(snapshot.capture);
+  const plan = await planLoanCitations(transaction, snapshot.capture);
+  const reuse = options.reuseSourceRecords !== false;
     const mainAdmitted = await admitPGliteCanonicalFinancialCaptureInTransaction(transaction, {
       capture: captureSource(snapshot.capture),
       account: loanAccount(snapshot.capture),
@@ -569,7 +689,7 @@ export async function commitPGliteCanonicalLoanCaptureInTransaction(
       balanceObservations: snapshot.capture.balanceObservations.map(balanceObservation),
       withdrawalPolicy: "never-infer",
       recordedAtUtcUs: snapshot.recordedAtUtcUs ?? options.recordedAtUtcUs,
-    }, options, "any");
+    }, options, reuse ? plan.loan : "any");
     const main = mainAdmitted.result;
     const mainContext = loanContext(mainAdmitted);
     await persistIdentity(transaction, mainContext, { accountKey: snapshot.capture.identity.accountKey, accountNo: snapshot.capture.identity.accountNo, accountType: "loan", stream: "loan" });
@@ -586,7 +706,7 @@ export async function commitPGliteCanonicalLoanCaptureInTransaction(
         transactions: [counterpartFinancialFact(counterpart, snapshot.capture)],
         withdrawalPolicy: "never-infer",
         recordedAtUtcUs: options.recordedAtUtcUs,
-      }, options, "any");
+      }, options, reuse ? plan.counterparts.get(counterpart.captureId) ?? "none" : "any");
       const result = admitted.result;
       const context = loanContext(admitted);
       admittedCaptures.push(admitted);
@@ -594,7 +714,7 @@ export async function commitPGliteCanonicalLoanCaptureInTransaction(
       resultByCapture.set(counterpart.captureId, result);
       await persistIdentity(transaction, context, { accountKey: counterpart.accountKey, accountNo: counterpart.accountNo, accountType: "depository", stream: "domestic-deposit" });
     }
-    await persistRelations(transaction, mainContext, snapshot.capture, counterpartContexts, resultByCapture);
+    await persistRelations(transaction, mainContext, snapshot.capture, counterpartContexts, resultByCapture, plan);
     await refreshPGliteAdmittedFinancialProjection(transaction, admittedCaptures, options);
     assertPGliteCanonicalCommitNotCancelled(options.signal);
     return {
@@ -612,7 +732,7 @@ export async function commitPGliteCanonicalLoanCaptureInTransaction(
 export async function commitPGliteCanonicalLoanCapture(
   store: PGliteStore,
   request: PGliteCanonicalLoanCommitRequest,
-  options: PGliteCanonicalCommitOptions = {},
+  options: PGliteCanonicalLoanCommitOptions = {},
 ): Promise<PGliteCanonicalLoanCommitResult> {
   return store.transaction((transaction) =>
     commitPGliteCanonicalLoanCaptureInTransaction(transaction, request, options),

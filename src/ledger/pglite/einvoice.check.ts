@@ -141,12 +141,14 @@ test("PGlite E-Invoice preserves recurrent revisions, item order, revocation, an
       WHERE commit_row.commit_sequence <= $1
       ORDER BY revision.revision_number DESC LIMIT 1`, [issued.knowledgeAt]);
     assert.equal(Number(historicalInvoice.rows[0]?.revision_number), 1);
+    // The repeated capture saw what the latest observation already holds, so
+    // it writes no observation or event of its own (ADR 0152).
     assert.deepEqual(await counts(store), {
       einvoice_invoices: 1,
       einvoice_invoice_revisions: 3,
       einvoice_items: 2,
-      einvoice_revision_events: 6,
-      einvoice_revision_observations: 4,
+      einvoice_revision_events: 5,
+      einvoice_revision_observations: 3,
     });
   } finally {
     await store.close();

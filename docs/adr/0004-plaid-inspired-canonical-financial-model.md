@@ -4,6 +4,8 @@ Status: accepted
 
 [ADR 0008](./0008-source-scoped-lineage-and-strict-canonical-admission.md) amends this model's identity, source-evidence retention, admission, temporal requirements, `unknown`, candidate, and user-correction semantics. Where this ADR describes provisional or cross-source identity, raw replayable records, optional Balance/Holding effective time, canonical conflicts, or financial match candidates, ADR 0008 governs.
 
+Accepted amendment: [ADR 0152](./0152-an-unchanged-re-sync-reuses-stored-source-records.md) writes a Security name observation only when the Security is new or its name or contract version changes, instead of one per admitted Capture.
+
 ## Context
 
 OctopusBeak currently preserves source-specific rows for bank deposits, foreign-currency deposits, credit cards, loans, funds, brokerage, and crypto data. Those rows have useful ingestion lineage but do not form one stable domain model. In particular, current sources do not consistently provide provider account, transaction, or statement identifiers; query periods do not establish statement coverage; a transaction-row running balance is not an independent live balance; and workflow, filename, parser, and product labels include inference that must not be presented as source fact.
