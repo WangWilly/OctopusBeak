@@ -5,6 +5,16 @@ const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 
 assert.doesNotMatch(source, /prepareLibrettoRunCdpPatch|libretto-run-cdp-patch-failed/u);
 assert.match(source, /createPGliteOperationalRuntime\(/u);
+assert.match(
+  source,
+  /applyOctopusBeakAppIdentity\(app\);[\s\S]*?const ownsUserData = app\.requestSingleInstanceLock\(\);\s*if \(!ownsUserData\) app\.quit\(\);/u,
+  "the single-instance lock is taken on the final userData path, before anything opens the ledger",
+);
+assert.match(
+  source,
+  /if \(ownsUserData\) app\.whenReady\(\)\.then\(start\)/u,
+  "a second process never starts, so two PGlite instances never open one data directory",
+);
 assert.doesNotMatch(source, /process\.chdir/u, "main opens every App file at an absolute path, so no thread depends on the cwd");
 assert.match(
   source,
