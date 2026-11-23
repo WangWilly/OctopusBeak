@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { admitForeignCurrencyDepositCapture } from "../ledger/canonical/foreign-currency-deposit-admission.ts";
 import { createTestPGlite } from "../ledger/pglite/baseline-test-template.ts";
+import { captureSourceRecordIdsSql } from "../ledger/pglite/capture-manifest.ts";
 import { commitPGliteCanonicalDepositCapture } from "../ledger/pglite/deposit.ts";
 import { PGliteStore } from "../ledger/pglite/transaction.ts";
 import { deriveYuantaForeignSettlementLinkageKey } from "../ledger/canonical/investment-funding-contract.ts";
@@ -1743,7 +1744,12 @@ function yuantaForeignWindowCapture(
       "yuanta-foreign-window-2",
     ));
     const stored = await database.query<{ sequence_lexeme: string; captures: number }>(
-      "SELECT sequence_lexeme, COUNT(*)::int AS captures FROM source_record_scopes GROUP BY sequence_lexeme ORDER BY sequence_lexeme",
+      // Each capture's records, owned or reused (ADR 0152).
+      `SELECT record.sequence_lexeme, COUNT(*)::int AS captures
+         FROM source_captures capture
+         JOIN LATERAL (${captureSourceRecordIdsSql("capture.capture_id")}) member ON TRUE
+         JOIN source_records record ON record.source_record_id = member.source_record_id
+        GROUP BY record.sequence_lexeme ORDER BY record.sequence_lexeme`,
     );
     assert.deepEqual(
       stored.rows.map((row) => [row.sequence_lexeme, row.captures]),

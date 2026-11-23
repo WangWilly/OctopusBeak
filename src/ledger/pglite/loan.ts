@@ -569,7 +569,7 @@ export async function commitPGliteCanonicalLoanCaptureInTransaction(
       balanceObservations: snapshot.capture.balanceObservations.map(balanceObservation),
       withdrawalPolicy: "never-infer",
       recordedAtUtcUs: snapshot.recordedAtUtcUs ?? options.recordedAtUtcUs,
-    }, options);
+    }, options, "any");
     const main = mainAdmitted.result;
     const mainContext = loanContext(mainAdmitted);
     await persistIdentity(transaction, mainContext, { accountKey: snapshot.capture.identity.accountKey, accountNo: snapshot.capture.identity.accountNo, accountType: "loan", stream: "loan" });
@@ -586,7 +586,7 @@ export async function commitPGliteCanonicalLoanCaptureInTransaction(
         transactions: [counterpartFinancialFact(counterpart, snapshot.capture)],
         withdrawalPolicy: "never-infer",
         recordedAtUtcUs: options.recordedAtUtcUs,
-      }, options);
+      }, options, "any");
       const result = admitted.result;
       const context = loanContext(admitted);
       admittedCaptures.push(admitted);

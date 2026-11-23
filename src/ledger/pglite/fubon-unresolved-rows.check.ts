@@ -4,6 +4,7 @@ import * as fubon from "../canonical/fubon-domestic-deposit-admission.ts";
 import { FUBON_HUMAN_ATTESTED_V1_MANIFEST } from "../canonical/fubon-human-attestation.ts";
 import { deriveSourceConnectionIdentityKey } from "../canonical/source-connection-identity.ts";
 import { createTestPGlite } from "./baseline-test-template.ts";
+import { captureSourceRecordIdsSql } from "./capture-manifest.ts";
 import { commitPGliteCanonicalDepositCapture } from "./deposit.ts";
 import { PGliteStore } from "./transaction.ts";
 
@@ -67,9 +68,11 @@ test("a Fubon capture whose only rows are unresolved commits its source evidence
 
 async function sourceRecordStatuses(store: PGliteStore, captureId: string): Promise<string[]> {
   const rows = await store.query<{ payload_json: string }>(
+    // A later capture of the same rows reuses the stored records (ADR 0152).
     `SELECT record.payload_json
-       FROM source_records record
-       JOIN source_captures capture ON capture.capture_id = record.capture_id
+       FROM source_captures capture
+       JOIN LATERAL (${captureSourceRecordIdsSql("capture.capture_id")}) member ON TRUE
+       JOIN source_records record ON record.source_record_id = member.source_record_id
       WHERE capture.capture_key = $1
       ORDER BY record.sequence_lexeme`,
     [captureId],

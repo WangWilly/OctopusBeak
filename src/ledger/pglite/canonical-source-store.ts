@@ -129,9 +129,36 @@ type SourceCaptureWrite = Readonly<{
   sourceConnectionId: Uint8Array;
   identityEpochId: Uint8Array;
   sourceSubjectId: Uint8Array;
+  /** One id per evidence record, in evidence order: the record this Capture stored, or the stored one it reused. */
   sourceRecordIds: readonly Uint8Array[];
   sourceRecordIdsByOccurrence: ReadonlyMap<string, Uint8Array>;
+  /**
+   * Hex ids of the records this Capture reused instead of storing (ADR 0152).
+   * No new revision, balance revision or conversion evidence may cite one.
+   * Loan counterparty evidence is the one row that may: it names the record
+   * and the Capture that sighted it, and its readers join that Capture only
+   * for its observed time, never to the Capture that owns the record.
+   */
+  reusedSourceRecordIds: ReadonlySet<string>;
 }>;
+
+/**
+ * Whether rows a domain command writes after the shared commit may cite this
+ * Capture's Source Records. A record a new row cites is stored again, never
+ * reused (ADR 0152), so a command that writes such rows must say `any`.
+ */
+export type PGliteDomainRecordCitation = "none" | "any";
+
+/** What a commit will write about its Capture's records, decided before any record is stored. */
+type RecordCitationPlan = Readonly<{
+  /** Occurrences a new row of this commit cites; `any` when a domain command may cite every record. */
+  cited: ReadonlySet<string> | "any";
+  /** Hex ids of the source assertions this commit's unchanged facts link each occurrence to. */
+  linkedAssertions: ReadonlyMap<string, ReadonlySet<string>>;
+}>;
+
+const NOTHING_CITED: RecordCitationPlan = { cited: new Set(), linkedAssertions: new Map() };
+const ANY_RECORD_CITED: RecordCitationPlan = { cited: "any", linkedAssertions: new Map() };
 
 /**
  * Internal worker-domain seam for typed extensions which must be committed
@@ -192,6 +219,10 @@ function bytesValue(value: unknown, label = "Canonical identity"): Uint8Array {
     if (/^[0-9a-f]{32}$/iu.test(hex)) return Uint8Array.from(Buffer.from(hex, "hex"));
   }
   throw new Error(`${label} is not a UUID bytea value.`);
+}
+
+function hexId(value: unknown, label = "Canonical identity"): string {
+  return Buffer.from(bytesValue(value, label)).toString("hex");
 }
 
 function integerValue(value: unknown, label: string): number {
@@ -905,14 +936,40 @@ async function persistOccurrenceGroupCoverage(
         commitId,
       ],
     );
-    for (const group of counts.values()) {
-      if (
-        group.scopeKey !== entry.scopeKey ||
-        (entry.bucketKeys === undefined
-          ? group.partitionDate < entry.startDate || group.partitionDate > entry.endDate
-          : !entry.bucketKeys.includes(group.bucketKey))
-      )
-        continue;
+    const covered = [...counts.values()].filter((group) =>
+      group.scopeKey === entry.scopeKey &&
+      (entry.bucketKeys === undefined
+        ? group.partitionDate >= entry.startDate && group.partitionDate <= entry.endDate
+        : entry.bucketKeys.includes(group.bucketKey)));
+    if (covered.length === 0) continue;
+    // The member-loss guard reads the highest count stored for a subject,
+    // record kind, scope key, contract version, date and fingerprint, so a
+    // count that does not raise that maximum adds nothing (ADR 0152).
+    const dates = covered.map((group) => group.partitionDate).sort();
+    const stored = await txQuery<{ partition_date: string; fingerprint: string; occurrence_count: number | string }>(
+      transaction,
+      `SELECT group_count.partition_date::text AS partition_date,
+              group_count.fingerprint,
+              MAX(group_count.occurrence_count) AS occurrence_count
+         FROM source_occurrence_group_counts group_count
+         JOIN source_occurrence_group_coverages group_coverage
+           ON group_coverage.coverage_id = group_count.coverage_id
+        WHERE group_coverage.source_subject_id = ?
+          AND group_coverage.record_kind = ?
+          AND group_coverage.scope_key = ?
+          AND group_coverage.contract_version = ?
+          AND group_count.partition_date BETWEEN ?::date AND ?::date
+        GROUP BY group_count.partition_date, group_count.fingerprint`,
+      [sourceSubjectId, evidence.recordKind, entry.scopeKey, entry.contractVersion, dates[0], dates[dates.length - 1]],
+    );
+    const storedMaximum = new Map(stored.rows.map((row) => [
+      occurrenceGroupCountKey(entry.scopeKey, row.partition_date, row.fingerprint),
+      integerValue(row.occurrence_count, "Occurrence group count"),
+    ]));
+    for (const group of covered) {
+      const partition = occurrenceGroupCountKey(entry.scopeKey, group.partitionDate, group.fingerprint);
+      if (group.count <= (storedMaximum.get(partition) ?? 0)) continue;
+      storedMaximum.set(partition, group.count);
       await txQuery(
         transaction,
         `INSERT INTO source_occurrence_group_counts(
@@ -938,10 +995,282 @@ function normalizeSourceScopeDate(
     : value;
 }
 
+/** `IN (...)` operands read from one JSON array parameter, so a large capture needs no placeholder per value. */
+const TEXT_VALUES_SQL = "SELECT jsonb_array_elements_text(?::jsonb)";
+const HEX_ID_VALUES_SQL = "SELECT decode(hex_id, 'hex') FROM jsonb_array_elements_text(?::jsonb) AS hex_id";
+
+/** The plan and the write must agree: a row written now may cite only a record this Capture stored. */
+function assertStoredByThisCapture(capture: SourceCaptureWrite, sourceRecordId: Uint8Array, row: string): void {
+  if (capture.reusedSourceRecordIds.has(hexId(sourceRecordId)))
+    throw new Error(`A reused Source Record cannot back ${row}.`);
+}
+
+/**
+ * Which occurrences the shared financial commit will cite from a new row, and
+ * which source assertions its unchanged facts link each occurrence to. It
+ * reads what commitFinancialFacts and persistBalanceObservations will read,
+ * before the capture's records are stored (ADR 0152).
+ */
+async function planFinancialCitations(
+  transaction: PGliteTransaction,
+  request: PGliteCanonicalFinancialCommitRequest,
+): Promise<RecordCitationPlan> {
+  const cited = new Set<string>();
+  const linkedAssertions = new Map<string, Set<string>>();
+  const evidence = request.capture;
+  const account = await first<{ account_id: unknown }>(
+    transaction,
+    `SELECT account.account_id
+       FROM financial_accounts account
+       JOIN source_connections connection
+         ON connection.source_connection_id = account.source_connection_id
+       JOIN identity_epochs epoch
+         ON epoch.identity_epoch_id = account.identity_epoch_id
+      WHERE connection.integration_namespace = ?
+        AND connection.source_connection_key = ?
+        AND epoch.epoch_key = ?
+        AND account.stream = ?
+        AND account.source_account_key = ?`,
+    [
+      evidence.integrationNamespace,
+      evidence.sourceConnectionKey,
+      evidence.identityEpoch,
+      evidence.stream,
+      request.account.sourceAccountKey,
+    ],
+  );
+  const latestRevisions = new Map<string, Row>();
+  if (account && request.transactions.length > 0) {
+    const rows = await txQuery<Row>(
+      transaction,
+      `SELECT DISTINCT ON (financial.source_sequence)
+              revision.*,
+              financial.source_sequence,
+              assertion.assertion_id AS source_assertion_id,
+              EXISTS (
+                SELECT 1 FROM transaction_conversion_evidence conversion
+                 WHERE conversion.revision_id = revision.revision_id
+              ) AS has_conversion_evidence
+         FROM financial_transactions financial
+         JOIN transaction_revisions revision
+           ON revision.transaction_id = financial.transaction_id
+         LEFT JOIN assertions assertion
+           ON assertion.origin = 'source' AND assertion.revision_id = revision.revision_id
+        WHERE financial.account_id = ?
+          AND financial.source_sequence IN (${TEXT_VALUES_SQL})
+        ORDER BY financial.source_sequence, revision.revision_number DESC`,
+      [account.account_id, JSON.stringify(request.transactions.map((fact) => fact.sourceSequence))],
+    );
+    for (const row of rows.rows) latestRevisions.set(String(row.source_sequence), row);
+  }
+  for (const fact of request.transactions) {
+    const latest = latestRevisions.get(fact.sourceSequence);
+    const unchanged = latest !== undefined &&
+      latest.source_assertion_id != null &&
+      sameFinancialRevision(latest, fact) &&
+      (fact.conversionEvidence == null || latest.has_conversion_evidence === true);
+    if (!unchanged) {
+      cited.add(fact.sourceOccurrenceKey);
+      continue;
+    }
+    const linked = linkedAssertions.get(fact.sourceOccurrenceKey) ?? new Set<string>();
+    linked.add(hexId(latest.source_assertion_id, "Financial assertion identity"));
+    linkedAssertions.set(fact.sourceOccurrenceKey, linked);
+  }
+  for (const observation of request.balanceObservations ?? []) {
+    const currency = observation.currency.toUpperCase();
+    const measured = account && await first<Row>(
+      transaction,
+      `SELECT 1 AS measured
+         FROM balance_observation_revisions revision
+        WHERE revision.observation_id = (
+                SELECT observation_id FROM balance_observations
+                 WHERE account_id = ? AND observation_key = ? AND balance_kind = ? AND balance_currency = ?
+                 ORDER BY observation_id LIMIT 1
+              )
+          AND revision.currency = ? AND revision.effective_at = ?`,
+      [
+        account.account_id,
+        canonicalBalanceObservationKey({ ...observation, currency }),
+        observation.balanceKind,
+        currency,
+        currency,
+        canonicalBalanceInstant(observation.effectiveAt),
+      ],
+    );
+    if (!measured) cited.add(observation.sourceOccurrenceKey);
+  }
+  return { cited, linkedAssertions };
+}
+
+type CoverageShapeEntry = Readonly<{
+  scopeKey: string;
+  contractVersion: string;
+  inventoried: boolean;
+}>;
+
+/**
+ * A capture's occurrence-group coverage for one record: the contract version
+ * of each entry with the record's group scope key, and whether that entry
+ * carries a bucket inventory. Expected occurrences are found through exactly
+ * these fields of the capture that owns the latest copy, so a record is
+ * reused only from a capture whose shape equals the new one's (ADR 0152).
+ * The coverage dates move with the collection window and no reader reaches
+ * them through a record, so they are not part of the shape.
+ */
+function coverageShape(entries: readonly CoverageShapeEntry[], scopeKey: string | null | undefined): string {
+  return JSON.stringify([...new Set(
+    entries
+      .filter((entry) => entry.scopeKey === scopeKey)
+      .map((entry) => JSON.stringify([entry.contractVersion, entry.inventoried])),
+  )].sort());
+}
+
+type StoredSourceRecord = Readonly<{
+  source_record_id: unknown;
+  capture_id: unknown;
+  occurrence_key: string;
+  sequence_lexeme: string;
+  provider_key: string | null;
+  content_hash: string;
+  collision_key: string | null;
+  description: string | null;
+  payload_json: string;
+  occurrence_group_scope_key: string | null;
+  occurrence_group_fingerprint: string | null;
+  occurrence_group_partition_date: string | null;
+  occurrence_group_ordinal: number | string | null;
+  occurrence_group_bucket_key: string | null;
+}>;
+
+function sameStoredSourceRecord(
+  stored: StoredSourceRecord,
+  record: PGliteCanonicalSourceEvidence["records"][number],
+): boolean {
+  return stored.payload_json === canonicalSourceRecordJson(record) &&
+    stored.content_hash === record.contentHash &&
+    stored.sequence_lexeme === (record.sequenceLexeme ?? record.providerKey) &&
+    stored.provider_key === record.providerKey &&
+    stored.collision_key === (record.collisionKey ?? null) &&
+    stored.description === (record.description ?? null) &&
+    samePersistedOccurrenceGroup(stored, record.occurrenceGroup) &&
+    stored.occurrence_group_bucket_key === (record.occurrenceGroupBucketKey ?? null);
+}
+
+/**
+ * The stored Source Record each incoming record reuses instead of being
+ * stored again, by occurrence key (ADR 0152). A record reuses the latest
+ * stored copy for its subject, record kind and occurrence key when:
+ * - no new row of this commit cites the record;
+ * - every stored column equals the incoming one;
+ * - the copy's capture has the same coverage shape for the record;
+ * - the copy backs exactly the source assertions this commit links the
+ *   record to, so capture membership names the same assertions either way.
+ */
+async function planSourceRecordReuse(
+  transaction: PGliteTransaction,
+  evidence: PGliteCanonicalSourceEvidence,
+  sourceSubjectId: Uint8Array,
+  citations: RecordCitationPlan,
+): Promise<ReadonlyMap<string, Uint8Array>> {
+  const reusable = new Map<string, Uint8Array>();
+  const cited = citations.cited;
+  if (cited === "any") return reusable;
+  const sightings = new Map<string, number>();
+  for (const record of evidence.records)
+    sightings.set(record.occurrenceKey, (sightings.get(record.occurrenceKey) ?? 0) + 1);
+  // A key seen twice is left to the store's own uniqueness rule.
+  const candidates = evidence.records.filter((record) =>
+    !cited.has(record.occurrenceKey) && sightings.get(record.occurrenceKey) === 1);
+  if (candidates.length === 0) return reusable;
+
+  const latestCopies = await txQuery<StoredSourceRecord>(
+    transaction,
+    `SELECT DISTINCT ON (source_record.occurrence_key)
+            source_record.source_record_id, source_record.capture_id, source_record.occurrence_key,
+            source_record.sequence_lexeme, source_record.provider_key, source_record.content_hash,
+            source_record.collision_key, source_record.description, source_record.payload_json,
+            source_record.occurrence_group_scope_key, source_record.occurrence_group_fingerprint,
+            source_record.occurrence_group_partition_date::text AS occurrence_group_partition_date,
+            source_record.occurrence_group_ordinal, source_record.occurrence_group_bucket_key
+       FROM source_records source_record
+       JOIN canonical_commits commit_row
+         ON commit_row.commit_id = source_record.commit_id
+      WHERE source_record.source_subject_id = ?
+        AND source_record.record_kind = ?
+        AND source_record.occurrence_key IN (${TEXT_VALUES_SQL})
+      ORDER BY source_record.occurrence_key, commit_row.commit_sequence DESC`,
+    [sourceSubjectId, evidence.recordKind, JSON.stringify(candidates.map((record) => record.occurrenceKey))],
+  );
+  const latestByOccurrence = new Map(latestCopies.rows.map((row) => [row.occurrence_key, row]));
+  const equalCopies = candidates.flatMap((record) => {
+    const stored = latestByOccurrence.get(record.occurrenceKey);
+    return stored && sameStoredSourceRecord(stored, record) ? [{ record, stored }] : [];
+  });
+  if (equalCopies.length === 0) return reusable;
+
+  const ownerCoverage = new Map<string, CoverageShapeEntry[]>();
+  const coverageRows = await txQuery<{
+    capture_id: unknown;
+    scope_key: string;
+    contract_version: string;
+    inventoried: boolean;
+  }>(
+    transaction,
+    `SELECT capture_id, scope_key, contract_version, bucket_inventory_json IS NOT NULL AS inventoried
+       FROM source_occurrence_group_coverages
+      WHERE capture_id IN (${HEX_ID_VALUES_SQL})`,
+    [JSON.stringify([...new Set(equalCopies.map(({ stored }) => hexId(stored.capture_id)))])],
+  );
+  for (const row of coverageRows.rows) {
+    const owner = hexId(row.capture_id);
+    ownerCoverage.set(owner, [...(ownerCoverage.get(owner) ?? []), {
+      scopeKey: row.scope_key,
+      contractVersion: row.contract_version,
+      inventoried: row.inventoried,
+    }]);
+  }
+  const incomingCoverage = (evidence.occurrenceGroupCoverage ?? []).map((entry) => ({
+    scopeKey: entry.scopeKey,
+    contractVersion: entry.contractVersion,
+    inventoried: entry.bucketKeys !== undefined,
+  }));
+
+  const backedAssertions = new Map<string, Set<string>>();
+  const provenanceRows = await txQuery<{ source_record_id: unknown; assertion_id: unknown }>(
+    transaction,
+    `SELECT provenance.source_record_id, provenance.assertion_id
+       FROM assertion_provenance provenance
+       JOIN assertions assertion
+         ON assertion.assertion_id = provenance.assertion_id
+      WHERE provenance.source_record_id IN (${HEX_ID_VALUES_SQL})
+        AND assertion.origin = 'source'
+        AND assertion.field_name = 'transaction_revision'`,
+    [JSON.stringify(equalCopies.map(({ stored }) => hexId(stored.source_record_id)))],
+  );
+  for (const row of provenanceRows.rows) {
+    const recordId = hexId(row.source_record_id);
+    backedAssertions.set(recordId, (backedAssertions.get(recordId) ?? new Set()).add(hexId(row.assertion_id)));
+  }
+
+  for (const { record, stored } of equalCopies) {
+    const scopeKey = record.occurrenceGroup?.scopeKey;
+    if (coverageShape(ownerCoverage.get(hexId(stored.capture_id)) ?? [], scopeKey) !==
+      coverageShape(incomingCoverage, scopeKey))
+      continue;
+    const backed = backedAssertions.get(hexId(stored.source_record_id)) ?? new Set<string>();
+    const linked = citations.linkedAssertions.get(record.occurrenceKey) ?? new Set<string>();
+    if (backed.size !== linked.size || [...linked].some((assertion) => !backed.has(assertion))) continue;
+    reusable.set(record.occurrenceKey, bytesValue(stored.source_record_id, "Reused source record identity"));
+  }
+  return reusable;
+}
+
 async function persistSourceCapture(
   transaction: PGliteTransaction,
   evidence: PGliteCanonicalSourceEvidence,
   options: PGliteCanonicalCommitOptions,
+  citations: RecordCitationPlan,
   withdrawnMembers?: readonly WithdrawnMember[],
 ): Promise<SourceCaptureWrite> {
   throwIfCancelled(options.signal);
@@ -1082,15 +1411,22 @@ async function persistSourceCapture(
     captureId,
     commitId,
   );
+  const reusable = await planSourceRecordReuse(transaction, evidence, identity.sourceSubjectId, citations);
   const sourceRecordIds: Uint8Array[] = [];
   const sourceRecordIdsByOccurrence = new Map<string, Uint8Array>();
+  const reusedSourceRecordIds: Uint8Array[] = [];
   for (const record of evidence.records) {
     throwIfCancelled(options.signal);
-    const sourceRecordId = uuidBytes();
-    const payloadJson = canonicalSourceRecordJson(record);
-    const sequenceLexeme = record.sequenceLexeme ?? record.providerKey;
+    const reused = reusable.get(record.occurrenceKey);
+    const sourceRecordId = reused ?? uuidBytes();
     sourceRecordIds.push(sourceRecordId);
     sourceRecordIdsByOccurrence.set(record.occurrenceKey, sourceRecordId);
+    if (reused) {
+      reusedSourceRecordIds.push(reused);
+      continue;
+    }
+    const payloadJson = canonicalSourceRecordJson(record);
+    const sequenceLexeme = record.sequenceLexeme ?? record.providerKey;
     await txQuery(
       transaction,
       `INSERT INTO source_records(
@@ -1142,6 +1478,13 @@ async function persistSourceCapture(
       [sourceRecordId, captureId, commitId],
     );
   }
+  if (reusedSourceRecordIds.length > 0)
+    await txQuery(
+      transaction,
+      `INSERT INTO capture_source_record_manifests(capture_id, source_record_ids, record_count, commit_id)
+       VALUES (?, ?, ?, ?)`,
+      [captureId, Buffer.concat(reusedSourceRecordIds), reusedSourceRecordIds.length, commitId],
+    );
   return {
     receipt: { captureId: evidence.captureId, knowledgePoint: commitSequence },
     captureId,
@@ -1152,6 +1495,7 @@ async function persistSourceCapture(
     sourceSubjectId: identity.sourceSubjectId,
     sourceRecordIds: Object.freeze(sourceRecordIds),
     sourceRecordIdsByOccurrence,
+    reusedSourceRecordIds: new Set(reusedSourceRecordIds.map((id) => hexId(id))),
   };
 }
 
@@ -1330,6 +1674,7 @@ async function persistBalanceObservations(
       deduplicatedRevisionCount += 1;
       continue;
     }
+    assertStoredByThisCapture(capture, sourceRecordId, "a balance revision");
     const prior = await first<{ revision_number: number | string }>(
       transaction,
       "SELECT COALESCE(MAX(revision_number), 0) AS revision_number FROM balance_observation_revisions WHERE observation_id = ?",
@@ -1622,6 +1967,7 @@ async function persistConversionEvidence(
       );
     return;
   }
+  assertStoredByThisCapture(capture, sourceRecordId, "conversion evidence");
   await txQuery(
     transaction,
     `INSERT INTO transaction_conversion_evidence(
@@ -1715,6 +2061,7 @@ async function commitFinancialFacts(
       : uuidBytes();
     let assertionId: Uint8Array;
     if (revisionCreated) {
+      assertStoredByThisCapture(capture, sourceRecordId, "a transaction revision");
       if (latest?.revision_id) {
         const priorAssertion = await first<{ assertion_id: unknown }>(
           transaction,
@@ -1850,10 +2197,16 @@ async function commitFinancialFacts(
     }
     await txQuery(
       transaction,
+      // One source row per assertion and record. The table's unique key also
+      // holds the commit, so it would admit one row per commit (ADR 0152).
       `INSERT INTO assertion_provenance(
          assertion_id, source_record_id, run_id, enrichment_run_id, coordinate_id, commit_id
-       ) VALUES (?, ?, NULL, NULL, NULL, ?)`,
-      [assertionId, sourceRecordId, capture.commitId],
+       ) SELECT ?::bytea, ?::bytea, NULL, NULL, NULL, ?::bytea
+          WHERE NOT EXISTS (
+            SELECT 1 FROM assertion_provenance linked
+             WHERE linked.assertion_id = ? AND linked.source_record_id = ?
+          )`,
+      [assertionId, sourceRecordId, capture.commitId, assertionId, sourceRecordId],
     );
     await persistConversionEvidence(
       transaction,
@@ -1885,23 +2238,34 @@ async function persistAdmission(
     validatePGliteCanonicalSourceEvidence(evidence);
     const snapshot = cloneEvidence(evidence);
     throwIfCancelled(options.signal);
+    // The caller may later write rows that cite these records, and nothing
+    // here can check them, so a standalone admission stores every record.
     return await database.transaction((transaction) =>
-      persistSourceCapture(transaction, snapshot, options),
+      persistSourceCapture(transaction, snapshot, options, ANY_RECORD_CITED),
     );
   } catch (error) {
     return classifyDatabaseError(error);
   }
 }
 
-/** Admit source evidence inside a caller-owned PGlite transaction. */
+/**
+ * Admit source evidence inside a caller-owned PGlite transaction.
+ * `domainRows` says whether the caller's own rows may cite the records.
+ */
 export async function admitPGliteCanonicalSourceCaptureInTransaction(
   transaction: PGliteTransaction,
   request: PGliteCanonicalSourceAdmissionRequest,
-  options: PGliteCanonicalCommitOptions = {},
+  options: PGliteCanonicalCommitOptions,
+  domainRows: PGliteDomainRecordCitation,
 ): Promise<PGliteCanonicalSourceCaptureTransactionResult> {
   validatePGliteCanonicalSourceEvidence(request);
   throwIfCancelled(options.signal);
-  return persistSourceCapture(transaction, cloneEvidence(request), options);
+  return persistSourceCapture(
+    transaction,
+    cloneEvidence(request),
+    options,
+    domainRows === "any" ? ANY_RECORD_CITED : NOTHING_CITED,
+  );
 }
 
 /** What the shared financial commit wrote, for a domain command that adds its own rows before projecting. */
@@ -1915,15 +2279,17 @@ export type PGliteAdmittedFinancialCapture = Readonly<{
  * Run the shared financial commit without refreshing the current projection.
  * The caller writes its domain rows and then calls
  * refreshPGliteAdmittedFinancialProjection once for everything it admitted.
+ * `domainRows` says whether those rows may cite the capture's records.
  */
 export async function admitPGliteCanonicalFinancialCaptureInTransaction(
   transaction: PGliteTransaction,
   request: PGliteCanonicalFinancialCommitRequest,
-  options: PGliteCanonicalCommitOptions = {},
+  options: PGliteCanonicalCommitOptions,
+  domainRows: PGliteDomainRecordCitation,
 ): Promise<PGliteAdmittedFinancialCapture> {
   const snapshot = cloneFinancialRequest(request);
   validateFinancialRequest(snapshot);
-  return admitFinancialRequestInTransaction(transaction, snapshot, options);
+  return admitFinancialRequestInTransaction(transaction, snapshot, options, domainRows);
 }
 
 /** Refresh the current projection once for every admitted capture, cut off at the latest commit. */
@@ -2035,7 +2401,7 @@ async function commitFinancialRequestInTransaction(
   request: PGliteCanonicalFinancialCommitRequest,
   options: PGliteCanonicalCommitOptions,
 ): Promise<PGliteCanonicalFinancialCommitResult> {
-  const admitted = await admitFinancialRequestInTransaction(transaction, request, options);
+  const admitted = await admitFinancialRequestInTransaction(transaction, request, options, "none");
   await refreshPGliteAdmittedFinancialProjection(transaction, [admitted], options);
   throwIfCancelled(options.signal);
   return admitted.result;
@@ -2045,6 +2411,7 @@ async function admitFinancialRequestInTransaction(
   transaction: PGliteTransaction,
   submitted: PGliteCanonicalFinancialCommitRequest,
   options: PGliteCanonicalCommitOptions,
+  domainRows: PGliteDomainRecordCitation,
 ): Promise<PGliteAdmittedFinancialCapture> {
   throwIfCancelled(options.signal);
   const request = await continueRevisedOccurrences(transaction, submitted);
@@ -2064,6 +2431,7 @@ async function admitFinancialRequestInTransaction(
     transaction,
     request.capture,
     transactionOptions,
+    domainRows === "any" ? ANY_RECORD_CITED : await planFinancialCitations(transaction, request),
     [...(request.occurrenceSupersessions ?? []), ...(request.occurrenceWithdrawals ?? [])],
   );
   const accountId = await ensureFinancialAccount(transaction, request, capture);
@@ -2095,7 +2463,11 @@ async function admitFinancialRequestInTransaction(
   };
 }
 
-/** Admit source evidence through one worker-owned PGlite transaction. */
+/**
+ * Admit source evidence through one worker-owned PGlite transaction. Every
+ * record is stored, never reused (ADR 0152): rows the caller writes after
+ * this transaction may cite the records, and no write-time check covers them.
+ */
 export async function admitPGliteCanonicalSourceCapture(
   database: PGliteStore,
   request: PGliteCanonicalSourceAdmissionRequest,

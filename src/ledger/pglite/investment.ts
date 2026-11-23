@@ -628,7 +628,7 @@ export async function commitPGliteCanonicalInvestmentCapture(
       transactions: [...snapshot.capture.transactions.map((row) => financialFact(snapshot.capture, row)), ...(margin ? [margin] : [])],
       withdrawalPolicy: "never-infer",
       recordedAtUtcUs: snapshot.recordedAtUtcUs ?? options.recordedAtUtcUs,
-    }, options);
+    }, options, "any");
     const result = admitted.result;
     const context: InvestmentContext = { capture: admitted.capture, accountId: admitted.accountId, commitId: admitted.capture.commitId };
     await persistExtensions(transaction, context, snapshot.capture, result);
@@ -642,7 +642,7 @@ export async function commitPGliteCanonicalInvestmentCapture(
         balanceObservations: [marginBalance.observation],
         withdrawalPolicy: "never-infer",
         recordedAtUtcUs: snapshot.recordedAtUtcUs ?? options.recordedAtUtcUs,
-      }, options));
+      }, options, "any"));
     await refreshPGliteAdmittedFinancialProjection(transaction, admittedCaptures, options);
     assertPGliteCanonicalCommitNotCancelled(options.signal);
     return {

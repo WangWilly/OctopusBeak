@@ -704,7 +704,7 @@ export async function commitPGliteCanonicalDepositCapture(
   let result: PGliteCanonicalFinancialCommitResult;
   try {
     result = await store.transaction(async (transaction) => {
-      const admitted = await admitPGliteCanonicalFinancialCaptureInTransaction(transaction, toFinancialRequest(normalized), options);
+      const admitted = await admitPGliteCanonicalFinancialCaptureInTransaction(transaction, toFinancialRequest(normalized), options, "none");
       await refreshPGliteAdmittedFinancialProjection(transaction, [admitted], options);
       // A TWD deposit row can complete or break a MaiCoin transfer match (ADR 0145).
       await resolvePGliteMaicoinTwdTransfersInTransaction(transaction, options);

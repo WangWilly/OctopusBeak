@@ -1,16 +1,19 @@
 /**
  * How much the canonical store grows when a source is synced again with
- * nothing new (ADR 0152). It commits the same capture repeatedly, changing
- * only the capture id, and fails when any table gains rows in proportion to
- * the records re-sighted rather than a fixed number per capture.
+ * nothing new (ADR 0152). It commits the same records repeatedly, each time
+ * under a new capture id and a window that starts and ends a day later, as a
+ * collection window does, so the oldest rows age out. It fails when any table
+ * gains rows in proportion to the records re-sighted rather than a fixed
+ * number per capture.
  *
  *   npm run check:pglite-resync-growth
  *
  * PGLITE_RESYNC_RECORDS (default 200) and PGLITE_RESYNC_SYNCS (default 10)
  * size the run; PGLITE_RESYNC_MODE is `deposit`, `card-route` or `both`.
  * Both modes go through the generic commit; `card-route` uses a credit-card
- * route and bucket coverage but not the credit-card command, whose own rows
- * a later step measures.
+ * route and bucket coverage, one bucket per day so a day leaves the inventory
+ * with the window, but not the credit-card command, whose own rows a later
+ * step measures.
  */
 import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
@@ -50,15 +53,18 @@ const ROWS_PER_RESYNC_BUDGET = 8;
 /**
  * Bytes an unchanged re-sync may add per record seen again: a reused record
  * costs about 16 bytes in its capture's manifest, and a capture's own rows
- * are spread over its records. Today it is about 5,100.
+ * are spread over its records. Storing each record again cost about 3,900.
  */
 const BYTES_PER_RECORD_BUDGET = 256;
 
 const token = (value: string) => `sha256:${createHash("sha256").update(value, "utf8").digest("base64url")}`;
 const day = (index: number) => new Date(Date.UTC(2026, 0, 1) + index * 86_400_000).toISOString().slice(0, 10);
 
-/** One complete bounded capture of `RECORDS` synthetic rows; only `captureId` differs between syncs. */
-function capture(mode: Mode, captureId: string): PGliteCanonicalFinancialCommitRequest {
+/** One complete bounded capture of the `RECORDS` synthetic rows inside the window, which moves a day per sync. */
+function capture(mode: Mode, sync: number): PGliteCanonicalFinancialCommitRequest {
+  const captureId = `${mode}-capture-${sync}`;
+  const startDate = day(sync - 1);
+  const endDate = day(180 + sync);
   const card = mode === "card-route";
   const scopeKey = token("scope");
   const routeKey = card ? "fubon/credit-card/human-attested-v2" : "fubon/domestic-deposit/human-attested-v1";
@@ -68,8 +74,7 @@ function capture(mode: Mode, captureId: string): PGliteCanonicalFinancialCommitR
     index,
     date: day((index % 10 === 9 ? index - 1 : index) % 180),
     fingerprint: token(`row-${index % 10 === 9 ? index - 1 : index}`),
-    bucketKey: card ? `2026-${String(1 + Math.floor((index % 180) / 30)).padStart(2, "0")}` : undefined,
-  }));
+  })).filter((row) => row.date >= startDate).map((row) => ({ ...row, bucketKey: card ? row.date : undefined }));
   const slots = assignOccurrenceSlots({
     rows,
     complete: true,
@@ -114,8 +119,8 @@ function capture(mode: Mode, captureId: string): PGliteCanonicalFinancialCommitR
         sourceField: "accountNumber",
       },
       scope: {
-        startDate: "2026-01-01",
-        endDate: "2026-06-30",
+        startDate,
+        endDate,
         dateFormat: "YYYY-MM-DD",
         kind: "bounded-range",
         completeness: "complete-range",
@@ -127,8 +132,8 @@ function capture(mode: Mode, captureId: string): PGliteCanonicalFinancialCommitR
       records,
       occurrenceGroupCoverage: [{
         scopeKey,
-        startDate: "2026-01-01",
-        endDate: "2026-06-30",
+        startDate,
+        endDate,
         contractVersion,
         ...(bucketKeys ? { bucketKeys } : {}),
       }],
@@ -196,13 +201,13 @@ async function deadTuples(store: PGliteStore): Promise<number> {
 async function measure(mode: Mode) {
   const store = await installFinancialStore(await PGlite.create());
   try {
-    await commitPGliteCanonicalFinancialCapture(store, capture(mode, `${mode}-capture-1`));
+    await commitPGliteCanonicalFinancialCapture(store, capture(mode, 1));
     const afterFirst = await rowCounts(store);
     const bytesAfterFirst = await databaseBytes(store);
     const deadAfterFirst = await deadTuples(store);
     const started = performance.now();
     for (let sync = 2; sync <= SYNCS; sync += 1) {
-      await commitPGliteCanonicalFinancialCapture(store, capture(mode, `${mode}-capture-${sync}`));
+      await commitPGliteCanonicalFinancialCapture(store, capture(mode, sync));
     }
     const resyncMs = (performance.now() - started) / (SYNCS - 1);
     const afterLast = await rowCounts(store);
