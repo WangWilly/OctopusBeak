@@ -8,9 +8,12 @@ import type {
 import {
   assertPGliteCanonicalCommitNotCancelled,
   admitPGliteCanonicalFinancialCaptureInTransaction,
+  assertPGliteStoredByThisCapture,
+  findPGliteFinancialAccountId,
   refreshPGliteAdmittedFinancialProjection,
   findPGliteSourceSubjectId,
   listPGliteExpectedOccurrences,
+  type PGliteAdmittedFinancialCapture,
   type PGliteCanonicalCommitOptions,
   type PGliteCanonicalOccurrenceSupersessionInput,
   type PGliteCanonicalOccurrenceWithdrawalInput,
@@ -532,6 +535,239 @@ async function persistIdentity(transaction: PGliteTransaction, namespace: string
     ) VALUES (?, ?, ?, ?, ?)`, [namespace, accountId, identity.accountNaturalKey, identity.identityMethod, captureId]);
 }
 
+/** A card details row as a commit compares it with the latest stored one; ids are hex. */
+type CardDetails = Readonly<{
+  revisionId: string;
+  instrumentId: string;
+  billingStatus: string;
+  consumeDate: string | null;
+  postingDate: string | null;
+  effectiveDateBasis: string | null;
+  statementKey: string | null;
+}>;
+
+/** A card lifecycle row as a commit compares it with the latest stored one; ids are hex. */
+type CardLifecycle = Readonly<{
+  revisionId: string;
+  instrumentId: string;
+  billingStatus: string;
+  statementKey: string | null;
+}>;
+
+function cardDetails(input: PGliteCanonicalCreditCardTransaction, revisionId: string, instrumentId: string): CardDetails {
+  return {
+    revisionId,
+    instrumentId,
+    billingStatus: input.billingStatus,
+    consumeDate: input.consumeDate ?? null,
+    postingDate: input.postingDate ?? null,
+    effectiveDateBasis: input.effectiveDateBasis ?? null,
+    statementKey: input.statementKey ?? null,
+  };
+}
+
+function cardLifecycle(input: PGliteCanonicalCreditCardTransaction, revisionId: string, instrumentId: string): CardLifecycle {
+  return { revisionId, instrumentId, billingStatus: input.billingStatus, statementKey: input.statementKey ?? null };
+}
+
+const sameDetails = (stored: CardDetails | null, desired: CardDetails): boolean =>
+  stored !== null &&
+  stored.revisionId === desired.revisionId &&
+  stored.instrumentId === desired.instrumentId &&
+  stored.billingStatus === desired.billingStatus &&
+  stored.consumeDate === desired.consumeDate &&
+  stored.postingDate === desired.postingDate &&
+  stored.effectiveDateBasis === desired.effectiveDateBasis &&
+  stored.statementKey === desired.statementKey;
+
+const sameLifecycle = (stored: CardLifecycle | null, desired: CardLifecycle): boolean =>
+  stored !== null &&
+  stored.revisionId === desired.revisionId &&
+  stored.instrumentId === desired.instrumentId &&
+  stored.billingStatus === desired.billingStatus &&
+  stored.statementKey === desired.statementKey;
+
+type StoredCardTransaction = Readonly<{
+  latestRevisionId: string;
+  details: CardDetails | null;
+  lifecycle: CardLifecycle | null;
+}>;
+
+/**
+ * The latest stored card rows of an account, read before admission. A commit
+ * writes a card row only where it differs from these (ADR 0152). The latest
+ * row of a key is the one written by the highest commit sequence, as
+ * listLatestLifecycle reads it.
+ */
+type StoredCardRows = Readonly<{
+  /** Instrument id by instrument key. */
+  instrumentIds: ReadonlyMap<string, string>;
+  /** The occurrence key of each instrument's latest evidence, by instrument id. */
+  instrumentEvidence: ReadonlyMap<string, string>;
+  /** By source sequence. */
+  transactions: ReadonlyMap<string, StoredCardTransaction>;
+  /** Statement revision id by statement key and revision key. */
+  statementRevisionIds: ReadonlyMap<string, string>;
+  /** The statement revision of each statement's latest summary evidence, by statement key. */
+  statementSummaries: ReadonlyMap<string, string>;
+}>;
+
+const statementRevisionKey = (statementKey: string, revisionKey: string): string => JSON.stringify([statementKey, revisionKey]);
+const hex = (value: unknown): string => Buffer.from(bytes(value)).toString("hex");
+const nullableText = (value: unknown): string | null => (value === null || value === undefined ? null : String(value));
+
+async function readStoredCardRows(
+  transaction: PGliteTransaction,
+  request: PGliteCanonicalCreditCardCaptureRequest,
+): Promise<StoredCardRows> {
+  const stored = {
+    instrumentIds: new Map<string, string>(),
+    instrumentEvidence: new Map<string, string>(),
+    transactions: new Map<string, StoredCardTransaction>(),
+    statementRevisionIds: new Map<string, string>(),
+    statementSummaries: new Map<string, string>(),
+  };
+  const accountId = await findPGliteFinancialAccountId(transaction, request.capture, request.account.sourceAccountKey);
+  if (!accountId) return stored;
+  const namespace = request.capture.integrationNamespace;
+  if (request.instruments.length > 0)
+    for (const row of await query<{ instrument_key: string; instrument_id: unknown; evidence_key: string | null }>(transaction, `
+      SELECT instrument.instrument_key, instrument.instrument_id, evidence.occurrence_key AS evidence_key
+      FROM canonical_credit_card_instruments instrument
+      LEFT JOIN LATERAL (
+        SELECT source_record.occurrence_key
+        FROM canonical_credit_card_instrument_evidence evidence
+        JOIN source_records source_record ON source_record.source_record_id = evidence.source_record_id
+        JOIN source_captures source_capture ON source_capture.capture_id = evidence.capture_id
+        JOIN canonical_commits commit_row ON commit_row.commit_id = source_capture.commit_id
+        WHERE evidence.instrument_id = instrument.instrument_id
+        ORDER BY commit_row.commit_sequence DESC, evidence.source_record_id DESC
+        LIMIT 1
+      ) evidence ON TRUE
+      WHERE instrument.integration_namespace = ? AND instrument.account_id = ?`, [namespace, accountId])) {
+      stored.instrumentIds.set(row.instrument_key, hex(row.instrument_id));
+      if (row.evidence_key !== null) stored.instrumentEvidence.set(hex(row.instrument_id), row.evidence_key);
+    }
+  if (request.transactions.length > 0)
+    for (const row of await query<Record<string, unknown>>(transaction, `
+      SELECT financial.source_sequence, latest_revision.revision_id AS latest_revision_id,
+        details.revision_id AS details_revision_id, details.instrument_id AS details_instrument_id,
+        details.billing_status AS details_billing_status, details.consume_date, details.posting_date,
+        details.effective_date_basis, details.statement_key AS details_statement_key,
+        lifecycle.revision_id AS lifecycle_revision_id, lifecycle.instrument_id AS lifecycle_instrument_id,
+        lifecycle.billing_status AS lifecycle_billing_status, lifecycle.statement_key AS lifecycle_statement_key
+      FROM financial_transactions financial
+      JOIN LATERAL (
+        SELECT revision.revision_id FROM transaction_revisions revision
+        WHERE revision.transaction_id = financial.transaction_id
+        ORDER BY revision.revision_number DESC
+        LIMIT 1
+      ) latest_revision ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT detail.* FROM transaction_revisions revision
+        JOIN canonical_credit_card_transaction_details detail ON detail.revision_id = revision.revision_id
+        JOIN source_captures source_capture ON source_capture.capture_id = detail.capture_id
+        JOIN canonical_commits commit_row ON commit_row.commit_id = source_capture.commit_id
+        WHERE revision.transaction_id = financial.transaction_id
+        ORDER BY commit_row.commit_sequence DESC, detail.source_record_id DESC
+        LIMIT 1
+      ) details ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT lifecycle.* FROM canonical_credit_card_transaction_lifecycle lifecycle
+        JOIN source_captures source_capture ON source_capture.capture_id = lifecycle.capture_id
+        JOIN canonical_commits commit_row ON commit_row.commit_id = source_capture.commit_id
+        WHERE lifecycle.integration_namespace = ? AND lifecycle.account_id = financial.account_id
+          AND lifecycle.transaction_id = financial.transaction_id
+        ORDER BY commit_row.commit_sequence DESC, lifecycle.lifecycle_event_id DESC
+        LIMIT 1
+      ) lifecycle ON TRUE
+      WHERE financial.account_id = ?
+        AND financial.source_sequence IN (SELECT jsonb_array_elements_text(?::jsonb))`,
+    [namespace, accountId, JSON.stringify(request.transactions.map((fact) => fact.sourceSequence))])) {
+      stored.transactions.set(String(row.source_sequence), {
+        latestRevisionId: hex(row.latest_revision_id),
+        details: row.details_revision_id === null ? null : {
+          revisionId: hex(row.details_revision_id),
+          instrumentId: hex(row.details_instrument_id),
+          billingStatus: String(row.details_billing_status),
+          consumeDate: nullableText(row.consume_date),
+          postingDate: nullableText(row.posting_date),
+          effectiveDateBasis: nullableText(row.effective_date_basis),
+          statementKey: nullableText(row.details_statement_key),
+        },
+        lifecycle: row.lifecycle_revision_id === null ? null : {
+          revisionId: hex(row.lifecycle_revision_id),
+          instrumentId: hex(row.lifecycle_instrument_id),
+          billingStatus: String(row.lifecycle_billing_status),
+          statementKey: nullableText(row.lifecycle_statement_key),
+        },
+      });
+    }
+  if (request.statements.length > 0)
+    for (const row of await query<{ statement_key: string; revision_key: string; statement_revision_id: unknown; summary_revision_id: unknown }>(transaction, `
+      SELECT statement.statement_key, revision.revision_key, revision.statement_revision_id,
+        summary.statement_revision_id AS summary_revision_id
+      FROM canonical_credit_card_statements statement
+      JOIN canonical_credit_card_statement_revisions revision ON revision.statement_id = statement.statement_id
+      LEFT JOIN LATERAL (
+        SELECT evidence.statement_revision_id
+        FROM canonical_credit_card_statement_revisions any_revision
+        JOIN canonical_credit_card_statement_summary_evidence evidence
+          ON evidence.statement_revision_id = any_revision.statement_revision_id
+        JOIN source_captures source_capture ON source_capture.capture_id = evidence.capture_id
+        JOIN canonical_commits commit_row ON commit_row.commit_id = source_capture.commit_id
+        WHERE any_revision.statement_id = statement.statement_id
+        ORDER BY commit_row.commit_sequence DESC, evidence.evidence_source_record_id DESC
+        LIMIT 1
+      ) summary ON TRUE
+      WHERE statement.integration_namespace = ? AND statement.account_id = ?
+        AND statement.statement_key IN (SELECT jsonb_array_elements_text(?::jsonb))`,
+    [namespace, accountId, JSON.stringify(request.statements.map((statement) => statement.statementKey))])) {
+      stored.statementRevisionIds.set(statementRevisionKey(row.statement_key, row.revision_key), hex(row.statement_revision_id));
+      if (row.summary_revision_id !== null) stored.statementSummaries.set(row.statement_key, hex(row.summary_revision_id));
+    }
+  return stored;
+}
+
+const instrumentEvidenceChanged = (stored: StoredCardRows, instrumentId: string | undefined, input: PGliteCanonicalCreditCardInstrument): boolean =>
+  instrumentId === undefined || stored.instrumentEvidence.get(instrumentId) !== input.evidenceSourceOccurrenceKey;
+
+/** A statement revision names its evidence occurrence and may not change it, so the revision decides the summary. */
+const statementSummaryChanged = (stored: StoredCardRows, statementRevisionId: string | undefined, input: PGliteCanonicalCreditCardStatement): boolean =>
+  statementRevisionId === undefined || stored.statementSummaries.get(input.statementKey) !== statementRevisionId;
+
+/**
+ * The occurrences this commit's own card rows will cite, decided before any
+ * record is stored, so every other record may be reused (ADR 0152). Each
+ * row is compared with the latest stored one under the ids the store already
+ * holds; an id the commit has yet to create, such as a new revision, makes
+ * the row differ.
+ */
+function plannedCardCitations(
+  request: PGliteCanonicalCreditCardCaptureRequest,
+  stored: StoredCardRows,
+  supersessions: readonly PGliteCanonicalOccurrenceSupersessionInput[],
+): ReadonlySet<string> {
+  const cited = new Set<string>();
+  for (const input of request.instruments)
+    if (instrumentEvidenceChanged(stored, stored.instrumentIds.get(input.instrumentKey), input))
+      cited.add(input.evidenceSourceOccurrenceKey);
+  for (const input of request.transactions) {
+    const prior = stored.transactions.get(input.sourceSequence);
+    const instrumentId = stored.instrumentIds.get(input.instrumentKey);
+    if (!prior || instrumentId === undefined ||
+      !sameDetails(prior.details, cardDetails(input, prior.latestRevisionId, instrumentId)) ||
+      !sameLifecycle(prior.lifecycle, cardLifecycle(input, prior.latestRevisionId, instrumentId)))
+      cited.add(input.sourceOccurrenceKey);
+  }
+  for (const input of request.statements)
+    if (statementSummaryChanged(stored, stored.statementRevisionIds.get(statementRevisionKey(input.statementKey, input.revisionKey)), input))
+      cited.add(input.evidenceSourceOccurrenceKey);
+  for (const relation of request.relations ?? []) cited.add(relation.evidenceSourceOccurrenceKey);
+  for (const supersession of supersessions) cited.add(supersession.successorOccurrenceKey);
+  return cited;
+}
+
 type SharedTransaction = Readonly<{
   transactionId: Uint8Array;
   revisionId: Uint8Array;
@@ -565,17 +801,27 @@ async function sharedTransactions(
   return result;
 }
 
+/**
+ * Write the command's own rows. An instrument evidence, transaction details,
+ * lifecycle or statement summary row is written only where it differs from
+ * the latest stored one (ADR 0152), and a row written now cites a record
+ * this capture stored, as plannedCardCitations arranged.
+ */
 async function persistExtensions(
   transaction: PGliteTransaction,
   request: PGliteCanonicalCreditCardCaptureRequest,
-  namespace: string,
-  accountId: Uint8Array,
-  captureId: Uint8Array,
-  genericResults: readonly { sourceSequence: string; sourceOccurrenceKey: string; transactionId: string; revisionId: string }[],
-  sourceRecordByOccurrence: ReadonlyMap<string, Uint8Array>,
+  admitted: PGliteAdmittedFinancialCapture,
+  stored: StoredCardRows,
 ): Promise<{ instrumentCount: number; statementCount: number; balanceRevisionCreated: boolean }> {
+  const namespace = request.capture.integrationNamespace;
+  const { accountId, capture } = admitted;
+  const { captureId, sourceRecordIdsByOccurrence: sourceRecordByOccurrence } = capture;
+  const cites = (sourceRecordId: Uint8Array, row: string): Uint8Array => {
+    assertPGliteStoredByThisCapture(capture, sourceRecordId, row);
+    return sourceRecordId;
+  };
   await persistIdentity(transaction, namespace, accountId, captureId, request.identity);
-  const transactionMap = await sharedTransactions(transaction, accountId, captureId, request.transactions, genericResults, sourceRecordByOccurrence);
+  const transactionMap = await sharedTransactions(transaction, accountId, captureId, request.transactions, admitted.result.transactions, sourceRecordByOccurrence);
   const instruments = new Map<string, Uint8Array>();
   for (const input of request.instruments) {
     const evidence = sourceRecordByOccurrence.get(input.evidenceSourceOccurrenceKey);
@@ -591,34 +837,37 @@ async function persistExtensions(
       await query(transaction, `INSERT INTO canonical_credit_card_instruments(
         instrument_id, integration_namespace, account_id, instrument_key, card_mask, role, lifecycle
       ) VALUES (?, ?, ?, ?, ?, ?, ?)`, [instrumentId, namespace, accountId, input.instrumentKey, cardMask, input.role, lifecycle]);
-    await query(transaction, `INSERT INTO canonical_credit_card_instrument_evidence(
-      instrument_id, integration_namespace, account_id, capture_id, source_record_id
-    ) VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`, [instrumentId, namespace, accountId, captureId, evidence]);
+    if (instrumentEvidenceChanged(stored, hex(instrumentId), input))
+      await query(transaction, `INSERT INTO canonical_credit_card_instrument_evidence(
+        instrument_id, integration_namespace, account_id, capture_id, source_record_id
+      ) VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`, [instrumentId, namespace, accountId, captureId, cites(evidence, "credit-card instrument evidence")]);
     instruments.set(input.instrumentKey, instrumentId);
   }
   for (const input of request.transactions) {
     const shared = transactionMap.get(input.sourceOccurrenceKey);
     const instrumentId = instruments.get(input.instrumentKey);
     if (!shared || !instrumentId) fail("missing-reference", `Credit-card transaction instrument is missing: ${input.instrumentKey}.`);
-    const existing = await first<{ instrument_id: unknown; billing_status: string; consume_date: string | null; posting_date: string | null; effective_date_basis: string | null }>(transaction, `SELECT instrument_id, billing_status, consume_date, posting_date, effective_date_basis
-      FROM canonical_credit_card_transaction_details WHERE revision_id = ? AND source_record_id = ?`, [shared.revisionId, shared.captureSourceRecordId]);
-    if (existing && (Buffer.from(bytes(existing.instrument_id)).compare(instrumentId) !== 0 || existing.billing_status !== input.billingStatus || (existing.consume_date ?? null) !== (input.consumeDate ?? null) || (existing.posting_date ?? null) !== (input.postingDate ?? null) || (existing.effective_date_basis ?? null) !== (input.effectiveDateBasis ?? null))) fail("revision-conflict", "Credit-card transaction revision was reused with changed authority data.");
-    await query(transaction, `INSERT INTO canonical_credit_card_transaction_details(
-      integration_namespace, account_id, transaction_id, revision_id, source_record_id,
-      capture_id, instrument_id, billing_status, consume_date, posting_date,
-      effective_date_basis, statement_key
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`, [
-      namespace, accountId, shared.transactionId, shared.revisionId, shared.captureSourceRecordId, captureId,
-      instrumentId, input.billingStatus, input.consumeDate ?? null, input.postingDate ?? null,
-      input.effectiveDateBasis ?? null, input.statementKey ?? null,
-    ]);
-    await query(transaction, `INSERT INTO canonical_credit_card_transaction_lifecycle(
-      lifecycle_event_id, integration_namespace, account_id, transaction_id, revision_id,
-      source_record_id, capture_id, instrument_id, billing_status, statement_key
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`, [
-      uuidBytes(), namespace, accountId, shared.transactionId, shared.revisionId, shared.captureSourceRecordId,
-      captureId, instrumentId, input.billingStatus, input.statementKey ?? null,
-    ]);
+    const prior = stored.transactions.get(input.sourceSequence);
+    if (!sameDetails(prior?.details ?? null, cardDetails(input, hex(shared.revisionId), hex(instrumentId))))
+      await query(transaction, `INSERT INTO canonical_credit_card_transaction_details(
+        integration_namespace, account_id, transaction_id, revision_id, source_record_id,
+        capture_id, instrument_id, billing_status, consume_date, posting_date,
+        effective_date_basis, statement_key
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`, [
+        namespace, accountId, shared.transactionId, shared.revisionId,
+        cites(shared.captureSourceRecordId, "credit-card transaction details"), captureId,
+        instrumentId, input.billingStatus, input.consumeDate ?? null, input.postingDate ?? null,
+        input.effectiveDateBasis ?? null, input.statementKey ?? null,
+      ]);
+    if (!sameLifecycle(prior?.lifecycle ?? null, cardLifecycle(input, hex(shared.revisionId), hex(instrumentId))))
+      await query(transaction, `INSERT INTO canonical_credit_card_transaction_lifecycle(
+        lifecycle_event_id, integration_namespace, account_id, transaction_id, revision_id,
+        source_record_id, capture_id, instrument_id, billing_status, statement_key
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`, [
+        uuidBytes(), namespace, accountId, shared.transactionId, shared.revisionId,
+        cites(shared.captureSourceRecordId, "a credit-card lifecycle row"),
+        captureId, instrumentId, input.billingStatus, input.statementKey ?? null,
+      ]);
   }
   for (const input of request.statements) {
     const evidence = sourceRecordByOccurrence.get(input.evidenceSourceOccurrenceKey);
@@ -637,9 +886,9 @@ async function persistExtensions(
     if (existing) {
       const same = existing.cycle_start === input.cycleStart && existing.cycle_end === input.cycleEnd && existing.issue_date === input.issueDate && existing.due_date === input.dueDate && existing.currency === input.currency && existing.balance_coefficient === input.balance.coefficient && Number(existing.balance_scale) === input.balance.scale && (existing.minimum_coefficient ?? null) === (input.minimumPayment?.coefficient ?? null) && Number(existing.minimum_scale ?? -1) === (input.minimumPayment?.scale ?? -1) && existing.evidence_source_record_key === input.evidenceSourceOccurrenceKey;
       if (!same) fail("revision-conflict", "Credit-card statement revision key was reused with changed evidence.");
-      const stored = await query<{ transaction_id: unknown; transaction_revision_id: unknown }>(transaction, `SELECT transaction_id, transaction_revision_id
+      const members = await query<{ transaction_id: unknown; transaction_revision_id: unknown }>(transaction, `SELECT transaction_id, transaction_revision_id
         FROM canonical_credit_card_statement_memberships WHERE statement_revision_id = ?`, [existing.statement_revision_id]);
-      const storedKeys = stored.map((row) => `${idText(row.transaction_id)}:${idText(row.transaction_revision_id)}`).sort();
+      const storedKeys = members.map((row) => `${idText(row.transaction_id)}:${idText(row.transaction_revision_id)}`).sort();
       const desiredKeys = (desired as SharedTransaction[]).map((member) => `${idText(member.transactionId)}:${idText(member.revisionId)}`).sort();
       if (JSON.stringify(storedKeys) !== JSON.stringify(desiredKeys)) fail("revision-conflict", "Credit-card statement revision membership changed.");
     } else {
@@ -663,10 +912,11 @@ async function persistExtensions(
     const revision = await first<{ statement_revision_id: unknown }>(transaction, `SELECT statement_revision_id
       FROM canonical_credit_card_statement_revisions WHERE statement_id = ? AND revision_key = ?`, [statementId, input.revisionKey]);
     if (!revision) throw new Error("Credit-card statement revision insert was not visible.");
-    await query(transaction, `INSERT INTO canonical_credit_card_statement_summary_evidence(
+    if (statementSummaryChanged(stored, hex(revision.statement_revision_id), input))
+      await query(transaction, `INSERT INTO canonical_credit_card_statement_summary_evidence(
       statement_revision_id, integration_namespace, account_id, capture_id, evidence_key,
       evidence_source_record_id
-    ) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`, [bytes(revision.statement_revision_id), namespace, accountId, captureId, input.evidenceSourceOccurrenceKey, evidence]);
+    ) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`, [revision.statement_revision_id, namespace, accountId, captureId, input.evidenceSourceOccurrenceKey, cites(evidence, "credit-card statement summary evidence")]);
   }
   for (const relation of request.relations ?? []) {
     const from = transactionMap.get(relation.fromSourceOccurrenceKey);
@@ -676,7 +926,7 @@ async function persistExtensions(
     await query(transaction, `INSERT INTO canonical_credit_card_relations(
       relation_id, integration_namespace, account_id, relation_kind, from_transaction_id,
       to_transaction_id, capture_id, evidence_source_record_id
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`, [uuidBytes(), namespace, accountId, relation.kind, from.transactionId, to.transactionId, captureId, evidence]);
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`, [uuidBytes(), namespace, accountId, relation.kind, from.transactionId, to.transactionId, captureId, cites(evidence, "a credit-card relation")]);
   }
   const balanceRevisionCreated = request.balance
     ? await persistBalanceEstimate(transaction, request.balance, accountId, captureId, sourceRecordByOccurrence)
@@ -717,6 +967,13 @@ async function persistBalanceEstimate(
 /** A card commit also knows which Card identity secret derived its identities (ADR 0149). */
 export type PGliteCanonicalCreditCardCommitOptions = PGliteCanonicalCommitOptions & Readonly<{
   cardIdentitySecret?: CardIdentitySecret;
+  /**
+   * @internal Test-only; no app path sets it.
+   * `false` stores every record of the capture again, as before ADR 0152,
+   * while card rows are still written only where they changed. The reuse
+   * check compares a store built this way with one that reuses records.
+   */
+  reuseSourceRecords?: false;
 }>;
 
 export async function commitPGliteCanonicalCreditCardCapture(
@@ -735,6 +992,7 @@ export async function commitPGliteCanonicalCreditCardCapture(
     const expectedBilled = await listExpectedBilledMembers(transaction, snapshot);
     await assertSupersededMembersStayReplaced(transaction, snapshot);
     const { supersessions, withdrawals } = await resolveVanishedUnbilledMembers(transaction, snapshot);
+    const stored = await readStoredCardRows(transaction, snapshot);
     const admitted = await admitPGliteCanonicalFinancialCaptureInTransaction(transaction, {
       capture: snapshot.capture,
       account: snapshot.account,
@@ -744,15 +1002,16 @@ export async function commitPGliteCanonicalCreditCardCapture(
       withdrawalPolicy: "never-infer",
       occurrenceSupersessions: supersessions,
       occurrenceWithdrawals: withdrawals,
-    }, options, "any");
+    }, options, options.reuseSourceRecords === false ? "any" : plannedCardCitations(snapshot, stored, supersessions));
     assertBilledMonotonicity(expectedBilled, snapshot);
     const generic = admitted.result;
     const sourceRecordByOccurrence = admitted.capture.sourceRecordIdsByOccurrence;
-    const extension = await persistExtensions(transaction, snapshot, snapshot.capture.integrationNamespace, admitted.accountId, admitted.capture.captureId, generic.transactions, sourceRecordByOccurrence);
+    const extension = await persistExtensions(transaction, snapshot, admitted, stored);
     for (const supersession of supersessions) {
       const successor = generic.transactions.find((result) => result.sourceOccurrenceKey === supersession.successorOccurrenceKey);
       const evidence = sourceRecordByOccurrence.get(supersession.successorOccurrenceKey);
       if (!successor || !evidence) fail("missing-reference", "Credit-card supersession successor was not admitted.");
+      assertPGliteStoredByThisCapture(admitted.capture, evidence, "a credit-card supersession relation");
       await query(transaction, `INSERT INTO canonical_credit_card_relations(
         relation_id, integration_namespace, account_id, relation_kind, from_transaction_id,
         to_transaction_id, capture_id, evidence_source_record_id

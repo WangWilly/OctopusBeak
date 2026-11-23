@@ -143,11 +143,12 @@ type SourceCaptureWrite = Readonly<{
 }>;
 
 /**
- * Whether rows a domain command writes after the shared commit may cite this
- * Capture's Source Records. A record a new row cites is stored again, never
- * reused (ADR 0152), so a command that writes such rows must say `any`.
+ * Which of this Capture's Source Records rows a domain command writes after
+ * the shared commit may cite. A record a new row cites is stored again, never
+ * reused (ADR 0152), so a command names the occurrences its new rows cite, or
+ * says `any` when it cannot tell before the records are stored.
  */
-export type PGliteDomainRecordCitation = "none" | "any";
+export type PGliteDomainRecordCitation = "none" | "any" | ReadonlySet<string>;
 
 /** What a commit will write about its Capture's records, decided before any record is stored. */
 type RecordCitationPlan = Readonly<{
@@ -159,6 +160,13 @@ type RecordCitationPlan = Readonly<{
 
 const NOTHING_CITED: RecordCitationPlan = { cited: new Set(), linkedAssertions: new Map() };
 const ANY_RECORD_CITED: RecordCitationPlan = { cited: "any", linkedAssertions: new Map() };
+
+/** The plan, also citing every occurrence the domain command's own rows cite. */
+function withDomainCitations(plan: RecordCitationPlan, domainRows: PGliteDomainRecordCitation): RecordCitationPlan {
+  if (domainRows === "any" || plan.cited === "any") return ANY_RECORD_CITED;
+  if (domainRows === "none") return plan;
+  return { ...plan, cited: new Set([...plan.cited, ...domainRows]) };
+}
 
 /**
  * Internal worker-domain seam for typed extensions which must be committed
@@ -1000,24 +1008,17 @@ const TEXT_VALUES_SQL = "SELECT jsonb_array_elements_text(?::jsonb)";
 const HEX_ID_VALUES_SQL = "SELECT decode(hex_id, 'hex') FROM jsonb_array_elements_text(?::jsonb) AS hex_id";
 
 /** The plan and the write must agree: a row written now may cite only a record this Capture stored. */
-function assertStoredByThisCapture(capture: SourceCaptureWrite, sourceRecordId: Uint8Array, row: string): void {
+export function assertPGliteStoredByThisCapture(capture: SourceCaptureWrite, sourceRecordId: Uint8Array, row: string): void {
   if (capture.reusedSourceRecordIds.has(hexId(sourceRecordId)))
     throw new Error(`A reused Source Record cannot back ${row}.`);
 }
 
-/**
- * Which occurrences the shared financial commit will cite from a new row, and
- * which source assertions its unchanged facts link each occurrence to. It
- * reads what commitFinancialFacts and persistBalanceObservations will read,
- * before the capture's records are stored (ADR 0152).
- */
-async function planFinancialCitations(
+/** The stored financial account a capture's source account key names, before the capture is admitted. */
+export async function findPGliteFinancialAccountId(
   transaction: PGliteTransaction,
-  request: PGliteCanonicalFinancialCommitRequest,
-): Promise<RecordCitationPlan> {
-  const cited = new Set<string>();
-  const linkedAssertions = new Map<string, Set<string>>();
-  const evidence = request.capture;
+  evidence: PGliteCanonicalSourceEvidence,
+  sourceAccountKey: string,
+): Promise<Uint8Array | undefined> {
   const account = await first<{ account_id: unknown }>(
     transaction,
     `SELECT account.account_id
@@ -1036,9 +1037,26 @@ async function planFinancialCitations(
       evidence.sourceConnectionKey,
       evidence.identityEpoch,
       evidence.stream,
-      request.account.sourceAccountKey,
+      sourceAccountKey,
     ],
   );
+  return account ? bytesValue(account.account_id, "Financial account identity") : undefined;
+}
+
+/**
+ * Which occurrences the shared financial commit will cite from a new row, and
+ * which source assertions its unchanged facts link each occurrence to. It
+ * reads what commitFinancialFacts and persistBalanceObservations will read,
+ * before the capture's records are stored (ADR 0152).
+ */
+async function planFinancialCitations(
+  transaction: PGliteTransaction,
+  request: PGliteCanonicalFinancialCommitRequest,
+): Promise<RecordCitationPlan> {
+  const cited = new Set<string>();
+  const linkedAssertions = new Map<string, Set<string>>();
+  const accountId = await findPGliteFinancialAccountId(transaction, request.capture, request.account.sourceAccountKey);
+  const account = accountId && { account_id: accountId };
   const latestRevisions = new Map<string, Row>();
   if (account && request.transactions.length > 0) {
     const rows = await txQuery<Row>(
@@ -1674,7 +1692,7 @@ async function persistBalanceObservations(
       deduplicatedRevisionCount += 1;
       continue;
     }
-    assertStoredByThisCapture(capture, sourceRecordId, "a balance revision");
+    assertPGliteStoredByThisCapture(capture, sourceRecordId, "a balance revision");
     const prior = await first<{ revision_number: number | string }>(
       transaction,
       "SELECT COALESCE(MAX(revision_number), 0) AS revision_number FROM balance_observation_revisions WHERE observation_id = ?",
@@ -1967,7 +1985,7 @@ async function persistConversionEvidence(
       );
     return;
   }
-  assertStoredByThisCapture(capture, sourceRecordId, "conversion evidence");
+  assertPGliteStoredByThisCapture(capture, sourceRecordId, "conversion evidence");
   await txQuery(
     transaction,
     `INSERT INTO transaction_conversion_evidence(
@@ -2061,7 +2079,7 @@ async function commitFinancialFacts(
       : uuidBytes();
     let assertionId: Uint8Array;
     if (revisionCreated) {
-      assertStoredByThisCapture(capture, sourceRecordId, "a transaction revision");
+      assertPGliteStoredByThisCapture(capture, sourceRecordId, "a transaction revision");
       if (latest?.revision_id) {
         const priorAssertion = await first<{ assertion_id: unknown }>(
           transaction,
@@ -2264,7 +2282,7 @@ export async function admitPGliteCanonicalSourceCaptureInTransaction(
     transaction,
     cloneEvidence(request),
     options,
-    domainRows === "any" ? ANY_RECORD_CITED : NOTHING_CITED,
+    withDomainCitations(NOTHING_CITED, domainRows),
   );
 }
 
@@ -2431,7 +2449,7 @@ async function admitFinancialRequestInTransaction(
     transaction,
     request.capture,
     transactionOptions,
-    domainRows === "any" ? ANY_RECORD_CITED : await planFinancialCitations(transaction, request),
+    domainRows === "any" ? ANY_RECORD_CITED : withDomainCitations(await planFinancialCitations(transaction, request), domainRows),
     [...(request.occurrenceSupersessions ?? []), ...(request.occurrenceWithdrawals ?? [])],
   );
   const accountId = await ensureFinancialAccount(transaction, request, capture);

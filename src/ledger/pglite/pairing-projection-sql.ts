@@ -1,4 +1,5 @@
 import { SPENDING_EXCLUDED_KIND_PREFIXES } from "../canonical/spending-inclusion-policy.ts";
+import { latestCardDetailsSql } from "./card-details-sql.ts";
 
 for (const prefix of SPENDING_EXCLUDED_KIND_PREFIXES)
   if (!/^[a-z_.]+$/u.test(prefix)) throw new Error(`Spending excluded Kind prefix is not a plain code: ${prefix}`);
@@ -33,11 +34,7 @@ BEGIN
     JOIN current_transaction_enrichment kind
       ON kind.transaction_id = current_row.transaction_id AND kind.field_name = 'kind'
     LEFT JOIN LATERAL (
-      SELECT consume_date, posting_date, effective_date_basis
-        FROM canonical_credit_card_transaction_details detail
-       WHERE detail.revision_id = current_row.revision_id
-       ORDER BY detail.source_record_id
-       LIMIT 1
+      ${latestCardDetailsSql("current_row.revision_id", "detail.consume_date, detail.posting_date, detail.effective_date_basis")}
     ) facts ON TRUE
    WHERE current_row.transaction_id = target_transaction_id
      AND revision.administrative_state = 'active'

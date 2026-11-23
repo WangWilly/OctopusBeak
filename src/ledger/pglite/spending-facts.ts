@@ -61,6 +61,7 @@ import {
   type Row,
 } from "./spending-sql.ts";
 import { readKnowledgePoint } from "./knowledge-point.ts";
+import { latestCardDetailsByRevisionSql, latestCardDetailsSql } from "./card-details-sql.ts";
 
 /**
  * Canonical fact readers for PGlite Spending: transactions with their
@@ -177,10 +178,19 @@ async function transactionDateFacts(
       : Array.from({ length: Math.ceil(revisionIds.length / 2_048) }, (_, index) =>
         revisionIds.slice(index * 2_048, (index + 1) * 2_048));
     for (const chunk of chunks) {
+      const inChunk = (column: string) =>
+        chunk === undefined ? "TRUE" : `${column} IN (${chunk.map(() => "?").join(",")})`;
+      // The credit-card command writes a details row only on change, so a
+      // revision may hold several; only the latest is current (ADR 0152).
       const facts = rows(await pgliteQuery<Row>(reader,
-        `SELECT revision_id, consume_date, posting_date, effective_date_basis
+        table.table_name === "canonical_credit_card_transaction_details"
+          ? latestCardDetailsByRevisionSql(
+            "detail.revision_id, detail.consume_date, detail.posting_date, detail.effective_date_basis",
+            inChunk("detail.revision_id"),
+          )
+          : `SELECT revision_id, consume_date, posting_date, effective_date_basis
            FROM ${table.table_name}
-          ${chunk === undefined ? "" : `WHERE revision_id IN (${chunk.map(() => "?").join(",")})`}`,
+          WHERE ${inChunk("revision_id")}`,
         chunk?.map((value) => bytes(value, "Transaction revision")) ?? [],
       ));
       for (const row of facts) {
@@ -1031,11 +1041,7 @@ export async function queryPaymentSourceFacts(
     `SELECT current_row.transaction_id, instrument.card_mask, statement.cycle_start, statement.cycle_end
        FROM current_transactions current_row
        LEFT JOIN LATERAL (
-         SELECT detail.instrument_id
-           FROM canonical_credit_card_transaction_details detail
-          WHERE detail.revision_id = current_row.revision_id
-          ORDER BY detail.source_record_id
-          LIMIT 1
+         ${latestCardDetailsSql("current_row.revision_id", "detail.instrument_id")}
        ) detail ON TRUE
        LEFT JOIN canonical_credit_card_instruments instrument ON instrument.instrument_id = detail.instrument_id
        LEFT JOIN LATERAL (

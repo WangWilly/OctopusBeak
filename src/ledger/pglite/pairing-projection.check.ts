@@ -20,9 +20,11 @@ CREATE TABLE transaction_revisions(
 );
 CREATE TABLE current_transactions(transaction_id BYTEA PRIMARY KEY, revision_id BYTEA NOT NULL);
 CREATE TABLE current_transaction_enrichment(transaction_id BYTEA NOT NULL, field_name TEXT NOT NULL, taxonomy_code TEXT);
+CREATE TABLE canonical_commits(commit_id BYTEA PRIMARY KEY, commit_sequence BIGINT NOT NULL);
+CREATE TABLE source_captures(capture_id BYTEA PRIMARY KEY, commit_id BYTEA NOT NULL);
 CREATE TABLE canonical_credit_card_transaction_details(
   transaction_id BYTEA NOT NULL, revision_id BYTEA NOT NULL, source_record_id BYTEA NOT NULL,
-  consume_date TEXT, posting_date TEXT, effective_date_basis TEXT,
+  capture_id BYTEA NOT NULL, consume_date TEXT, posting_date TEXT, effective_date_basis TEXT,
   PRIMARY KEY(revision_id, source_record_id)
 );
 CREATE TABLE current_spending_dedup_links(transaction_id BYTEA PRIMARY KEY, invoice_id BYTEA NOT NULL);
@@ -47,13 +49,19 @@ test("derived Spending pairing entries follow authoritative changes, rollback, a
     assert.equal(await count(), 1);
 
     const date = async () => (await store.query<{ consume_date: string | null }>("SELECT consume_date FROM current_spending_pairing_entries")).rows[0]?.consume_date;
-    await store.query(`INSERT INTO canonical_credit_card_transaction_details(transaction_id,revision_id,source_record_id,consume_date,posting_date,effective_date_basis)
-      VALUES ($1,$2,$3,'2026-09-02','2026-09-03','consume-date')`, [transactionId, revisionOne, sourceHigh]);
+    const earlierCapture = id(6), laterCapture = id(7);
+    await store.query("INSERT INTO canonical_commits(commit_id,commit_sequence) VALUES ($1,1),($2,2)", [id(11), id(12)]);
+    await store.query("INSERT INTO source_captures(capture_id,commit_id) VALUES ($1,$2),($3,$4)", [earlierCapture, id(11), laterCapture, id(12)]);
+    await store.query(`INSERT INTO canonical_credit_card_transaction_details(transaction_id,revision_id,source_record_id,capture_id,consume_date,posting_date,effective_date_basis)
+      VALUES ($1,$2,$3,$4,'2026-09-02','2026-09-03','consume-date')`, [transactionId, revisionOne, sourceHigh, laterCapture]);
     assert.equal(await date(), "2026-09-02");
-    await store.query(`INSERT INTO canonical_credit_card_transaction_details(transaction_id,revision_id,source_record_id,consume_date,posting_date,effective_date_basis)
-      VALUES ($1,$2,$3,'2026-09-01','2026-09-03','consume-date')`, [transactionId, revisionOne, sourceLow]);
-    assert.equal(await date(), "2026-09-01", "later lower source id wins deterministically");
-    await store.query("DELETE FROM canonical_credit_card_transaction_details WHERE revision_id=$1 AND source_record_id=$2", [revisionOne, sourceLow]);
+    await store.query(`INSERT INTO canonical_credit_card_transaction_details(transaction_id,revision_id,source_record_id,consume_date,posting_date,effective_date_basis,capture_id)
+      VALUES ($1,$2,$3,'2026-09-01','2026-09-03','consume-date',$4)`, [transactionId, revisionOne, sourceLow, earlierCapture]);
+    assert.equal(await date(), "2026-09-02", "the row of the later commit stays current, whatever its source id");
+    await store.query("DELETE FROM canonical_credit_card_transaction_details WHERE revision_id=$1 AND source_record_id=$2", [revisionOne, sourceHigh]);
+    assert.equal(await date(), "2026-09-01", "the earlier commit's row is current once the later one is gone");
+    await store.query(`INSERT INTO canonical_credit_card_transaction_details(transaction_id,revision_id,source_record_id,consume_date,posting_date,effective_date_basis,capture_id)
+      VALUES ($1,$2,$3,'2026-09-02','2026-09-03','consume-date',$4)`, [transactionId, revisionOne, sourceHigh, laterCapture]);
     assert.equal(await date(), "2026-09-02");
 
     await store.query("UPDATE current_transaction_enrichment SET taxonomy_code='transfer' WHERE transaction_id=$1", [transactionId]);

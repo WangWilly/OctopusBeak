@@ -350,12 +350,13 @@ test("PGlite credit-card command keeps identity, instrument, statements, lifecyc
     ) counts ORDER BY table_name`);
     assert.deepEqual(Object.fromEntries(counts.rows.map((row) => [row.table_name, Number(row.count)])), {
       canonical_credit_card_account_identities: 1,
-      canonical_credit_card_instrument_evidence: 2,
+      // The repeated capture changed no card row, so it wrote none (ADR 0152).
+      canonical_credit_card_instrument_evidence: 1,
       canonical_credit_card_instruments: 1,
       canonical_credit_card_statement_memberships: 1,
       canonical_credit_card_statement_revisions: 1,
-      canonical_credit_card_transaction_details: 2,
-      canonical_credit_card_transaction_lifecycle: 2,
+      canonical_credit_card_transaction_details: 1,
+      canonical_credit_card_transaction_lifecycle: 1,
       credit_card_balance_estimate_details: 2,
     });
     const balanceRows = await store.query<{ balance_coefficient: string; effective_at: string }>(`SELECT revision.balance_coefficient, revision.effective_at
@@ -765,27 +766,31 @@ test("a Yuanta billed member that reverts to unbilled in its queried statement b
 });
 
 /**
- * Two captures store two copies of one member, then the newest lifecycle row
- * is deleted. Under ADR 0152, a re-sync writes a new copy when a stored field
- * or the coverage shape differs, and skips the lifecycle row when the billing
- * status is unchanged. The latest copy then has no lifecycle row of its own,
- * and only an earlier capture records the status.
+ * Two captures store two copies of one member. The second differs from the
+ * first in a stored field alone, so it is stored again (ADR 0152), while its
+ * billing status is unchanged, so the command writes it no lifecycle row. The
+ * latest copy then has no lifecycle row of its own, and only an earlier
+ * capture records the status.
  */
 async function storeMembersWithoutLatestLifecycle(store: PGliteStore, billingStatuses: readonly ("billed" | "unbilled")[]): Promise<void> {
   await commitPGliteCanonicalCreditCardCapture(store, statementGridCapture("first-copy", billingStatuses));
-  await commitPGliteCanonicalCreditCardCapture(store, statementGridCapture("second-copy", billingStatuses));
-  const deleted = await store.query(`
-    DELETE FROM canonical_credit_card_transaction_lifecycle
-    WHERE capture_id = (
-      SELECT source_capture.capture_id FROM source_captures source_capture
-      JOIN canonical_commits commit_row ON commit_row.commit_id = source_capture.commit_id
-      ORDER BY commit_row.commit_sequence DESC LIMIT 1)`);
-  assert.equal(deleted.affectedRows, billingStatuses.length);
-  const remaining = await store.query<{ copies: number; lifecycle: number }>(`
+  const second = statementGridCapture("second-copy", billingStatuses);
+  await commitPGliteCanonicalCreditCardCapture(store, {
+    ...second,
+    capture: {
+      ...second.capture,
+      records: second.capture.records.map((record) =>
+        record.occurrenceGroup ? { ...record, contentHash: token(`${record.contentHash}:recaptured`) } : record),
+    },
+  });
+  const remaining = await store.query<{ copies: number; lifecycle: number; latest_with_lifecycle: number }>(`
     SELECT
       (SELECT COUNT(*)::int FROM source_records WHERE occurrence_group_fingerprint IS NOT NULL) AS copies,
-      (SELECT COUNT(*)::int FROM canonical_credit_card_transaction_lifecycle) AS lifecycle`);
-  assert.deepEqual(remaining.rows[0], { copies: 2 * billingStatuses.length, lifecycle: billingStatuses.length });
+      (SELECT COUNT(*)::int FROM canonical_credit_card_transaction_lifecycle) AS lifecycle,
+      (SELECT COUNT(*)::int FROM canonical_credit_card_transaction_lifecycle lifecycle
+         JOIN source_captures source_capture ON source_capture.capture_id = lifecycle.capture_id
+        WHERE source_capture.capture_key = 'second-copy') AS latest_with_lifecycle`);
+  assert.deepEqual(remaining.rows[0], { copies: 2 * billingStatuses.length, lifecycle: billingStatuses.length, latest_with_lifecycle: 0 });
 }
 
 test("billed monotonicity reads the latest lifecycle by transaction when the latest copy has none", async (t) => {
