@@ -132,7 +132,13 @@ type SourceCaptureWrite = Readonly<{
   /** One id per evidence record, in evidence order: the record this Capture stored, or the stored one it reused. */
   sourceRecordIds: readonly Uint8Array[];
   sourceRecordIdsByOccurrence: ReadonlyMap<string, Uint8Array>;
-  /** Hex ids of the records this Capture reused instead of storing (ADR 0152). No new row may cite one. */
+  /**
+   * Hex ids of the records this Capture reused instead of storing (ADR 0152).
+   * No new revision, balance revision or conversion evidence may cite one.
+   * Loan counterparty evidence is the one row that may: it names the record
+   * and the Capture that sighted it, and its readers join that Capture only
+   * for its observed time, never to the Capture that owns the record.
+   */
   reusedSourceRecordIds: ReadonlySet<string>;
 }>;
 
@@ -2232,8 +2238,10 @@ async function persistAdmission(
     validatePGliteCanonicalSourceEvidence(evidence);
     const snapshot = cloneEvidence(evidence);
     throwIfCancelled(options.signal);
+    // The caller may later write rows that cite these records, and nothing
+    // here can check them, so a standalone admission stores every record.
     return await database.transaction((transaction) =>
-      persistSourceCapture(transaction, snapshot, options, NOTHING_CITED),
+      persistSourceCapture(transaction, snapshot, options, ANY_RECORD_CITED),
     );
   } catch (error) {
     return classifyDatabaseError(error);
@@ -2455,7 +2463,11 @@ async function admitFinancialRequestInTransaction(
   };
 }
 
-/** Admit source evidence through one worker-owned PGlite transaction. */
+/**
+ * Admit source evidence through one worker-owned PGlite transaction. Every
+ * record is stored, never reused (ADR 0152): rows the caller writes after
+ * this transaction may cite the records, and no write-time check covers them.
+ */
 export async function admitPGliteCanonicalSourceCapture(
   database: PGliteStore,
   request: PGliteCanonicalSourceAdmissionRequest,
