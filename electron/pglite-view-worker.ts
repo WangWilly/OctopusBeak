@@ -25,6 +25,7 @@ import {
   type AutomationSettingsFile,
 } from "../src/lib/automation/server/config-files.ts";
 import { dateInTimeZone } from "../src/lib/shared-ledger/twd-valuation.ts";
+import { readCardIdentityVerifier } from "../src/lib/automation/server/card-identity-verifier.ts";
 
 /** Picks the worker's only named-view source from the ledger it opened. */
 export type PGliteWorkerViewSourceFactory = (host: PGliteLedgerHost) => ViewSource;
@@ -82,7 +83,11 @@ async function assertIndexesUsable(db: PGlite): Promise<void> {
 export async function startPGliteViewWorker(
   port: MessagePort,
   createViewSource: PGliteWorkerViewSourceFactory,
-  { readSettings, dataDir }: Readonly<{ readSettings: () => AutomationSettingsFile; dataDir?: string }>,
+  { readSettings, dataDir, cardIdentityVerifier }: Readonly<{
+    readSettings: () => AutomationSettingsFile;
+    dataDir?: string;
+    cardIdentityVerifier?: () => string | undefined;
+  }>,
 ): Promise<PGliteViewWorkerRuntime> {
   const ownsDataDir = dataDir === undefined;
   const ownedDataDir = dataDir ?? await mkdtemp(join(tmpdir(), "octopus-beak-pglite-"));
@@ -103,6 +108,7 @@ export async function startPGliteViewWorker(
     clock: createLocalDateClock(() => dateInTimeZone(new Date(), automationBusinessTimezone(readSettings()))),
     previewVisibility: () => currentPreviewVisibility(readSettings()),
     expectedSources: () => configuredOverviewSources(readSettings()),
+    cardIdentityVerifier,
   });
   const walCheckpoints = startPgliteWalCheckpoints(database, {
     run: (task) => host.scheduler.schedule("background", task),
@@ -154,6 +160,7 @@ if (parentPort) {
   const given = (workerData && typeof workerData === "object" ? workerData : {}) as {
     dataDir?: unknown;
     settingsPath?: unknown;
+    cardIdentityVerifierPath?: unknown;
   };
   const configuredDataDir = typeof given.dataDir === "string" ? given.dataDir : undefined;
   const runtime = Promise.resolve().then(() => {
@@ -161,9 +168,11 @@ if (parentPort) {
       throw new TypeError("PGlite view worker requires an explicit settings path.");
     }
     const settingsPath = given.settingsPath;
+    const verifierPath = typeof given.cardIdentityVerifierPath === "string" ? given.cardIdentityVerifierPath : undefined;
     return startPGliteViewWorker(port, financialWorkerViewSource, {
       readSettings: () => readAutomationSettingsFile(settingsPath),
       dataDir: configuredDataDir,
+      cardIdentityVerifier: verifierPath ? () => readCardIdentityVerifier(verifierPath) : undefined,
     });
   }).catch((error: unknown) => {
     try {

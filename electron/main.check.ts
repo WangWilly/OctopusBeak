@@ -7,6 +7,11 @@ assert.doesNotMatch(source, /prepareLibrettoRunCdpPatch|libretto-run-cdp-patch-f
 assert.match(source, /createPGliteOperationalRuntime\(/u);
 assert.match(
   source,
+  /const cardIdentityVerifierPath = path\.join\(userData, CARD_IDENTITY_VERIFIER_FILE\);[\s\S]*?openSafeStorageCredentialStore\(\s*path\.join\(userData, AUTOMATION_CREDENTIALS_FILE\),\s*cardIdentityVerifierPath,\s*\)[\s\S]*?createPGliteOperationalRuntime\(\{\s*dataDir: path\.join\(userData, "data", "pglite"\),\s*cardIdentityVerifierPath,/u,
+  "startup records the Card identity secret's verifier where the ledger worker reads it",
+);
+assert.match(
+  source,
   /applyOctopusBeakAppIdentity\(app\);[\s\S]*?const ownsUserData = app\.requestSingleInstanceLock\(\);\s*if \(!ownsUserData\) app\.quit\(\);/u,
   "the single-instance lock is taken on the final userData path, before anything opens the ledger",
 );
@@ -18,7 +23,7 @@ assert.match(
 assert.doesNotMatch(source, /process\.chdir/u, "main opens every App file at an absolute path, so no thread depends on the cwd");
 assert.match(
   source,
-  /const automationSettings = createAutomationSettingsStore\(path\.join\(userData, AUTOMATION_SETTINGS_FILE\)\);\s*migrateAutomationEnvFile\(\{ envPath: path\.join\(userData, "\.env"\), settings: automationSettings, credentials \}\);\s*migrateStatementSelectionIds\(automationSettings\.path\);/u,
+  /const automationSettings = createAutomationSettingsStore\(path\.join\(userData, AUTOMATION_SETTINGS_FILE\)\);\s*try \{\s*migrateAutomationEnvFile\(\{ envPath: path\.join\(userData, "\.env"\), settings: automationSettings, credentials \}\);\s*\} catch \(error\) \{[\s\S]*?\}\s*migrateStatementSelectionIds\(automationSettings\.path\);/u,
   "the legacy .env in user data migrates into the one settings store before anything reads settings",
 );
 assert.match(

@@ -73,6 +73,8 @@ export type PGliteFinancialRegistryOptions = Readonly<{
   previewVisibility?: () => PreviewVisibility;
   /** The person's local date, which no manual row may be dated after, and which decides whether an ended asset still counts. */
   today?: () => string;
+  /** The verifier of the Card identity secret workflows derive card identities from, read at each card commit (ADR 0149). */
+  cardIdentityVerifier?: () => string | undefined;
 }>;
 
 export function createPGliteFinancialRegistry(
@@ -82,6 +84,8 @@ export function createPGliteFinancialRegistry(
 ): PGliteLedgerRegistry {
   const previewVisibility = options.previewVisibility ?? (() => NO_PREVIEW_VISIBILITY);
   const today = options.today ?? (() => dateInTimeZone(new Date(), DEFAULT_SYSTEM_TIMEZONE));
+  const cardIdentity = (commit: PGliteCanonicalCommitOptions | undefined) =>
+    ({ ...commit, cardIdentityVerifier: options.cardIdentityVerifier?.() });
   const manualClock = { now: () => new Date().toISOString(), today };
   const pageScope = (expectedSources: FinancialPageScope["expectedSources"]): FinancialPageScope =>
     ({ expectedSources, previewVisibility: previewVisibility(), today: today() });
@@ -128,8 +132,10 @@ export function createPGliteFinancialRegistry(
     "financial.deposit.commit": ([request], options) => commitPGliteCanonicalDepositCapture(store, request, options),
     "financial.balance.capture": ([request], options) => commitPGliteCanonicalBalanceCapture(store, request, options),
     "financial.einvoice.commit": ([request], options) => commitPGliteCanonicalEInvoiceCapture(store, request, options),
-    "financial.creditCard.commit": ([request], options) => commitPGliteCanonicalCreditCardCapture(store, request, options),
-    "financial.creditCard.balance": ([request], options) => commitPGliteCanonicalCreditCardBalanceCapture(store, request, options),
+    "financial.creditCard.commit": ([request], commit) =>
+      commitPGliteCanonicalCreditCardCapture(store, request, cardIdentity(commit)),
+    "financial.creditCard.balance": ([request], commit) =>
+      commitPGliteCanonicalCreditCardBalanceCapture(store, request, cardIdentity(commit)),
     "financial.loan.commit": ([request], options) => commitPGliteCanonicalLoanCapture(store, request, options),
     "financial.investment.commit": ([request], options) => commitPGliteCanonicalInvestmentCapture(store, request, options),
     "financial.loanRelations.resolve": ([request], options) => resolvePGliteCanonicalLoanRepaymentRelations(store, request, options),
@@ -143,7 +149,8 @@ export function createPGliteFinancialRegistry(
       return applyManualAssetCommand(store, command, manualClock);
     },
     "financial.canonical.reset": () => resetPGliteCanonicalStore(store),
-    "financial.canonical.resetRequired": () => canonicalResetRequiredNamespaces(store),
+    "financial.canonical.resetRequired": () =>
+      canonicalResetRequiredNamespaces(store, options.cardIdentityVerifier?.()),
   });
 }
 

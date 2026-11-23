@@ -110,7 +110,7 @@ function readJsonRecord(path: string) {
   return parsed as Record<string, unknown>;
 }
 
-function atomicWrite(path: string, text: string, mode = 0o600) {
+export function atomicWriteFile(path: string, text: string, mode = 0o600) {
   mkdirSync(dirname(path), { recursive: true });
   // Worker threads share the pid, so each write gets its own temporary file.
   const tempPath = `${path}.tmp-${process.pid}-${randomUUID()}`;
@@ -199,7 +199,7 @@ export function readAutomationCredentialsFile(
 }
 
 export function writeAutomationSettingsFile(path: string, settings: AutomationSettingsFile) {
-  atomicWrite(path, settingsFileText(settings));
+  atomicWriteFile(path, settingsFileText(settings));
 }
 
 export function writeAutomationCredentialsFile(
@@ -207,7 +207,7 @@ export function writeAutomationCredentialsFile(
   credentials: AutomationCredentialsFile,
   codec: AutomationCredentialCodec | null,
 ) {
-  atomicWrite(path, credentialsFileText(credentials, codec));
+  atomicWriteFile(path, credentialsFileText(credentials, codec));
 }
 
 export function createAutomationCredentialStore(
@@ -243,7 +243,7 @@ export function createAutomationSettingsStore(path: string): AutomationSettingsS
         } catch (writeError) {
           try {
             if (previous === null) rmSync(path, { force: true });
-            else atomicWrite(path, previous);
+            else atomicWriteFile(path, previous);
           } catch (rollbackError) {
             throw new AggregateError(
               [writeError, rollbackError],

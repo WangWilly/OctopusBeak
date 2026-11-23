@@ -17,6 +17,7 @@ import { encodeCreditCardQueryBucket } from "../canonical/credit-card-query-inve
 import { creditCardSpineEpochKey, supersededCreditCardSpineEpochKeys } from "../canonical/credit-card-identity-epochs.ts";
 import { ESUN_CREDIT_CARD_IDENTITY_EPOCHS } from "../canonical/esun-credit-card-human-attestation-contract.ts";
 import { canonicalResetRequiredNamespaces, resetPGliteCanonicalStore } from "./canonical-reset.ts";
+import { applyPgliteCardIdentitySecretSchema, cardIdentitySecretVerifier } from "./card-identity-secret.ts";
 
 const route = "esun/credit-card/human-attested-v4";
 const connection = "sha256:pglite-credit-card-check-connection";
@@ -481,6 +482,42 @@ test("a connection that keeps a superseded-epoch card account refuses new-epoch 
     await resetPGliteCanonicalStore(store);
     assert.deepEqual(await canonicalResetRequiredNamespaces(store), []);
     assert.equal((await commitPGliteCanonicalCreditCardCapture(store, current)).status, "committed");
+  } finally {
+    await store.close();
+  }
+});
+
+test("card accounts from an earlier Card identity secret refuse captures from a new one until a Canonical Reset", async () => {
+  const database = await createTestPGlite("ledger");
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteCardIdentitySecretSchema(store);
+    const original = { cardIdentityVerifier: cardIdentitySecretVerifier("original-secret") };
+    const replacement = { cardIdentityVerifier: cardIdentitySecretVerifier("replacement-secret") };
+    assert.equal((await commitPGliteCanonicalCreditCardCapture(store, capture("first-secret"), original)).status, "committed");
+    assert.deepEqual(await canonicalResetRequiredNamespaces(store, original.cardIdentityVerifier), []);
+    assert.deepEqual(await canonicalResetRequiredNamespaces(store, replacement.cardIdentityVerifier), ["esun"]);
+
+    const before = await admittedRowCounts(store);
+    await assert.rejects(
+      commitPGliteCanonicalCreditCardCapture(store, capture("second-secret", token("re-derived-card-account")), replacement),
+      (error) => error instanceof PGliteCanonicalCreditCardAdmissionError && error.code === "canonical-reset-required",
+    );
+    assert.deepEqual(await admittedRowCounts(store), before, "a refused capture writes nothing");
+    assert.equal(
+      (await commitPGliteCanonicalCreditCardCapture(store, statementGridCapture("other-source-under-new-secret", ["billed"]), replacement)).status,
+      "committed",
+      "a source with no card account from the old secret has nothing to split",
+    );
+
+    await resetPGliteCanonicalStore(store);
+    assert.deepEqual(await canonicalResetRequiredNamespaces(store, replacement.cardIdentityVerifier), []);
+    assert.equal((await commitPGliteCanonicalCreditCardCapture(store, capture("after-reset", token("re-derived-card-account")), replacement)).status, "committed");
+    assert.deepEqual(
+      await canonicalResetRequiredNamespaces(store, original.cardIdentityVerifier),
+      ["esun"],
+      "the ledger adopted the new secret once nothing could split",
+    );
   } finally {
     await store.close();
   }
