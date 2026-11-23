@@ -299,6 +299,26 @@ try {
     migrateStatementSelectionIds(join(dir, "missing-settings.json"));
     assert.equal(existsSync(join(dir, "missing-settings.json")), false, "no settings file is created");
   }
+
+  {
+    // Credentials the Keychain can no longer decrypt: settings migrate, credential lines wait in .env.
+    const unreadableEnvPath = join(dir, "unreadable.env");
+    const unreadableSettingsPath = join(dir, "unreadable-settings.json");
+    const unreadableCredentialsPath = join(dir, "unreadable-credentials.json");
+    const envelope = JSON.stringify({ format: AUTOMATION_CREDENTIALS_FORMAT, data: "bG9zdA==" });
+    writeFileSync(unreadableCredentialsPath, envelope);
+    writeFileSync(unreadableEnvPath, `LIBRETTO_CLOUD_FUBON_ENABLED=false\n${fubonPasswordKey}=legacy-pw\n`);
+
+    migrateAutomationEnvFile({
+      envPath: unreadableEnvPath,
+      settings: createAutomationSettingsStore(unreadableSettingsPath),
+      credentials: createAutomationCredentialStore(unreadableCredentialsPath, fakeCodec),
+    });
+
+    assert.equal(readAutomationSettingsFile(unreadableSettingsPath).LIBRETTO_CLOUD_FUBON_ENABLED, false);
+    assert.equal(readFileSync(unreadableCredentialsPath, "utf8"), envelope);
+    assert.equal(readFileSync(unreadableEnvPath, "utf8"), `${fubonPasswordKey}=legacy-pw\n`);
+  }
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }

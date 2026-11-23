@@ -110,7 +110,7 @@ function readJsonRecord(path: string) {
   return parsed as Record<string, unknown>;
 }
 
-function atomicWrite(path: string, text: string, mode = 0o600) {
+export function atomicWriteFile(path: string, text: string, mode = 0o600) {
   mkdirSync(dirname(path), { recursive: true });
   // Worker threads share the pid, so each write gets its own temporary file.
   const tempPath = `${path}.tmp-${process.pid}-${randomUUID()}`;
@@ -199,7 +199,7 @@ export function readAutomationCredentialsFile(
 }
 
 export function writeAutomationSettingsFile(path: string, settings: AutomationSettingsFile) {
-  atomicWrite(path, settingsFileText(settings));
+  atomicWriteFile(path, settingsFileText(settings));
 }
 
 export function writeAutomationCredentialsFile(
@@ -207,7 +207,7 @@ export function writeAutomationCredentialsFile(
   credentials: AutomationCredentialsFile,
   codec: AutomationCredentialCodec | null,
 ) {
-  atomicWrite(path, credentialsFileText(credentials, codec));
+  atomicWriteFile(path, credentialsFileText(credentials, codec));
 }
 
 export function createAutomationCredentialStore(
@@ -243,7 +243,7 @@ export function createAutomationSettingsStore(path: string): AutomationSettingsS
         } catch (writeError) {
           try {
             if (previous === null) rmSync(path, { force: true });
-            else atomicWrite(path, previous);
+            else atomicWriteFile(path, previous);
           } catch (rollbackError) {
             throw new AggregateError(
               [writeError, rollbackError],
@@ -350,16 +350,24 @@ export function credentialStatusFromValues(
   return Object.fromEntries(keys.map((key) => [key, Boolean(credentials[key]?.trim())]));
 }
 
-function withoutKnownAutomationLines(envText: string) {
+function withoutAutomationLines(envText: string, keys: ReadonlySet<string>) {
   return `${envText
     .replace(/\r\n/g, "\n")
     .split("\n")
     .filter((line) => {
       const match = /^([A-Za-z_][A-Za-z0-9_]*)=/.exec(line);
-      return !match || !automationKnownKeys.has(match[1]);
+      return !match || !keys.has(match[1]);
     })
     .filter((line, index, lines) => line || index < lines.length - 1)
     .join("\n")}\n`;
+}
+
+/** Drops every credential line from a legacy .env, so a cleared credential cannot migrate back. */
+export function removeAutomationCredentialsFromEnvFile(envPath: string): void {
+  if (!existsSync(envPath)) return;
+  const envText = readFileSync(envPath, "utf8");
+  const kept = withoutAutomationLines(envText, automationSecretKeys);
+  if (kept !== envText) writeFileSync(envPath, kept, { encoding: "utf8", mode: 0o600 });
 }
 
 export function migrateAutomationEnvFile({
@@ -375,7 +383,13 @@ export function migrateAutomationEnvFile({
   const envText = readFileSync(envPath, "utf8");
   const parsed = parseEnvText(envText);
   const existingSettings = readAutomationSettingsFile(settings.path);
-  const existingCredentials = credentials.read();
+  // Credentials that cannot be read keep their .env lines for a later start; settings migrate now.
+  let existingCredentials: AutomationCredentialsFile | null;
+  try {
+    existingCredentials = credentials.read();
+  } catch {
+    existingCredentials = null;
+  }
   const migrated = splitAutomationUpdates(parsed);
 
   const hasSettings = Object.keys(migrated.settings).length > 0 || existsSync(settings.path);
@@ -386,14 +400,15 @@ export function migrateAutomationEnvFile({
       ...existingSettings,
     });
   }
-  if (hasCredentials) {
+  if (hasCredentials && existingCredentials) {
     credentials.write({
       ...migrated.credentials,
       ...existingCredentials,
     });
   }
-  if (Object.keys(migrated.settings).length > 0 || Object.keys(migrated.credentials).length > 0) {
-    writeFileSync(envPath, withoutKnownAutomationLines(envText), { encoding: "utf8", mode: 0o600 });
+  const migratedKeys = existingCredentials ? automationKnownKeys : automationSettingKeys;
+  if (Object.keys(migrated.settings).length > 0 || (existingCredentials && Object.keys(migrated.credentials).length > 0)) {
+    writeFileSync(envPath, withoutAutomationLines(envText, migratedKeys), { encoding: "utf8", mode: 0o600 });
   }
 }
 

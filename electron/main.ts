@@ -47,6 +47,7 @@ import type { ErrorReportInput } from "../src/lib/automation/error-report-contra
 import { createBeforeQuitHandler, quitOnTerminationSignals } from "./automation-shutdown.ts";
 import { applyOctopusBeakAppIdentity } from "./app-identity.ts";
 import { openSafeStorageCredentialStore } from "./credential-codec.ts";
+import { CARD_IDENTITY_VERIFIER_FILE } from "../src/lib/automation/server/card-identity-verifier.ts";
 import { createExchangeRateScheduler, createScheduledCollectionScheduler } from "./daily-scheduler.ts";
 import { requestNotificationTarget, takeNotificationTarget } from "./notification-target.ts";
 import type { NotificationTarget } from "../src/lib/desktop/api.ts";
@@ -398,12 +399,17 @@ async function start() {
     userData,
     appRoot,
   }));
-  const credentials = openSafeStorageCredentialStore(path.join(userData, AUTOMATION_CREDENTIALS_FILE));
+  const cardIdentityVerifierPath = path.join(userData, CARD_IDENTITY_VERIFIER_FILE);
+  const credentials = openSafeStorageCredentialStore(
+    path.join(userData, AUTOMATION_CREDENTIALS_FILE),
+    cardIdentityVerifierPath,
+  );
   const automationSettings = createAutomationSettingsStore(path.join(userData, AUTOMATION_SETTINGS_FILE));
   migrateAutomationEnvFile({ envPath: path.join(userData, ".env"), settings: automationSettings, credentials });
   migrateStatementSelectionIds(automationSettings.path);
   const operationalRuntime = createPGliteOperationalRuntime({
     dataDir: path.join(userData, "data", "pglite"),
+    cardIdentityVerifierPath,
     activeRun: (taskRunId) => automationRuntime?.activeRun(taskRunId) ?? null,
     credentials,
     settings: automationSettings,

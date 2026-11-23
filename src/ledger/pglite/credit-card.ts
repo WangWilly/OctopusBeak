@@ -17,6 +17,8 @@ import {
 } from "./canonical-source-store.ts";
 import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
 import { canonicalResetRequiredFor } from "./canonical-reset.ts";
+import type { CardIdentitySecret } from "../../lib/shared-identity/card-identity-secret.ts";
+import { admitCardIdentitySecret } from "./card-identity-secret.ts";
 import {
   decodeCreditCardQueryBucket,
   promisesBilledMonotonicity,
@@ -692,10 +694,15 @@ async function persistBalanceEstimate(
   return true;
 }
 
+/** A card commit also knows which Card identity secret derived its identities (ADR 0149). */
+export type PGliteCanonicalCreditCardCommitOptions = PGliteCanonicalCommitOptions & Readonly<{
+  cardIdentitySecret?: CardIdentitySecret;
+}>;
+
 export async function commitPGliteCanonicalCreditCardCapture(
   store: PGliteStore,
   request: PGliteCanonicalCreditCardCaptureRequest,
-  options: PGliteCanonicalCommitOptions = {},
+  options: PGliteCanonicalCreditCardCommitOptions = {},
 ): Promise<PGliteCanonicalCreditCardCommitResult> {
   const input = structuredClone(request);
   validateRequest(input);
@@ -703,6 +710,8 @@ export async function commitPGliteCanonicalCreditCardCapture(
     const snapshot = input;
     if (await canonicalResetRequiredFor(transaction, snapshot.capture))
       fail("canonical-reset-required", "Credit-card accounts of a superseded identity epoch remain; a Canonical Reset must remove them first.");
+    if (!await admitCardIdentitySecret(transaction, snapshot.capture.integrationNamespace, options.cardIdentitySecret))
+      fail("canonical-reset-required", "Credit-card accounts derived from an earlier Card identity secret remain; a Canonical Reset must remove them first.");
     const expectedBilled = await listExpectedBilledMembers(transaction, snapshot);
     await assertSupersededMembersStayReplaced(transaction, snapshot);
     const { supersessions, withdrawals } = await resolveVanishedUnbilledMembers(transaction, snapshot);
@@ -751,7 +760,7 @@ export async function commitPGliteCanonicalCreditCardCapture(
 export async function commitPGliteCanonicalCreditCardBalanceCapture(
   store: PGliteStore,
   request: PGliteCanonicalCreditCardBalanceCaptureRequest,
-  options: PGliteCanonicalCommitOptions = {},
+  options: PGliteCanonicalCreditCardCommitOptions = {},
 ): Promise<PGliteCanonicalCreditCardCommitResult> {
   return commitPGliteCanonicalCreditCardCapture(store, {
     ...request,

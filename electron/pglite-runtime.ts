@@ -38,6 +38,8 @@ export type PGliteOperationalRuntime = Readonly<{
 
 export type PGliteOperationalRuntimeOptions = {
   dataDir: string;
+  /** The worker compares this Card identity secret verifier with the ledger's at each card commit (ADR 0149). */
+  cardIdentityVerifierPath?: string;
   /** The runner's lookup; commit admission reaches the run's current execution through it. */
   activeRun: (taskRunId: string) => ActiveAutomationTaskRun | null;
   /** Commit admission compares the run's launched Collection scope with these current credentials. */
@@ -62,7 +64,11 @@ export function createPGliteOperationalRuntime(
   const worker = options.worker ?? superviseWorker({
     spawn: () => createPGliteViewWorkerClient(
       new Worker(options.workerPath ?? join(__dirname, "pglite-view-worker.cjs"), {
-        workerData: { dataDir: options.dataDir, settingsPath: options.settings.path },
+        workerData: {
+          dataDir: options.dataDir,
+          settingsPath: options.settings.path,
+          cardIdentityVerifierPath: options.cardIdentityVerifierPath,
+        },
       }),
     ),
     onRestart: (error) => console.error("pglite-worker-restarted", error.message),
