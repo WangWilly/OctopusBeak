@@ -68,7 +68,7 @@ Copies already stored stay as they are. A compaction of existing duplicates will
   4. credit-card domain rows written only on change, after the check gains a mode that drives the credit-card command;
   5. the other domain commands.
 - The Fubon and Yuanta loan adapters number rows by their position in the response, so a row that ages out of the window renumbers the rows after it, and those records are stored again. Reusing them needs a position-independent source sequence index, which is still open.
-- `financial_account_identifier_observations` still gains one row per capture.
+- `financial_account_identifier_observations` keeps one row per account, identifier, evidence version and source field: the first capture that sees it. Account identity continuity (ADR 0049) asks only whether one exists.
 - Copies stored before this change stay as they are; compacting them is still open.
 - Loan counterparty evidence on a reused record finds its transaction through the revision that record created. On a copy it matches the capture's account and the fact's source sequence instead. Both name the same transaction when a fact is keyed by its occurrence, as deposit facts are.
 - Loan counterparty evidence is the one new row that may cite a reused record. Its row names the record and the capture that sighted it, which is not the capture that owns the record. This is safe because its readers join that capture only to read when it was observed, and no reader matches it to the record's owner.
