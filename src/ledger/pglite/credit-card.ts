@@ -295,6 +295,7 @@ function occurrenceGroupKey(scopeKey: string, partitionDate: string, fingerprint
  * Per occurrence group, the billed members a prior capture of this contract
  * located in a bucket that promises Billed Monotonicity and that this capture
  * queried again (ADR 0062). Read before admission, which relocates them.
+ * A member's billing status is its transaction's latest lifecycle status.
  */
 async function listExpectedBilledMembers(
   transaction: PGliteTransaction,
@@ -309,25 +310,55 @@ async function listExpectedBilledMembers(
     fail("invalid-contract", "Credit-card capture requires complete queried-bucket inventory.");
   const sourceSubjectId = await findPGliteSourceSubjectId(transaction, capture);
   if (!sourceSubjectId) return new Map();
-  const expected: Array<{ groupKey: string; sourceRecordId: string }> = [];
+  const expected: Array<{ groupKey: string; transactionId: string }> = [];
   for (const entry of coverage) {
     for (const occurrence of await listPGliteExpectedOccurrences(transaction, sourceSubjectId, capture.recordKind, entry))
-      if (promisesBilledMonotonicity(decodeCreditCardQueryBucket(occurrence.bucketKey)))
+      if (occurrence.transactionId !== null && promisesBilledMonotonicity(decodeCreditCardQueryBucket(occurrence.bucketKey)))
         expected.push({
           groupKey: occurrenceGroupKey(entry.scopeKey, occurrence.partitionDate, occurrence.fingerprint),
-          sourceRecordId: occurrence.sourceRecordId,
+          transactionId: occurrence.transactionId,
         });
   }
   if (expected.length === 0) return new Map();
-  const billedRecords = new Set((await query<{ source_record_id: unknown }>(transaction, `
-    SELECT source_record_id FROM canonical_credit_card_transaction_lifecycle
-    WHERE billing_status = 'billed' AND source_record_id IN (${expected.map(() => "?").join(",")})`,
-  expected.map((occurrence) => bytes(occurrence.sourceRecordId)))).map((row) => idText(row.source_record_id)));
+  const latest = await listLatestLifecycle(transaction, expected.map((occurrence) => occurrence.transactionId));
   const billedByGroup = new Map<string, number>();
   for (const occurrence of expected)
-    if (billedRecords.has(occurrence.sourceRecordId))
+    if (latest.get(occurrence.transactionId)?.billingStatus === "billed")
       billedByGroup.set(occurrence.groupKey, (billedByGroup.get(occurrence.groupKey) ?? 0) + 1);
   return billedByGroup;
+}
+
+type LatestLifecycle = Readonly<{ billingStatus: "billed" | "unbilled"; instrumentKey: string; direction: string }>;
+
+/**
+ * Each transaction's latest lifecycle row: the one written by the latest
+ * commit, by commit sequence. It is read by transaction rather than through a
+ * Source Record copy, so it holds when the latest copy has no lifecycle row of
+ * its own: a new copy whose lifecycle row was skipped as unchanged (ADR 0152). A transaction without a
+ * lifecycle row is absent from the result.
+ */
+async function listLatestLifecycle(
+  transaction: PGliteTransaction,
+  transactionIds: readonly string[],
+): Promise<ReadonlyMap<string, LatestLifecycle>> {
+  const ids = [...new Set(transactionIds)];
+  if (ids.length === 0) return new Map();
+  const rows = await query<{ transaction_id: unknown; billing_status: "billed" | "unbilled"; instrument_key: string; direction: string }>(transaction, `
+    SELECT DISTINCT ON (lifecycle.transaction_id)
+      lifecycle.transaction_id, lifecycle.billing_status, instrument.instrument_key, revision.direction
+    FROM canonical_credit_card_transaction_lifecycle lifecycle
+    JOIN canonical_credit_card_instruments instrument ON instrument.instrument_id = lifecycle.instrument_id
+    JOIN transaction_revisions revision ON revision.revision_id = lifecycle.revision_id
+    JOIN source_captures source_capture ON source_capture.capture_id = lifecycle.capture_id
+    JOIN canonical_commits commit_row ON commit_row.commit_id = source_capture.commit_id
+    WHERE lifecycle.transaction_id IN (${ids.map(() => "?").join(",")})
+    ORDER BY lifecycle.transaction_id, commit_row.commit_sequence DESC, lifecycle.lifecycle_event_id DESC`,
+  ids.map((id) => bytes(id)));
+  return new Map(rows.map((row) => [idText(row.transaction_id), {
+    billingStatus: row.billing_status,
+    instrumentKey: row.instrument_key,
+    direction: row.direction,
+  }]));
 }
 
 /**
@@ -397,28 +428,17 @@ async function resolveVanishedUnbilledMembers(
   }
   if (vanished.length === 0) return none;
 
-  const priorRows = await query<{ transaction_id: unknown; billing_status: string; instrument_key: string; direction: string }>(transaction, `
-    SELECT DISTINCT ON (lifecycle.transaction_id)
-      lifecycle.transaction_id, lifecycle.billing_status, instrument.instrument_key, revision.direction
-    FROM canonical_credit_card_transaction_lifecycle lifecycle
-    JOIN canonical_credit_card_instruments instrument ON instrument.instrument_id = lifecycle.instrument_id
-    JOIN transaction_revisions revision ON revision.revision_id = lifecycle.revision_id
-    JOIN source_captures source_capture ON source_capture.capture_id = lifecycle.capture_id
-    JOIN canonical_commits commit_row ON commit_row.commit_id = source_capture.commit_id
-    WHERE lifecycle.transaction_id IN (${vanished.map(() => "?").join(",")})
-    ORDER BY lifecycle.transaction_id, commit_row.commit_sequence DESC, lifecycle.lifecycle_event_id DESC`,
-  vanished.map((member) => bytes(member.transactionId)));
-  const priorByTransaction = new Map(priorRows.map((row) => [idText(row.transaction_id), row]));
+  const priorByTransaction = await listLatestLifecycle(transaction, vanished.map((member) => member.transactionId));
   const pairKey = (scopeKey: string, instrumentKey: string, partitionDate: string): string =>
     JSON.stringify([scopeKey, instrumentKey, partitionDate]);
   const dateKey = (scopeKey: string, partitionDate: string): string => JSON.stringify([scopeKey, partitionDate]);
   const vanishedUnbilled = new Map<string, Readonly<{ scopeKey: string; partitionDate: string; members: VanishedUnbilledMember[] }>>();
   for (const member of vanished) {
     const prior = priorByTransaction.get(member.transactionId);
-    if (!prior || prior.billing_status !== "unbilled") continue;
-    const key = pairKey(member.scopeKey, prior.instrument_key, member.partitionDate);
+    if (!prior || prior.billingStatus !== "unbilled") continue;
+    const key = pairKey(member.scopeKey, prior.instrumentKey, member.partitionDate);
     const entry = vanishedUnbilled.get(key) ?? { scopeKey: member.scopeKey, partitionDate: member.partitionDate, members: [] };
-    entry.members.push({ transactionId: member.transactionId, direction: prior.direction, instrumentKey: prior.instrument_key });
+    entry.members.push({ transactionId: member.transactionId, direction: prior.direction, instrumentKey: prior.instrumentKey });
     vanishedUnbilled.set(key, entry);
   }
   if (vanishedUnbilled.size === 0) return none;

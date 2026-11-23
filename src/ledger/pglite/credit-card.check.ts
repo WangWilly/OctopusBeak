@@ -764,6 +764,80 @@ test("a Yuanta billed member that reverts to unbilled in its queried statement b
   }
 });
 
+/**
+ * Two captures store two copies of one member, then the newest lifecycle row
+ * is deleted. Under ADR 0152, a re-sync writes a new copy when a stored field
+ * or the coverage shape differs, and skips the lifecycle row when the billing
+ * status is unchanged. The latest copy then has no lifecycle row of its own,
+ * and only an earlier capture records the status.
+ */
+async function storeMembersWithoutLatestLifecycle(store: PGliteStore, billingStatuses: readonly ("billed" | "unbilled")[]): Promise<void> {
+  await commitPGliteCanonicalCreditCardCapture(store, statementGridCapture("first-copy", billingStatuses));
+  await commitPGliteCanonicalCreditCardCapture(store, statementGridCapture("second-copy", billingStatuses));
+  const deleted = await store.query(`
+    DELETE FROM canonical_credit_card_transaction_lifecycle
+    WHERE capture_id = (
+      SELECT source_capture.capture_id FROM source_captures source_capture
+      JOIN canonical_commits commit_row ON commit_row.commit_id = source_capture.commit_id
+      ORDER BY commit_row.commit_sequence DESC LIMIT 1)`);
+  assert.equal(deleted.affectedRows, billingStatuses.length);
+  const remaining = await store.query<{ copies: number; lifecycle: number }>(`
+    SELECT
+      (SELECT COUNT(*)::int FROM source_records WHERE occurrence_group_fingerprint IS NOT NULL) AS copies,
+      (SELECT COUNT(*)::int FROM canonical_credit_card_transaction_lifecycle) AS lifecycle`);
+  assert.deepEqual(remaining.rows[0], { copies: 2 * billingStatuses.length, lifecycle: billingStatuses.length });
+}
+
+test("billed monotonicity reads the latest lifecycle by transaction when the latest copy has none", async (t) => {
+  await t.test("a billed member that reverts to unbilled is rejected", async () => {
+    const store = new PGliteStore(await createTestPGlite("ledger"));
+    try {
+      await storeMembersWithoutLatestLifecycle(store, ["billed"]);
+      await assert.rejects(
+        commitPGliteCanonicalCreditCardCapture(store, statementGridCapture("billed-reverted", ["unbilled"])),
+        (error) => error instanceof PGliteCanonicalCreditCardAdmissionError && error.code === "revision-conflict",
+      );
+    } finally {
+      await store.close();
+    }
+  });
+
+  await t.test("a billed member that disappears is rejected", async () => {
+    const store = new PGliteStore(await createTestPGlite("ledger"));
+    try {
+      await storeMembersWithoutLatestLifecycle(store, ["billed", "billed"]);
+      await assert.rejects(
+        commitPGliteCanonicalCreditCardCapture(store, statementGridCapture("billed-vanished", ["billed"])),
+        /cannot lose members/u,
+      );
+    } finally {
+      await store.close();
+    }
+  });
+
+  await t.test("an unbilled member that disappears is withdrawn", async () => {
+    const store = new PGliteStore(await createTestPGlite("ledger"));
+    try {
+      await storeMembersWithoutLatestLifecycle(store, ["unbilled", "unbilled"]);
+      const result = await commitPGliteCanonicalCreditCardCapture(store, statementGridCapture("unbilled-vanished", ["unbilled"]));
+      assert.equal(result.status, "committed");
+    } finally {
+      await store.close();
+    }
+  });
+
+  await t.test("an unbilled member that stays unbilled is accepted", async () => {
+    const store = new PGliteStore(await createTestPGlite("ledger"));
+    try {
+      await storeMembersWithoutLatestLifecycle(store, ["unbilled"]);
+      const result = await commitPGliteCanonicalCreditCardCapture(store, statementGridCapture("unbilled-again", ["unbilled"]));
+      assert.equal(result.status, "committed");
+    } finally {
+      await store.close();
+    }
+  });
+});
+
 test("an unbilled member beside a billed member whose statement bucket was not queried is accepted", async () => {
   const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
