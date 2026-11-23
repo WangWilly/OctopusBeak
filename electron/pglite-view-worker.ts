@@ -10,6 +10,7 @@ import {
   createPgliteOperationalProvider,
 } from "../src/ledger/pglite/operational.ts";
 import { repairCorruptIndexes, type IndexRepair } from "../src/ledger/pglite/catalog-repair.ts";
+import { isLedgerUnusable, LEDGER_UNUSABLE_CODE, LedgerUnusableError } from "./ledger-unusable.ts";
 import { installFinancialStore } from "../src/ledger/pglite/store-layout.ts";
 import type { PGliteStore } from "../src/ledger/pglite/transaction.ts";
 import { startPgliteWalCheckpoints } from "../src/ledger/pglite/wal-checkpoint.ts";
@@ -78,7 +79,7 @@ async function assertIndexesUsable(db: PGlite): Promise<void> {
     ? `corrupt indexes ${repair.corrupt.join(", ")} could not be rebuilt: ${messageOf(repair.error)}`
     : `its indexes could not be checked: ${messageOf(repair.error)}`;
   console.error("pglite-index-check-refused", detail);
-  throw new Error(`The local ledger did not open because ${detail}`);
+  throw new LedgerUnusableError(`The local ledger did not open because ${detail}`);
 }
 
 export async function startPGliteViewWorker(
@@ -180,6 +181,7 @@ if (parentPort) {
       port.postMessage({
         kind: "worker-start-failed",
         message: error instanceof Error ? error.message : String(error),
+        ...(isLedgerUnusable(error) ? { code: LEDGER_UNUSABLE_CODE } : {}),
       });
     } catch {
       // The parent may have terminated the worker while startup was failing.

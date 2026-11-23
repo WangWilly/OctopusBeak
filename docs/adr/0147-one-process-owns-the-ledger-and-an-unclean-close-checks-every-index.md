@@ -23,5 +23,5 @@ ADR 0029 coordinated several processes writing one SQLite ledger through a sidec
 ## Consequences
 
 - The first open after this change checks once, because no store has the record yet.
-- A store with a duplicate behind a broken unique index does not open until someone repairs it by hand. There is no in-app recovery yet.
+- A store with a duplicate behind a broken unique index does not open until someone repairs it. [ADR 0150](./0150-an-unusable-ledger-asks-to-retry-or-rebuild.md) lets the person retry or set the ledger aside and rebuild.
 - A worker that misses its shutdown bound and is terminated leaves no record, so the next open checks.
