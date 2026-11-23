@@ -14,8 +14,8 @@ for (const channel of [
 }
 assert.match(
   runtimeSource,
-  /workerData:\s*\{\s*dataDir: options\.dataDir,\s*settingsPath: options\.settings\.path\s*\}/u,
-  "the worker gets one explicit data directory and settings file",
+  /workerData:\s*\{\s*dataDir: options\.dataDir,\s*settingsPath: options\.settings\.path,\s*cardIdentityVerifierPath: options\.cardIdentityVerifierPath,\s*\}/u,
+  "the worker gets one explicit data directory, settings file and Card identity verifier file",
 );
 assert.doesNotMatch(source, /new Worker\(/u, "view IPC serves the operational runtime's worker and starts none");
 assert.match(source, /sender\.id/u, "subscriptions are scoped by renderer sender");
