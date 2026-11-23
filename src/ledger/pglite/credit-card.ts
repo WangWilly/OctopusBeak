@@ -968,6 +968,7 @@ async function persistBalanceEstimate(
 export type PGliteCanonicalCreditCardCommitOptions = PGliteCanonicalCommitOptions & Readonly<{
   cardIdentitySecret?: CardIdentitySecret;
   /**
+   * @internal Test-only; no app path sets it.
    * `false` stores every record of the capture again, as before ADR 0152,
    * while card rows are still written only where they changed. The reuse
    * check compares a store built this way with one that reuses records.

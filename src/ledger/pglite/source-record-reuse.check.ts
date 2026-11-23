@@ -1444,6 +1444,39 @@ equivalent("a card details-only change", async (ledger) => {
   await ledger.holds("sync-again", { stored: 0, reused: 6 });
 });
 
+// A value that changes and then changes back must be written again: each
+// card row is compared with the latest stored row, never with any stored one.
+equivalent("card rows that change and change back", async (ledger) => {
+  const purchases = (change: Readonly<{ holdListed?: boolean; postingDay?: number }>) =>
+    CARD_PURCHASES.map((purchase) => {
+      if (purchase.id === "hold")
+        return { ...purchase, billing: "billed" as const, postingDay: 21, ...(change.holdListed ? {} : { onStatement: false as const }) };
+      if (purchase.id === "a" && change.postingDay !== undefined) return { ...purchase, postingDay: change.postingDay };
+      return purchase;
+    });
+  const first = { revision: "revision-1", balance: "1000", evidence: "statement-1" };
+  const listed = { revision: "revision-2", balance: "1100", evidence: "statement-1" };
+  await cardCommit(ledger, cardSync("sync-1", purchases({}), { statement: first }));
+  // The statement lists the hold, and then no longer does: its lifecycle and
+  // details statement key and the statement's summary return to what they were.
+  await cardCommit(ledger, cardSync("sync-2", purchases({ holdListed: true }), { statement: listed }));
+  await cardCommit(ledger, cardSync("sync-3", purchases({}), { statement: first }));
+  await ledger.holds("sync-3", { stored: 2, reused: 4 });
+  assert.deepEqual(await cardRowCounts(ledger.store), { instrument_evidence: 1, details: 6, lifecycle: 6, statement_summary: 3 });
+  // A posting date that changes and changes back.
+  await cardCommit(ledger, cardSync("sync-4", purchases({ postingDay: 7 }), { statement: first }));
+  await cardCommit(ledger, cardSync("sync-5", purchases({}), { statement: first }));
+  await ledger.holds("sync-5", { stored: 1, reused: 5 });
+  assert.deepEqual(await cardRowCounts(ledger.store), { instrument_evidence: 1, details: 8, lifecycle: 6, statement_summary: 3 });
+  // Instrument evidence that moves to a new listing and back.
+  await cardCommit(ledger, cardSync("sync-6", purchases({}), { statement: first, instruments: [{ key: "primary", evidence: "listing-2" }] }));
+  await cardCommit(ledger, cardSync("sync-7", purchases({}), { statement: first }));
+  await ledger.holds("sync-7", { stored: 1, reused: 5 });
+  assert.equal((await cardRowCounts(ledger.store)).instrument_evidence, 3);
+  await cardCommit(ledger, cardSync("sync-8", purchases({}), { statement: first }));
+  await ledger.holds("sync-8", { stored: 0, reused: 6 });
+});
+
 equivalent("a current used-credit reading beside an unchanged card re-sync", async (ledger) => {
   await cardCommit(ledger, cardSync("sync-1", CARD_PURCHASES));
   await ledger.commitCardBalance(usedCredit("used-credit-1", "2026-09-30T00:00:00.000Z"));
