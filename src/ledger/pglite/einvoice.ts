@@ -532,7 +532,7 @@ export async function commitPGliteCanonicalEInvoiceCapture(
   const snapshot = structuredClone(input);
   const normalized = normalizeCapture(snapshot);
   return store.transaction(async (transaction) => {
-    const admitted = await admitPGliteCanonicalSourceCaptureInTransaction(transaction, normalized.evidence, options);
+    const admitted = await admitPGliteCanonicalSourceCaptureInTransaction(transaction, normalized.evidence, options, "any");
     await query(transaction, `INSERT INTO einvoice_captures(
       capture_id, capture_key, scope_id, source_connection_id, identity_epoch_id,
       source_subject_id, authority_route, contract_version, stream, record_kind,

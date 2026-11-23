@@ -158,11 +158,20 @@ test("PGlite canonical source admission writes typed facts atomically", async ()
     assert.deepEqual(await counts(store), {
       captures: 2,
       commits: 3,
-      provenance: 2,
-      records: 2,
+      provenance: 1,
+      records: 1,
       revisions: 1,
       transactions: 1,
     });
+    assert.deepEqual(
+      (await store.query<{ capture_key: string; record_count: number }>(
+        `SELECT capture.capture_key, manifest.record_count
+           FROM capture_source_record_manifests manifest
+           JOIN source_captures capture ON capture.capture_id = manifest.capture_id`,
+      )).rows,
+      [{ capture_key: "capture-2", record_count: 1 }],
+      "the unchanged record is reused through the second capture's manifest (ADR 0152)",
+    );
     assert.deepEqual(
       (await store.query<{ recorded_at_utc_us: number | string }>(
         "SELECT recorded_at_utc_us FROM canonical_commits ORDER BY commit_sequence",
@@ -219,8 +228,8 @@ test("PGlite canonical source admission writes typed facts atomically", async ()
     assert.deepEqual(await counts(store), {
       captures: 2,
       commits: 3,
-      provenance: 2,
-      records: 2,
+      provenance: 1,
+      records: 1,
       revisions: 1,
       transactions: 1,
     });
@@ -239,8 +248,8 @@ test("PGlite canonical source admission writes typed facts atomically", async ()
     assert.deepEqual(await counts(store), {
       captures: 2,
       commits: 3,
-      provenance: 2,
-      records: 2,
+      provenance: 1,
+      records: 1,
       revisions: 1,
       transactions: 1,
     });

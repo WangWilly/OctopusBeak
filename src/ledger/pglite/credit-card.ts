@@ -744,7 +744,7 @@ export async function commitPGliteCanonicalCreditCardCapture(
       withdrawalPolicy: "never-infer",
       occurrenceSupersessions: supersessions,
       occurrenceWithdrawals: withdrawals,
-    }, options);
+    }, options, "any");
     assertBilledMonotonicity(expectedBilled, snapshot);
     const generic = admitted.result;
     const sourceRecordByOccurrence = admitted.capture.sourceRecordIdsByOccurrence;

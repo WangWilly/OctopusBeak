@@ -1,8 +1,9 @@
 /**
  * How much the canonical store grows when a source is synced again with
- * nothing new (ADR 0152). It commits the same capture repeatedly, changing
- * only the capture id, and fails when any table gains rows in proportion to
- * the records re-sighted rather than a fixed number per capture.
+ * nothing new (ADR 0152). It commits the same records repeatedly, each time
+ * under a new capture id and a window that ends a day later, as a collection
+ * window does. It fails when any table gains rows in proportion to the
+ * records re-sighted rather than a fixed number per capture.
  *
  *   npm run check:pglite-resync-growth
  *
@@ -50,15 +51,17 @@ const ROWS_PER_RESYNC_BUDGET = 8;
 /**
  * Bytes an unchanged re-sync may add per record seen again: a reused record
  * costs about 16 bytes in its capture's manifest, and a capture's own rows
- * are spread over its records. Today it is about 5,100.
+ * are spread over its records. Storing each record again cost about 3,900.
  */
 const BYTES_PER_RECORD_BUDGET = 256;
 
 const token = (value: string) => `sha256:${createHash("sha256").update(value, "utf8").digest("base64url")}`;
 const day = (index: number) => new Date(Date.UTC(2026, 0, 1) + index * 86_400_000).toISOString().slice(0, 10);
 
-/** One complete bounded capture of `RECORDS` synthetic rows; only `captureId` differs between syncs. */
-function capture(mode: Mode, captureId: string): PGliteCanonicalFinancialCommitRequest {
+/** One complete bounded capture of `RECORDS` synthetic rows; sync `sync` ends its window that many days later. */
+function capture(mode: Mode, sync: number): PGliteCanonicalFinancialCommitRequest {
+  const captureId = `${mode}-capture-${sync}`;
+  const endDate = day(180 + sync);
   const card = mode === "card-route";
   const scopeKey = token("scope");
   const routeKey = card ? "fubon/credit-card/human-attested-v2" : "fubon/domestic-deposit/human-attested-v1";
@@ -115,7 +118,7 @@ function capture(mode: Mode, captureId: string): PGliteCanonicalFinancialCommitR
       },
       scope: {
         startDate: "2026-01-01",
-        endDate: "2026-06-30",
+        endDate,
         dateFormat: "YYYY-MM-DD",
         kind: "bounded-range",
         completeness: "complete-range",
@@ -128,7 +131,7 @@ function capture(mode: Mode, captureId: string): PGliteCanonicalFinancialCommitR
       occurrenceGroupCoverage: [{
         scopeKey,
         startDate: "2026-01-01",
-        endDate: "2026-06-30",
+        endDate,
         contractVersion,
         ...(bucketKeys ? { bucketKeys } : {}),
       }],
@@ -196,13 +199,13 @@ async function deadTuples(store: PGliteStore): Promise<number> {
 async function measure(mode: Mode) {
   const store = await installFinancialStore(await PGlite.create());
   try {
-    await commitPGliteCanonicalFinancialCapture(store, capture(mode, `${mode}-capture-1`));
+    await commitPGliteCanonicalFinancialCapture(store, capture(mode, 1));
     const afterFirst = await rowCounts(store);
     const bytesAfterFirst = await databaseBytes(store);
     const deadAfterFirst = await deadTuples(store);
     const started = performance.now();
     for (let sync = 2; sync <= SYNCS; sync += 1) {
-      await commitPGliteCanonicalFinancialCapture(store, capture(mode, `${mode}-capture-${sync}`));
+      await commitPGliteCanonicalFinancialCapture(store, capture(mode, sync));
     }
     const resyncMs = (performance.now() - started) / (SYNCS - 1);
     const afterLast = await rowCounts(store);

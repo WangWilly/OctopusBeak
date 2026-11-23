@@ -339,7 +339,11 @@ test("PGlite source revision recurrence and complete-range withdrawal update cur
     const empty = cathayDepositCapture("projection-empty", false);
     await commitPGliteCanonicalDepositCapture(store, empty);
     assert.equal(Number((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM current_transactions")).rows[0]?.count), 0);
-    assert.equal(Number((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM source_records")).rows[0]?.count), 2);
+    assert.equal(
+      Number((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM source_records")).rows[0]?.count),
+      1,
+      "the recurrent capture reuses the stored record (ADR 0152)",
+    );
   } finally {
     await store.close();
   }
