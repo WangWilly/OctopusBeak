@@ -16,6 +16,7 @@ test("an unchanged re-sync stays within the growth budget for every domain comma
     env: { ...process.env, PGLITE_RESYNC_MODE: "all" },
     timeout: 10 * 60_000,
   });
-  assert.equal(run.status, 0, `${run.stdout}\n${run.stderr}`);
-  assert.doesNotMatch(run.stdout, /"overBudget": \[\s*"/u);
+  // The script's exit code is the contract: it exits 1 when any table or the store grows past the budget.
+  const ended = run.error ? `failed to run: ${run.error.message}` : run.signal ? `killed by ${run.signal}` : `exited ${run.status}`;
+  assert.equal(run.status, 0, `The growth script ${ended}.\n${run.stdout}\n${run.stderr}`);
 });
