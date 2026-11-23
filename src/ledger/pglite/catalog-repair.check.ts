@@ -126,3 +126,20 @@ test("an invalid index, which amcheck cannot check, is rebuilt instead of refusi
     await db.close();
   }
 });
+
+test("an index that never became ready is left alone, even over a duplicate", async () => {
+  const db = await PGlite.create({ extensions: { amcheck } });
+  try {
+    await db.exec(`
+      CREATE TABLE ledger_rows (source_sequence text NOT NULL);
+      INSERT INTO ledger_rows VALUES ('sequence-1'), ('sequence-1');`);
+    await assert.rejects(
+      db.exec("CREATE UNIQUE INDEX CONCURRENTLY ledger_rows_sequence ON ledger_rows (source_sequence)"),
+      { code: "23505" },
+    );
+
+    assert.deepEqual(await repairCorruptIndexes(db), { status: "intact" });
+  } finally {
+    await db.close();
+  }
+});

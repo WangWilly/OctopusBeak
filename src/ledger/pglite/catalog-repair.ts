@@ -19,7 +19,9 @@ function isCorruption(error: unknown): boolean {
 
 /**
  * Names the B-tree indexes that need a rebuild: corrupt ones, and invalid
- * ones, which amcheck cannot check. Installing amcheck writes to the catalog
+ * ones, which amcheck cannot check. An index that never became ready, such
+ * as one a failed `CREATE INDEX CONCURRENTLY` left, never served a lookup or
+ * enforced a key, so it is left alone. Installing amcheck writes to the catalog
  * and can hit the corruption itself; that reports as the whole catalog.
  * Throws when any index could not be checked, so the store never opens with
  * an index nobody looked at.
@@ -33,11 +35,11 @@ async function findIndexesToRebuild(db: PGlite): Promise<string[]> {
   }
   try {
     const { rows } = await db.query<{ name: string; valid: boolean }>(`
-      SELECT c.oid::regclass::text AS name, i.indisvalid AND i.indisready AS valid
+      SELECT c.oid::regclass::text AS name, i.indisvalid AS valid
       FROM pg_class c
       JOIN pg_am am ON am.oid = c.relam
       JOIN pg_index i ON i.indexrelid = c.oid
-      WHERE am.amname = 'btree' AND c.relkind = 'i' AND c.relpersistence = 'p'
+      WHERE am.amname = 'btree' AND c.relkind = 'i' AND c.relpersistence = 'p' AND i.indisready
       ORDER BY c.oid`);
     const rebuild: string[] = [];
     for (const { name, valid } of rows) {
@@ -68,7 +70,8 @@ async function rebuild(db: PGlite, names: readonly string[]): Promise<void> {
 
 /**
  * Check every B-tree index, catalog and ledger alike, rebuild the ones that
- * need it, and check again. A corrupt catalog index lets plain reads succeed
+ * need it, and check again. Rebuilding the whole catalog lets amcheck install,
+ * so the check after it can name ledger indexes for one more rebuild. A corrupt catalog index lets plain reads succeed
  * while catalog writes, such as the temporary views a live query creates,
  * fail. A corrupt ledger index can miss a row an identity lookup needs, so a
  * commit would admit it again. Rebuilding a unique index whose table already
@@ -86,7 +89,11 @@ export async function repairCorruptIndexes(db: PGlite): Promise<IndexRepair> {
   if (corrupt.length === 0) return { status: "intact" };
   try {
     await rebuild(db, corrupt);
-    const remaining = await findIndexesToRebuild(db);
+    let remaining = await findIndexesToRebuild(db);
+    if (corrupt.includes(WHOLE_CATALOG) && !remaining.includes(WHOLE_CATALOG)) {
+      await rebuild(db, remaining);
+      remaining = await findIndexesToRebuild(db);
+    }
     if (remaining.length > 0) throw new Error(`still corrupt after rebuilding: ${remaining.join(", ")}`);
     return { status: "repaired", corrupt };
   } catch (error) {
