@@ -9,6 +9,7 @@ export type HostSchedule = Readonly<{
   start(): void;
   stop(): void;
   reschedule(): void;
+  wake(): void;
   /** Stops until the returned resume, which restarts only a schedule that was running. */
   pause(): () => void;
 }>;
@@ -47,6 +48,8 @@ export type HostServices = Readonly<{
   settingsChanged(settings: HostServiceSettings): void;
   /** Pause both schedules; the returned resume restarts the ones that were running. */
   pauseSchedules(): () => void;
+  /** The Mac woke or unlocked: both schedules read the clock again and run what they missed. */
+  wake(): void;
   /** Stop every service and cleanup. Safe before, during or after start. */
   stop(): void;
 }>;
@@ -80,6 +83,10 @@ export function createHostServices(deps: HostServiceDependencies): HostServices 
       deps.collection.reschedule();
       void deps.usagePing.check();
       deps.appUpdates.applySettings({ enabled: settings.appUpdatesEnabled, autoDownload: settings.appUpdatesAutoDownload });
+    },
+    wake() {
+      deps.exchangeRates.wake();
+      deps.collection.wake();
     },
     pauseSchedules() {
       const resumes = [deps.exchangeRates.pause(), deps.collection.pause()];

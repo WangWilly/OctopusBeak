@@ -56,6 +56,11 @@ assert.match(
 // host-services.check.ts covers when the background services start, take settings, pause and stop;
 // main only hands them recovery's readiness and stops them first on quit.
 assert.match(source, /services\.startWhenReady\(automationRuntimeReady\)/u);
+assert.match(
+  source,
+  /powerMonitor\.on\("resume", \(\) => services\.wake\(\)\);\s*powerMonitor\.on\("unlock-screen", \(\) => services\.wake\(\)\);/u,
+  "schedules read the clock again when the Mac wakes, since timers do not count sleep",
+);
 assert.match(source, /const handleBeforeQuit = createBeforeQuitHandler\(\{\s*cleanup: async \(\) => \{\s*hostServices\?\.stop\(\);/u);
 assert.match(
   source,
