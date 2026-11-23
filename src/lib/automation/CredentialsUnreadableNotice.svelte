@@ -5,7 +5,7 @@
   export let onOpenSettings: () => void;
 </script>
 
-<section class="card credentials-unreadable" role="alert" aria-labelledby="credentials-unreadable-title">
+<section class="card credentials-unreadable" aria-labelledby="credentials-unreadable-title">
   <div class="credentials-unreadable-copy">
     <h2 id="credentials-unreadable-title">{$t.automation.credentialsUnreadableTitle}</h2>
     <p>{$t.automation.credentialsUnreadableBody}</p>

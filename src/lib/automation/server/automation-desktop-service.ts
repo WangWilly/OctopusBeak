@@ -36,7 +36,12 @@ import {
 } from "./credential-file.ts";
 import { reportCollection, type CollectionResult } from "./collection-summary.ts";
 import { scheduledCollectionTaskIds } from "./scheduled-collection.ts";
-import type { eraseSignInDetails } from "./sign-in-erasure.ts";
+import {
+  erasureReplacesCardIdentitySecret,
+  readSignInDetailsStanding,
+  type eraseSignInDetails,
+  type SignInDetailsStanding,
+} from "./sign-in-erasure.ts";
 import type { AutomationPersistenceProvider, AutomationTaskHistoryRow } from "./store.ts";
 import {
   AUTOMATION_CREDENTIAL_GROUPS,
@@ -165,7 +170,7 @@ function unreadableCredentialState(): AutomationCredentialStateDto {
 }
 
 export type SignInDataStatus = Readonly<{
-  credentialsReadable: boolean;
+  credentials: SignInDetailsStanding["kind"];
   clearRequiresFinancialDataDeletion: boolean;
 }>;
 
@@ -437,13 +442,18 @@ export function createAutomationDesktopService<Owner>(deps: AutomationDesktopSer
      * then wait for one (ADR 0149).
      */
     async signInDataStatus(): Promise<SignInDataStatus> {
-      try {
-        deps.credentials.read();
-        return { credentialsReadable: true, clearRequiresFinancialDataDeletion: false };
-      } catch {
-        const holders = await provider.canonicalReset?.cardAccountNamespaces() ?? [];
-        return { credentialsReadable: false, clearRequiresFinancialDataDeletion: holders.length > 0 };
+      const standing = readSignInDetailsStanding(deps.credentials);
+      if (!erasureReplacesCardIdentitySecret(standing)) {
+        return { credentials: standing.kind, clearRequiresFinancialDataDeletion: false };
       }
+      let holdsCardAccounts: boolean;
+      try {
+        holdsCardAccounts = (await provider.canonicalReset?.cardAccountNamespaces() ?? []).length > 0;
+      } catch {
+        // Unknown: warn rather than let a clear split card accounts unannounced.
+        holdsCardAccounts = true;
+      }
+      return { credentials: standing.kind, clearRequiresFinancialDataDeletion: holdsCardAccounts };
     },
     clearSignInData: () => clearAllSignInData(
       deps.collection,

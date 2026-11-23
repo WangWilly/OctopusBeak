@@ -2,11 +2,41 @@ import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { CARD_IDENTITY_VERIFIER_FILE, provisionCardIdentitySecret } from "./card-identity-verifier.ts";
 import {
+  CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY,
   removeAutomationCredentialsFromEnvFile,
   type AutomationCredentialStore,
   type AutomationCredentialsFile,
 } from "./config-files.ts";
 import { AUTOMATION_MANAGED_SECRET_KEYS } from "./tasks.ts";
+
+/**
+ * What Sign-in Erasure would find in credentials.json. A file that cannot be
+ * reached (a filesystem error) is not one that cannot be decoded: erasure
+ * fails on it and keeps it, rather than replacing it.
+ */
+export type SignInDetailsStanding =
+  | Readonly<{ kind: "readable"; stored: AutomationCredentialsFile }>
+  | Readonly<{ kind: "undecodable" }>
+  | Readonly<{ kind: "unreachable"; error: unknown }>;
+
+export function readSignInDetailsStanding(credentials: Pick<AutomationCredentialStore, "read">): SignInDetailsStanding {
+  try {
+    return { kind: "readable", stored: credentials.read() };
+  } catch (error) {
+    if (typeof (error as NodeJS.ErrnoException | null)?.code === "string") return { kind: "unreachable", error };
+    return { kind: "undecodable" };
+  }
+}
+
+/**
+ * Whether erasing now would leave credentials.json without its Card identity
+ * secret, so the next one is created and card accounts from the old one wait
+ * for a Canonical Reset (ADR 0149).
+ */
+export function erasureReplacesCardIdentitySecret(standing: SignInDetailsStanding): boolean {
+  if (standing.kind === "unreachable") return false;
+  return standing.kind === "undecodable" || !standing.stored[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY];
+}
 
 /**
  * Sign-in Erasure (ADR 0062). Removes every source's Sign-in Details from the
@@ -28,14 +58,9 @@ export function eraseSignInDetails({
   credentials: AutomationCredentialStore;
   userDataDirectory: string;
 }>) {
-  let stored: AutomationCredentialsFile;
-  try {
-    stored = credentials.read();
-  } catch (error) {
-    // A file that cannot be reached is not one that cannot be decoded; try again later.
-    if (typeof (error as NodeJS.ErrnoException).code === "string") throw error;
-    stored = {};
-  }
+  const standing = readSignInDetailsStanding(credentials);
+  if (standing.kind === "unreachable") throw standing.error;
+  const stored: AutomationCredentialsFile = standing.kind === "readable" ? standing.stored : {};
   const kept = AUTOMATION_MANAGED_SECRET_KEYS.flatMap((key) =>
     stored[key] ? [[key, stored[key]] as const] : []);
   credentials.write(Object.fromEntries(kept));

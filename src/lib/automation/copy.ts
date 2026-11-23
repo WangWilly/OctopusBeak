@@ -51,7 +51,7 @@ const en = {
     credentialReadFailed: "Read failed",
     credentialsUnreadableTitle: "Saved sign-in data can't be read",
     credentialsUnreadableBody:
-      "This can happen after moving to a new Mac or resetting the Keychain. Clear all sign-in data in Settings, then enter each source's sign-in details again.",
+      "For example, after moving to a new Mac or resetting the Keychain. Clear all sign-in data in Settings, then enter each source's sign-in details again.",
     credentialsUnreadableAction: "Open Settings",
     syncAll: "Sync all",
     syncInProgress: "Sync in progress",
@@ -473,7 +473,7 @@ const zh: typeof en = {
     credentialStatus: "登入資料狀態",
     credentialReadFailed: "讀取失敗",
     credentialsUnreadableTitle: "無法讀取已儲存的登入資料",
-    credentialsUnreadableBody: "換到新的 Mac 或重設鑰匙圈後可能發生。請到「設定」清除所有登入資料，再重新輸入各來源的登入資料。",
+    credentialsUnreadableBody: "例如換到新的 Mac 或重設鑰匙圈之後。請到「設定」清除所有登入資料，再重新輸入各來源的登入資料。",
     credentialsUnreadableAction: "前往設定",
     syncAll: "同步全部",
     syncInProgress: "同步執行中",
