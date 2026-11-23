@@ -422,10 +422,9 @@ const LOAN_COUNTERPARTS = 3;
 /**
  * Loan payments inside the window. The three latest are repaid from a
  * deposit account, each through its own counterpart capture and a relation
- * whose evidence is the deposit record. Each payment keeps its source
- * sequence index from sync to sync. The Fubon and Yuanta adapters number
- * rows by their position in the response instead, so a row that ages out
- * renumbers the rows after it, and their records are stored again.
+ * whose evidence is the deposit record. Each payment takes its position in
+ * the window as its source sequence index, as the Fubon and Yuanta adapters
+ * do, so a row that ages out renumbers the rows after it.
  */
 function loanCapture(sync: number): PGliteCanonicalLoanCommitRequest {
   const { startDate, endDate } = window(sync);
@@ -439,10 +438,10 @@ function loanCapture(sync: number): PGliteCanonicalLoanCommitRequest {
     fingerprint: (row) => token(`loan-row-${row.index}`),
     partitionDate: (row) => row.date,
   });
-  const records = slots.map(({ row, occurrenceKey, group }) => ({
+  const records = slots.map(({ row, occurrenceKey, group }, position) => ({
     sourceRecordKey: occurrenceKey,
     occurrenceIndex: group.ordinal,
-    sourceSequenceIndex: row.index + 1,
+    sourceSequenceIndex: position + 1,
     occurrenceGroup: group,
     occurrenceCollisionKey: token(`loan-collision-${row.index}`),
     effectiveOn: row.date,
