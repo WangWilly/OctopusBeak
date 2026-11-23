@@ -1696,6 +1696,8 @@ type LoanSync = Readonly<{
   evidence?: "deposit" | "loan";
   /** Description of each payment by id, a field the source may revise (ADR 0117). */
   descriptions?: Readonly<Record<string, string>>;
+  /** Rows ahead of these payments in the response, which shift each payment's source sequence index. */
+  rowsAhead?: number;
 }>;
 
 /** A Fubon loan capture of September, with at most one repayment deposit in its own counterpart capture. */
@@ -1707,7 +1709,7 @@ function loanSync(captureId: string, sync: LoanSync): PGliteCanonicalLoanCommitR
     return {
       sourceRecordKey,
       occurrenceIndex: 1,
-      sourceSequenceIndex: index + 1,
+      sourceSequenceIndex: (sync.rowsAhead ?? 0) + index + 1,
       occurrenceGroup,
       occurrenceCollisionKey: token(`loan-collision-${id}`),
       effectiveOn: september(index + 1),
@@ -1863,6 +1865,15 @@ equivalent("an unchanged loan re-sync", async (ledger) => {
     await ledger.holds(`${captureId}-deposit`, { stored: 0, reused: 1 });
   }
   assert.deepEqual(await loanRowCounts(ledger.store), written, "an unchanged re-sync writes no loan row");
+});
+
+equivalent("a loan re-sync whose rows the response renumbers", async (ledger) => {
+  // An older row ahead of both payments ages out, so the adapters number each
+  // payment one lower. The position is not identity, so the records are reused.
+  await loanCommit(ledger, loanSync("sync-1", { payments: ["p1", "p2"], rowsAhead: 1 }));
+  await ledger.holds("sync-1", { stored: 2, reused: 0 });
+  await loanCommit(ledger, loanSync("sync-2", { payments: ["p1", "p2"] }));
+  await ledger.holds("sync-2", { stored: 0, reused: 2 });
 });
 
 equivalent("a new loan payment", async (ledger) => {
