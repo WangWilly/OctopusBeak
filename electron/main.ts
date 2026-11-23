@@ -455,11 +455,15 @@ async function start() {
     if (ledgerRecoveryPending || automationRuntimeFatalHandled) return;
     ledgerRecoveryPending = true;
     console.error("pglite-ledger-unusable", error instanceof Error ? error.message : String(error));
+    // Schedules would only fail against the refused ledger while the person decides.
+    hostServices?.stop();
     automationRuntime?.abortAll();
     void recoverUnusableLedger(ledgerDataDir, {
       locale: app.getLocale().startsWith("zh") ? "zh-TW" : "en",
       ask: async (options) => {
         const owner = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+        if (owner?.isMinimized()) owner.restore();
+        owner?.show();
         return (await (owner ? dialog.showMessageBox(owner, options) : dialog.showMessageBox(options))).response;
       },
       showError: (title, message) => dialog.showErrorBox(title, message),
