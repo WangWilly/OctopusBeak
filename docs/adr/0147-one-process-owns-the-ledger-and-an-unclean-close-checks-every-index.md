@@ -10,7 +10,7 @@ ADR 0029 coordinated several processes writing one SQLite ledger through a sidec
 
 **An unclean close checks every B-tree index before the store opens.** A clean close writes `pglite.clean-shutdown` beside the data directory. Opening removes it first, so a crash or a forced worker termination leaves none. When it is absent, the worker runs `bt_index_check` with `heapallindexed` on every persistent B-tree index, catalog and ledger alike. A ledger index matters as much as a catalog index: a commit looks up identities through `UNIQUE` indexes, and a lookup that misses a row admits it again.
 
-- A corrupt catalog index is rebuilt with `REINDEX SYSTEM`, a corrupt ledger index with `REINDEX INDEX`.
+- Every corrupt index, and every invalid one, which amcheck cannot check, is rebuilt with `REINDEX INDEX`. When amcheck cannot even be installed, the catalog is rebuilt with `REINDEX SYSTEM`. Then every index is checked again, and the repair counts only if that check is clean.
 - **The store does not open** when a corrupt index cannot be rebuilt, or when the check cannot run. Rebuilding a unique index fails when its table already holds a duplicate. The worker reports the reason as a start failure, and the next open checks again.
 - A store that closed cleanly opens without the check.
 

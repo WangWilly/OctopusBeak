@@ -672,7 +672,7 @@ protocol.registerSchemesAsPrivileged([APP_SCHEME_PRIVILEGES]);
 if (ownsUserData) app.whenReady().then(start).catch(showStartupError);
 
 app.on("second-instance", () => {
-  if (automationRuntimeFatalHandled || !currentRendererUrl || !currentPreloadPath) return;
+  if (appQuitting || automationRuntimeFatalHandled || !currentRendererUrl || !currentPreloadPath) return;
   void createWindow(currentRendererUrl, currentPreloadPath)
     .then((window) => {
       if (window.isMinimized()) window.restore();

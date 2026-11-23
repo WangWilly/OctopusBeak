@@ -108,3 +108,21 @@ test("a unique ledger index over a duplicated row cannot be rebuilt and says so"
     }
   });
 });
+
+test("an invalid index, which amcheck cannot check, is rebuilt instead of refusing the store", async () => {
+  const db = await PGlite.create({ extensions: { amcheck } });
+  try {
+    await db.exec(`
+      CREATE TABLE ledger_rows (source_sequence text NOT NULL);
+      CREATE UNIQUE INDEX ledger_rows_sequence ON ledger_rows (source_sequence);
+      UPDATE pg_index SET indisvalid = false WHERE indexrelid = 'ledger_rows_sequence'::regclass;`);
+
+    assert.deepEqual(await repairCorruptIndexes(db), { status: "repaired", corrupt: ["ledger_rows_sequence"] });
+    const { rows: [{ valid }] } = await db.query<{ valid: boolean }>(
+      "SELECT indisvalid AS valid FROM pg_index WHERE indexrelid = 'ledger_rows_sequence'::regclass",
+    );
+    assert.equal(valid, true);
+  } finally {
+    await db.close();
+  }
+});

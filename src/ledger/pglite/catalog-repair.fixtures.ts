@@ -35,8 +35,8 @@ export async function breakIndexLeftLink(dataDir: string, index: string): Promis
 
 /**
  * A ledger table whose unique index spans several pages. With `duplicate`,
- * the table already holds a repeated key that the index never saw, as when a
- * broken index let a commit admit the same identity twice.
+ * the table already holds a repeated key, as when a broken index let a commit
+ * admit the same identity twice, so rebuilding the unique index fails.
  */
 export async function seedLedgerIndex(dataDir: string, { duplicate }: Readonly<{ duplicate: boolean }>): Promise<void> {
   const db = await PGlite.create(dataDir);
