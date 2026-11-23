@@ -29,6 +29,13 @@ import {
   type PGliteCanonicalCreditCardCaptureRequest,
   type PGliteCanonicalCreditCardCommitResult,
 } from "./credit-card.ts";
+import {
+  commitPGliteCanonicalEInvoiceCapture,
+  PGLITE_EINVOICE_CONTRACT_VERSION,
+  PGLITE_EINVOICE_CURRENCY_AUTHORITY,
+  PGLITE_EINVOICE_ROUTE,
+} from "./einvoice.ts";
+import type { CanonicalEInvoiceCaptureInput, CanonicalEInvoiceInput } from "../canonical/einvoice-contract.ts";
 import { resolvePGliteCanonicalLoanRepaymentRelations } from "./relations.ts";
 import { PGliteCanonicalSourceAdmissionError } from "./source-admission-validation.ts";
 import { PGliteStore } from "./transaction.ts";
@@ -320,6 +327,8 @@ type Ledger = Readonly<{
   commitCardBalance(request: PGliteCanonicalCreditCardBalanceCaptureRequest): Promise<void>;
   /** The card command must fail the same way in both arms. */
   rejectsCard(request: PGliteCanonicalCreditCardCaptureRequest, message: RegExp): Promise<void>;
+  /** Commit through the e-invoice command, which also writes its observations only on change. */
+  commitEInvoice(input: CanonicalEInvoiceCaptureInput): Promise<void>;
 }>;
 
 function openLedger(store: PGliteStore, arm: PGliteDomainRecordCitation): Ledger {
@@ -336,12 +345,16 @@ function openLedger(store: PGliteStore, arm: PGliteDomainRecordCitation): Ledger
     });
   };
   const cardOptions = () => ({ clock, ...(arm === "any" ? { reuseSourceRecords: false as const } : {}) });
+  const domainOptions = cardOptions;
   return {
     arm,
     store,
     clock,
     commit,
     commitCard: (request) => commitPGliteCanonicalCreditCardCapture(store, request, cardOptions()),
+    async commitEInvoice(input) {
+      await commitPGliteCanonicalEInvoiceCapture(store, input, domainOptions());
+    },
     async commitCardBalance(request) {
       await commitPGliteCanonicalCreditCardBalanceCapture(store, request, cardOptions());
     },
@@ -542,6 +555,9 @@ async function assertEvidenceCitesItsOwnCapture(store: PGliteStore, arm: PGliteD
     ["canonical_credit_card_transaction_lifecycle", "source_record_id"],
     ["canonical_credit_card_statement_summary_evidence", "evidence_source_record_id"],
     ["canonical_credit_card_relations", "evidence_source_record_id"],
+    ["einvoice_invoice_revisions", "source_record_id"],
+    ["einvoice_revision_observations", "source_record_id"],
+    ["einvoice_revision_events", "source_record_id"],
   ] as const) {
     const { rows: [row] } = await store.query<{ rows: number; foreign: number }>(
       `SELECT count(*)::int AS rows,
@@ -1491,6 +1507,155 @@ equivalent("a current used-credit reading beside an unchanged card re-sync", asy
   assert.equal(revisions.rows[0]!.count, 2);
   await cardCommit(ledger, cardSync("sync-3", CARD_PURCHASES));
   await ledger.holds("sync-3", { stored: 0, reused: 6 });
+});
+
+const EINVOICE_MONEY = (coefficient: string) =>
+  ({ coefficient, scale: 0, currency: "TWD" as const, currencyAuthority: PGLITE_EINVOICE_CURRENCY_AUTHORITY });
+
+/** Revision `revision` of invoice `key`; each revision has its own total. */
+function einvoice(key: string, revision = 1): CanonicalEInvoiceInput {
+  const total = String(100 * revision + key.charCodeAt(0));
+  return {
+    stableInvoiceKey: `AB-${key}`,
+    sourceRevisionKey: `${key}-revision-${revision}`,
+    revisionNumber: revision,
+    revisionKind: revision === 1 ? "issued" : "revised",
+    sourceIdentifiers: { invoiceNumber: `AB-${key}`, randomNumber: "2468" },
+    seller: { taxId: "12345678", name: "SYNTHETIC SELLER" },
+    total: EINVOICE_MONEY(total),
+    occurrence: { value: "2026-09-01", precision: "date", timeZone: "Asia/Taipei", origin: "source-reported" },
+    items: [{
+      sequence: 1,
+      completeness: "complete",
+      name: `ITEM ${key}`,
+      quantity: { coefficient: "1", scale: 0 },
+      unitPrice: EINVOICE_MONEY(total),
+      amount: EINVOICE_MONEY(total),
+    }],
+    authority: { routeKey: PGLITE_EINVOICE_ROUTE, contractVersion: PGLITE_EINVOICE_CONTRACT_VERSION },
+    provenance: { kind: "provider-record", reference: `provider/invoice/${key}/${revision}`, sourceField: "invoiceList" },
+    revocationReason: null,
+  };
+}
+
+function einvoiceSync(captureId: string, invoices: readonly CanonicalEInvoiceInput[]): CanonicalEInvoiceCaptureInput {
+  return {
+    captureId,
+    sourceConnectionKey: token("einvoice-connection"),
+    identityEpoch: token("einvoice-epoch"),
+    subjectDigest: token("einvoice-subject"),
+    observedAt: "2026-09-30T00:00:00Z",
+    scope: {
+      startDate: "2026-09-01",
+      endDate: "2026-09-30",
+      kind: "bounded-range",
+      completeness: "complete-range",
+      invoiceCompleteness: "complete",
+      itemCompleteness: "complete",
+      absenceAuthority: "comparable-complete-range",
+    },
+    pages: [{ pageOrdinal: 0, responseCode: "200", rowCount: invoices.length, terminal: true, metadata: { fixture: "reuse" } }],
+    invoices,
+  };
+}
+
+async function einvoiceRowCounts(store: PGliteStore): Promise<Record<string, number>> {
+  const { rows: [row] } = await store.query<Record<string, number>>(
+    `SELECT (SELECT count(*) FROM einvoice_invoice_revisions)::int AS revisions,
+            (SELECT count(*) FROM einvoice_revision_observations)::int AS observations,
+            (SELECT count(*) FROM einvoice_revision_events)::int AS events`,
+  );
+  return { ...row! };
+}
+
+/**
+ * Each invoice's latest observing commit observed exactly the revisions the
+ * last capture listed for it. A commit that skips an observation it should
+ * have written leaves an older set here, which both arms would share.
+ */
+async function assertLatestObservations(store: PGliteStore, input: CanonicalEInvoiceCaptureInput): Promise<void> {
+  const { rows } = await store.query<{ stable_invoice_key: string; revisions: string[] }>(
+    `WITH observed AS (
+       SELECT invoice.stable_invoice_key, revision.source_revision_key, commit_row.commit_sequence,
+              MAX(commit_row.commit_sequence) OVER (PARTITION BY invoice.invoice_id) AS latest_sequence
+         FROM einvoice_invoices invoice
+         JOIN einvoice_invoice_revisions revision ON revision.invoice_id = invoice.invoice_id
+         JOIN einvoice_revision_observations observation ON observation.revision_id = revision.revision_id
+         JOIN canonical_commits commit_row ON commit_row.commit_id = observation.commit_id
+     )
+     SELECT stable_invoice_key, array_agg(DISTINCT source_revision_key ORDER BY source_revision_key) AS revisions
+       FROM observed WHERE commit_sequence = latest_sequence GROUP BY stable_invoice_key`,
+  );
+  const latest = new Map(rows.map((row) => [row.stable_invoice_key, row.revisions]));
+  const listed = new Map<string, string[]>();
+  for (const invoice of input.invoices)
+    listed.set(invoice.stableInvoiceKey, [...(listed.get(invoice.stableInvoiceKey) ?? []), invoice.sourceRevisionKey].sort());
+  for (const [key, revisions] of listed)
+    assert.deepEqual(latest.get(key), revisions, `the latest observations of ${key} are what ${input.captureId} listed`);
+}
+
+async function einvoiceCommit(ledger: Ledger, input: CanonicalEInvoiceCaptureInput): Promise<void> {
+  await ledger.commitEInvoice(input);
+  await assertLatestObservations(ledger.store, input);
+}
+
+equivalent("an unchanged e-invoice re-sync", async (ledger) => {
+  const invoices = [einvoice("x"), einvoice("y")];
+  await einvoiceCommit(ledger, einvoiceSync("sync-1", invoices));
+  await ledger.holds("sync-1", { stored: 2, reused: 0 });
+  const written = await einvoiceRowCounts(ledger.store);
+  assert.deepEqual(written, { revisions: 2, observations: 2, events: 2 });
+  for (const sync of ["sync-2", "sync-3"]) {
+    await einvoiceCommit(ledger, einvoiceSync(sync, invoices));
+    await ledger.holds(sync, { stored: 0, reused: 2 });
+  }
+  assert.deepEqual(await einvoiceRowCounts(ledger.store), written, "an unchanged re-sync writes no observation");
+});
+
+equivalent("an e-invoice revised, then seen at its earlier revision again", async (ledger) => {
+  await einvoiceCommit(ledger, einvoiceSync("sync-1", [einvoice("x"), einvoice("y")]));
+  // A new revision is a new record, a revision row, its observation and a superseded event.
+  await einvoiceCommit(ledger, einvoiceSync("sync-2", [einvoice("x", 2), einvoice("y")]));
+  await ledger.holds("sync-2", { stored: 1, reused: 1 });
+  assert.deepEqual(await einvoiceRowCounts(ledger.store), { revisions: 3, observations: 3, events: 4 });
+  await einvoiceCommit(ledger, einvoiceSync("sync-3", [einvoice("x", 2), einvoice("y")]));
+  await ledger.holds("sync-3", { stored: 0, reused: 2 });
+  // The source lists the earlier revision again: its unchanged record is observed, so stored again.
+  await einvoiceCommit(ledger, einvoiceSync("sync-4", [einvoice("x"), einvoice("y")]));
+  await ledger.holds("sync-4", { stored: 1, reused: 1 });
+  assert.deepEqual(await einvoiceRowCounts(ledger.store), { revisions: 3, observations: 4, events: 5 });
+  await einvoiceCommit(ledger, einvoiceSync("sync-5", [einvoice("x"), einvoice("y")]));
+  await ledger.holds("sync-5", { stored: 0, reused: 2 });
+  // And the later one again.
+  await einvoiceCommit(ledger, einvoiceSync("sync-6", [einvoice("x", 2), einvoice("y")]));
+  await ledger.holds("sync-6", { stored: 1, reused: 1 });
+  assert.deepEqual(await einvoiceRowCounts(ledger.store), { revisions: 3, observations: 5, events: 6 });
+});
+
+equivalent("an e-invoice listed at two revisions at once", async (ledger) => {
+  await einvoiceCommit(ledger, einvoiceSync("sync-1", [einvoice("x")]));
+  // Both revisions in one capture: the set of observed revisions changed, so both are observed.
+  const both = [einvoice("x"), einvoice("x", 2)];
+  await einvoiceCommit(ledger, einvoiceSync("sync-2", both));
+  await ledger.holds("sync-2", { stored: 2, reused: 0 });
+  await einvoiceCommit(ledger, einvoiceSync("sync-3", both));
+  await ledger.holds("sync-3", { stored: 0, reused: 2 });
+  // Listing only one of them is a different set again.
+  await einvoiceCommit(ledger, einvoiceSync("sync-4", [einvoice("x", 2)]));
+  await ledger.holds("sync-4", { stored: 1, reused: 0 });
+  await einvoiceCommit(ledger, einvoiceSync("sync-5", [einvoice("x", 2)]));
+  await ledger.holds("sync-5", { stored: 0, reused: 1 });
+});
+
+equivalent("an e-invoice that vanishes and returns", async (ledger) => {
+  await einvoiceCommit(ledger, einvoiceSync("sync-1", [einvoice("x"), einvoice("y")]));
+  // E-invoices have no withdrawal by omission: a capture without `y` writes nothing for it.
+  await einvoiceCommit(ledger, einvoiceSync("sync-2", [einvoice("x")]));
+  await ledger.holds("sync-2", { stored: 0, reused: 1 });
+  // Seen again, `y` is what its latest observation holds, so its record is reused.
+  await einvoiceCommit(ledger, einvoiceSync("sync-3", [einvoice("x"), einvoice("y")]));
+  await ledger.holds("sync-3", { stored: 0, reused: 2 });
+  assert.deepEqual(await einvoiceRowCounts(ledger.store), { revisions: 2, observations: 2, events: 2 });
 });
 
 test("the commit that reuses records is the one the app's deposit command runs", async () => {

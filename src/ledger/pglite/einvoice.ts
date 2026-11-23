@@ -16,8 +16,11 @@ import {
 } from "../canonical/canonical-source-evidence.ts";
 import {
   assertPGliteCanonicalCommitNotCancelled,
+  assertPGliteStoredByThisCapture,
   admitPGliteCanonicalSourceCaptureInTransaction,
+  findPGliteSourceSubjectId,
   type PGliteCanonicalCommitOptions,
+  type PGliteCanonicalSourceCaptureTransactionResult,
 } from "./canonical-source-store.ts";
 import { syncEInvoiceItemCategorizations } from "./einvoice-item-categorization.ts";
 import type { PGliteTransaction, PGliteStore } from "./transaction.ts";
@@ -455,14 +458,74 @@ async function insertEvent(transaction: PGliteTransaction, input: Readonly<{
   ]);
 }
 
+/**
+ * The revisions each invoice's latest observing commit observed, by stable
+ * invoice key, read before admission. An invoice's observations are written
+ * only when the revisions a capture lists for it differ from these (ADR 0152).
+ */
+async function readLatestObservedRevisions(
+  transaction: PGliteTransaction,
+  evidence: CanonicalSourceEvidence,
+  invoices: readonly Invoice[],
+): Promise<ReadonlyMap<string, ReadonlySet<string>>> {
+  const latest = new Map<string, Set<string>>();
+  const subjectId = invoices.length === 0 ? undefined : await findPGliteSourceSubjectId(transaction, evidence);
+  if (!subjectId) return latest;
+  for (const row of await query<{ stable_invoice_key: string; source_revision_key: string }>(transaction, `
+    WITH observed AS (
+      SELECT invoice.stable_invoice_key, revision.source_revision_key, commit_row.commit_sequence,
+             MAX(commit_row.commit_sequence) OVER (PARTITION BY invoice.invoice_id) AS latest_sequence
+        FROM einvoice_invoices invoice
+        JOIN einvoice_invoice_revisions revision ON revision.invoice_id = invoice.invoice_id
+        JOIN einvoice_revision_observations observation ON observation.revision_id = revision.revision_id
+        JOIN canonical_commits commit_row ON commit_row.commit_id = observation.commit_id
+       WHERE invoice.source_subject_id = ?
+         AND invoice.stable_invoice_key IN (SELECT jsonb_array_elements_text(?::jsonb))
+    )
+    SELECT DISTINCT stable_invoice_key, source_revision_key FROM observed WHERE commit_sequence = latest_sequence`,
+  [subjectId, JSON.stringify([...new Set(invoices.map((invoice) => invoice.stableInvoiceKey))])]))
+    latest.set(row.stable_invoice_key, (latest.get(row.stable_invoice_key) ?? new Set()).add(row.source_revision_key));
+  return latest;
+}
+
+/**
+ * The invoices whose observations this capture writes, as the occurrence
+ * keys those rows cite. An invoice's observation rows are keyed by invoice,
+ * and its value is the set of revisions one commit observed: the capture
+ * writes an observation of every revision it lists for the invoice when that
+ * set differs from the latest stored one, and none otherwise. A new revision
+ * is never in the stored set, so it is always written. Every other record
+ * may be reused.
+ */
+function plannedObservations(
+  invoices: readonly Invoice[],
+  latest: ReadonlyMap<string, ReadonlySet<string>>,
+): ReadonlySet<string> {
+  const listed = new Map<string, Invoice[]>();
+  for (const invoice of invoices) listed.set(invoice.stableInvoiceKey, [...(listed.get(invoice.stableInvoiceKey) ?? []), invoice]);
+  const cited = new Set<string>();
+  for (const [key, revisions] of listed) {
+    const stored = latest.get(key) ?? new Set<string>();
+    const keys = new Set(revisions.map((invoice) => invoice.sourceRevisionKey));
+    if (keys.size !== stored.size || [...keys].some((revision) => !stored.has(revision)))
+      for (const invoice of revisions) cited.add(invoice.occurrenceKey);
+  }
+  return cited;
+}
+
 async function persistInvoice(
   transaction: PGliteTransaction,
   input: CanonicalEInvoiceCaptureInput,
   invoice: Invoice,
-  admitted: Awaited<ReturnType<typeof admitPGliteCanonicalSourceCaptureInTransaction>>,
+  admitted: PGliteCanonicalSourceCaptureTransactionResult,
+  observe: boolean,
 ): Promise<{ invoiceId: Uint8Array; insertedInvoice: boolean; insertedRevision: boolean; duplicate: boolean; itemCount: number }> {
   const sourceRecordId = admitted.sourceRecordIdsByOccurrence.get(invoice.occurrenceKey);
   if (!sourceRecordId) throw new Error(`E-Invoice source record is missing: ${invoice.occurrenceKey}`);
+  const cites = (row: string): Uint8Array => {
+    assertPGliteStoredByThisCapture(admitted, sourceRecordId, row);
+    return sourceRecordId;
+  };
   const existingInvoice = await first<{ invoice_id: unknown }>(transaction, `SELECT invoice_id
     FROM einvoice_invoices
     WHERE source_connection_id = ? AND identity_epoch_id = ? AND source_subject_id = ?
@@ -482,9 +545,10 @@ async function persistInvoice(
     if (existingRevision.fact_fingerprint !== invoice.fingerprint || Number(existingRevision.revision_number) !== invoice.revisionNumber || existingRevision.revision_kind !== invoice.revisionKind)
       fail("revision-conflict", `E-Invoice revision ${invoice.sourceRevisionKey} changed after admission.`);
     const revisionId = existingRevision.revision_id as Uint8Array;
+    if (!observe) return { invoiceId, insertedInvoice: !existingInvoice, insertedRevision: false, duplicate: true, itemCount: 0 };
     const observed = await query(transaction, `INSERT INTO einvoice_revision_observations(
       revision_id, source_record_id, capture_id, commit_id
-    ) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING RETURNING revision_id`, [revisionId, sourceRecordId, admitted.captureId, admitted.commitId]);
+    ) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING RETURNING revision_id`, [revisionId, cites("an e-invoice observation"), admitted.captureId, admitted.commitId]);
     if (observed.length > 0)
       await insertEvent(transaction, { invoiceId, revisionId, sourceRecordId, captureId: admitted.captureId, commitId: admitted.commitId, kind: "observed", eventAt: input.observedAt });
     return { invoiceId, insertedInvoice: !existingInvoice, insertedRevision: false, duplicate: true, itemCount: 0 };
@@ -503,7 +567,7 @@ async function persistInvoice(
     authority_route, contract_version, provenance_kind, provenance_reference,
     provenance_source_field, revocation_reason, fact_fingerprint
   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
-    revisionId, invoiceId, sourceRecordId, admitted.captureId, admitted.commitId,
+    revisionId, invoiceId, cites("an e-invoice revision"), admitted.captureId, admitted.commitId,
     invoice.sourceRevisionKey, invoice.revisionNumber, invoice.revisionKind, invoice.state,
     invoice.invoiceNumber, invoice.randomNumber, invoice.sellerTaxId, invoice.sellerName,
     invoice.total?.coefficient ?? null, invoice.total?.scale ?? null, invoice.total?.currency ?? null,
@@ -524,15 +588,31 @@ async function persistInvoice(
   return { invoiceId, insertedInvoice: !existingInvoice, insertedRevision: true, duplicate: false, itemCount };
 }
 
+/** An e-invoice commit's options, and whether it reuses unchanged records. */
+export type PGliteCanonicalEInvoiceCommitOptions = PGliteCanonicalCommitOptions & Readonly<{
+  /**
+   * `false` stores every record of the capture again, as before ADR 0152,
+   * while observations are still written only where they changed. The reuse
+   * check compares a store built this way with one that reuses records.
+   */
+  reuseSourceRecords?: false;
+}>;
+
 export async function commitPGliteCanonicalEInvoiceCapture(
   store: PGliteStore,
   input: CanonicalEInvoiceCaptureInput,
-  options: PGliteCanonicalCommitOptions = {},
+  options: PGliteCanonicalEInvoiceCommitOptions = {},
 ): Promise<PGliteCanonicalEInvoiceCommitResult> {
   const snapshot = structuredClone(input);
   const normalized = normalizeCapture(snapshot);
   return store.transaction(async (transaction) => {
-    const admitted = await admitPGliteCanonicalSourceCaptureInTransaction(transaction, normalized.evidence, options, "any");
+    const observe = plannedObservations(normalized.invoices, await readLatestObservedRevisions(transaction, normalized.evidence, normalized.invoices));
+    const admitted = await admitPGliteCanonicalSourceCaptureInTransaction(
+      transaction,
+      normalized.evidence,
+      options,
+      options.reuseSourceRecords === false ? "any" : observe,
+    );
     await query(transaction, `INSERT INTO einvoice_captures(
       capture_id, capture_key, scope_id, source_connection_id, identity_epoch_id,
       source_subject_id, authority_route, contract_version, stream, record_kind,
@@ -550,7 +630,7 @@ export async function commitPGliteCanonicalEInvoiceCapture(
     let observedDuplicateCount = 0;
     let itemCount = 0;
     for (const invoice of normalized.invoices) {
-      const result = await persistInvoice(transaction, snapshot, invoice, admitted);
+      const result = await persistInvoice(transaction, snapshot, invoice, admitted, observe.has(invoice.occurrenceKey));
       if (result.insertedInvoice) insertedInvoiceCount += 1;
       if (result.insertedRevision) insertedRevisionCount += 1;
       if (result.duplicate) observedDuplicateCount += 1;

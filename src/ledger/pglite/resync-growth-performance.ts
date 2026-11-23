@@ -9,13 +9,14 @@
  *   npm run check:pglite-resync-growth
  *
  * PGLITE_RESYNC_RECORDS (default 200) and PGLITE_RESYNC_SYNCS (default 10)
- * size the run; PGLITE_RESYNC_MODE is `deposit`, `card-route`, `card-command`
- * or `all`. `deposit` and `card-route` go through the generic commit;
- * `card-route` uses a credit-card route and bucket coverage, one bucket per
- * day so a day leaves the inventory with the window. `card-command` drives
- * the credit-card command on the same records, with an instrument, statements
- * and each purchase's card details and lifecycle, so it also measures the
- * command's own rows.
+ * size the run; PGLITE_RESYNC_MODE is one of the modes below or `all`.
+ * `deposit` and `card-route` go through the generic commit; `card-route` uses
+ * a credit-card route and bucket coverage, one bucket per day so a day leaves
+ * the inventory with the window. `card-command` drives the credit-card
+ * command on the same records, with an instrument, statements and each
+ * purchase's card details and lifecycle, so it also measures the command's
+ * own rows. `einvoice` drives the e-invoice command on invoices in the same
+ * moving window.
  */
 import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
@@ -31,11 +32,18 @@ import {
   type PGliteCanonicalCreditCardCaptureRequest,
   type PGliteCanonicalCreditCardStatement,
 } from "./credit-card.ts";
+import {
+  commitPGliteCanonicalEInvoiceCapture,
+  PGLITE_EINVOICE_CONTRACT_VERSION,
+  PGLITE_EINVOICE_CURRENCY_AUTHORITY,
+  PGLITE_EINVOICE_ROUTE,
+} from "./einvoice.ts";
+import type { CanonicalEInvoiceCaptureInput } from "../canonical/einvoice-contract.ts";
 import { installFinancialStore } from "./store-layout.ts";
 import type { PGliteStore } from "./transaction.ts";
 
-type Mode = "deposit" | "card-route" | "card-command";
-const ALL_MODES: readonly Mode[] = ["deposit", "card-route", "card-command"];
+const ALL_MODES = ["deposit", "card-route", "card-command", "einvoice"] as const;
+type Mode = (typeof ALL_MODES)[number];
 
 function positiveInteger(name: string, fallback: number, minimum: number): number {
   const value = Number(process.env[name] ?? fallback);
@@ -49,7 +57,7 @@ const MODES: readonly Mode[] = (() => {
   const mode = process.env.PGLITE_RESYNC_MODE ?? "all";
   if (mode === "all") return ALL_MODES;
   const chosen = ALL_MODES.find((candidate) => candidate === mode);
-  if (chosen === undefined) throw new Error("PGLITE_RESYNC_MODE must be deposit, card-route, card-command or all.");
+  if (chosen === undefined) throw new Error(`PGLITE_RESYNC_MODE must be ${ALL_MODES.join(", ")} or all.`);
   return [chosen];
 })();
 
@@ -264,9 +272,66 @@ function cardCommandCapture(sync: number): PGliteCanonicalCreditCardCaptureReque
   };
 }
 
+/** The synthetic rows inside a sync's window: one a day over 180 days, oldest first. */
+function windowRows(sync: number): readonly Readonly<{ index: number; date: string }>[] {
+  const startDate = day(sync - 1);
+  return Array.from({ length: RECORDS }, (_, index) => ({ index, date: day(index % 180) }))
+    .filter((row) => row.date >= startDate)
+    .sort((a, b) => a.date.localeCompare(b.date) || a.index - b.index);
+}
+
+const window = (sync: number) => ({ startDate: day(sync - 1), endDate: day(180 + sync) });
+
+/** The invoices inside the window, one issued revision each. */
+function einvoiceCapture(sync: number): CanonicalEInvoiceCaptureInput {
+  const money = (coefficient: string) => ({ coefficient, scale: 0, currency: "TWD" as const, currencyAuthority: PGLITE_EINVOICE_CURRENCY_AUTHORITY });
+  const invoices = windowRows(sync).map(({ index, date }) => ({
+    stableInvoiceKey: `AB${String(10_000_000 + index)}:${date}`,
+    sourceRevisionKey: `invoice-${index}-revision-1`,
+    revisionNumber: 1,
+    revisionKind: "issued" as const,
+    sourceIdentifiers: { invoiceNumber: `AB${String(10_000_000 + index)}`, randomNumber: "2468" },
+    seller: { taxId: "12345678", name: `SYNTHETIC SELLER ${index % 10}` },
+    total: money(String(100 + index)),
+    occurrence: { value: date, precision: "date" as const, timeZone: "Asia/Taipei", origin: "source-reported" as const },
+    items: [{
+      sequence: 1,
+      completeness: "complete" as const,
+      name: `SYNTHETIC ITEM ${index}`,
+      quantity: { coefficient: "1", scale: 0 },
+      unitPrice: money(String(100 + index)),
+      amount: money(String(100 + index)),
+    }],
+    authority: { routeKey: PGLITE_EINVOICE_ROUTE, contractVersion: PGLITE_EINVOICE_CONTRACT_VERSION },
+    provenance: { kind: "provider-record" as const, reference: `provider/invoice/${index}`, sourceField: "invoiceList" },
+    revocationReason: null,
+  }));
+  return {
+    captureId: `einvoice-capture-${sync}`,
+    sourceConnectionKey: token("einvoice-connection"),
+    identityEpoch: token("einvoice-epoch"),
+    subjectDigest: token("einvoice-subject"),
+    observedAt: "2026-09-30T00:00:00Z",
+    scope: {
+      ...window(sync),
+      kind: "bounded-range",
+      completeness: "complete-range",
+      invoiceCompleteness: "complete",
+      itemCompleteness: "complete",
+      absenceAuthority: "comparable-complete-range",
+    },
+    pages: [{ pageOrdinal: 0, responseCode: "200", rowCount: invoices.length, terminal: true, metadata: { pageCount: 1 } }],
+    invoices,
+  };
+}
+
 async function commit(store: PGliteStore, mode: Mode, sync: number): Promise<void> {
-  if (mode === "card-command") await commitPGliteCanonicalCreditCardCapture(store, cardCommandCapture(sync));
-  else await commitPGliteCanonicalFinancialCapture(store, capture(mode, sync));
+  switch (mode) {
+    case "card-command": await commitPGliteCanonicalCreditCardCapture(store, cardCommandCapture(sync)); return;
+    case "einvoice": await commitPGliteCanonicalEInvoiceCapture(store, einvoiceCapture(sync)); return;
+    case "deposit":
+    case "card-route": await commitPGliteCanonicalFinancialCapture(store, capture(mode, sync));
+  }
 }
 
 async function rowCounts(store: PGliteStore): Promise<Map<string, number>> {
