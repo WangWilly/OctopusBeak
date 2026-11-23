@@ -12,19 +12,27 @@ Measured on one complete 200-record capture, committed again with only a new cap
 |---|---|
 | `source_records`, `source_record_scopes`, `source_record_provenance` | one per record |
 | `assertion_provenance`, `source_occurrence_group_counts` | one per record |
-| capture, scope, page, coverage and commit rows | one per capture |
+| capture, scope, page, coverage, commit and projection-generation rows | one per capture |
 
-Each unchanged re-sync grows the store by about 5.3 KB per record. After 365 daily syncs of those 200 records, the store had grown by 391 MB. The commit had slowed from 0.6 s to 3.5 s, mostly in the expected-occurrences query, which reads every stored copy. Credit-card, e-invoice, investment and loan commands also add a row of their own per item on each sync. Dead tuples from the projection refresh are a separate source of growth, handled on their own.
+Over 365 daily syncs of those 200 records, the store grew by 391 MB, about 5.3 KB per record per sync. The commit slowed from 0.6 s to 3.5 s, mostly in the expected-occurrences query, which reads every stored copy. The ten-sync check below measures about 5.0 KB per record per sync. Domain commands add rows of their own on each sync:
+- credit cards: a detail and a lifecycle row per item;
+- e-invoices: an observation per invoice;
+- investments: an observation per security or holding;
+- loans: a relation provenance row per relation.
+
+Dead tuples from the projection refresh are a separate source of growth, handled on their own.
 
 **A record seen again unchanged is not written again. Its Capture records that it saw the stored copy.**
 
 - A record reuses the latest stored copy for its subject, kind and occurrence key only when every stored field is equal, including bucket and group fields. The copy's capture must also have the same coverage shape, and nothing new in this commit may cite the record. Any other record is written as before.
-- Each capture keeps a manifest of the stored records it reused. A capture's records are those it owns plus those in its manifest. Captures from before this change have no manifest and own all their copies.
-- Readers that need true per-capture membership read it through one helper: withdrawal by omission and loan counterparty evidence. Billed monotonicity reads the latest lifecycle by transaction instead of by the latest copy.
-- A source `assertion_provenance` row is written once per assertion and source record. An occurrence-group count row is written only when it raises the stored maximum.
+- "Coverage shape" means the capture's occurrence-group coverage for the record: scope key, start and end dates, contract version, and whether it carries a bucket inventory. The expected-occurrences query finds each occurrence through the coverage of the capture that owns its latest copy. Reuse keeps that query's answer only because the owning capture's coverage matches the new one, so this condition must not be relaxed without changing that query.
+- Each capture keeps one manifest row listing the stored records it reused, as packed 16-byte record ids. A capture's records are those it owns plus those in its manifest. Captures from before this change have no manifest and own all their copies.
+- Readers that need true per-capture membership read it through one helper: withdrawal by omission, which matches the capture scope window, and loan counterparty evidence. Billed monotonicity reads the latest lifecycle by transaction instead of by the latest copy.
+- A source `assertion_provenance` row is written once per assertion and source record. The baseline unique key includes the commit, so the commit checks for an existing row first.
+- An occurrence-group count row is written only when it raises the stored maximum within the same partition the continuity check reads: subject, record kind, scope key, contract version, date and fingerprint. A count stored under one contract version never suppresses one under another.
 - An unchanged re-sync therefore costs a fixed set of rows per capture plus about 16 bytes per reused record, instead of about 5,300.
 
-`npm run check:pglite-resync-growth` measures this. It fails while any table gains more than a fixed number of rows per unchanged re-sync. It runs outside CI until the change is complete.
+`npm run check:pglite-resync-growth` measures this through the generic commit, on a deposit route and on a credit-card route. Some of its occurrence groups have two members. It fails while any table gains more than eight rows per unchanged re-sync, or the store grows by more than 256 bytes per record. It runs outside CI until the change is complete.
 
 Copies already stored stay as they are. A compaction of existing duplicates will be decided after measuring real stores.
 
@@ -41,6 +49,6 @@ Copies already stored stay as they are. A compaction of existing duplicates will
   1. a manifest with a membership helper;
   2. billed members by transaction;
   3. reuse in the generic store;
-  4. credit-card domain rows written only on change;
+  4. credit-card domain rows written only on change, after the check gains a mode that drives the credit-card command;
   5. the other domain commands.
 - Until a domain command converts, its records keep being copied, because a record a new row cites cannot be reused.
