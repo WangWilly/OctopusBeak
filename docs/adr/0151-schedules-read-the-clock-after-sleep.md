@@ -2,7 +2,7 @@
 
 Status: accepted
 
-Amends [ADR 0045](./0045-scheduled-collection.md).
+Amends [ADR 0045](./0045-scheduled-collection.md), and the exchange-rate catch-up of [ADR 0032](./0032-app-owned-workflow-runtime.md), which now also happens on waking.
 
 The exchange-rate and Scheduled Collection schedulers each armed one timer for the time until their next occurrence. On macOS, timers count only time the Mac is awake. Suppose the Mac sleeps through 07:00. The timer then fires once the remaining awake time has passed, which can be hours later or the next afternoon. The configured time is ignored.
 
@@ -10,7 +10,7 @@ A launch also always caught up the latest missed occurrence. If yesterday's 07:0
 
 **Schedules read the wall clock again whenever it may have moved.**
 
-- No timer waits longer than an hour (`MAX_TIMER_MS`). When a timer fires before its occurrence, the scheduler only arms the next wait from the current time. A Mac that sleeps through an occurrence therefore runs it within an hour of waking, even when no wake event arrives.
+- No timer waits longer than an hour (`MAX_TIMER_MS`). Every timer fire reads the clock once and acts as a wake does. A Mac that sleeps through an occurrence therefore runs it within an hour of waking, even when no wake event arrives. A timer that fires days late runs only the latest occurrence, never the one it was armed for.
 - Electron's `powerMonitor` `resume` and `unlock-screen` events wake both schedulers. A woken scheduler behaves as a launch would:
   - it runs the latest occurrence if that occurrence passed while the Mac slept;
   - it arms the next occurrence from the real time.
@@ -28,3 +28,4 @@ A launch also always caught up the latest missed occurrence. If yesterday's 07:0
 
 - A launch or wake within three hours before the scheduled time leaves yesterday's missed collection to today's run. That run collects the same window.
 - A Mac that wakes after an occurrence it slept through, with nothing missed before it, runs that occurrence on waking, not at the configured time. This matches a launch after the App was closed.
+- A catch-up skipped for the grace is not remembered. If the person then moves the scheduled time to one that already passed today, nothing runs until that time tomorrow.

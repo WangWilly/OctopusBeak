@@ -189,14 +189,12 @@ function createDailyScheduler(deps: DailySchedulerDependencies) {
       const token = deps.setTimer(() => {
         if (!running || timer !== token) return;
         timer = undefined;
-        // An early wake-up only reads the clock again.
-        if (deps.now().getTime() < due) {
-          armNext();
-          return;
-        }
-        const expectedGeneration = generation;
-        armNext();
-        consider(nextOccurrenceUtc, expectedGeneration);
+        // Decide from one reading of the clock, as a wake does: an on-time fire
+        // runs the occurrence that just passed, a late one runs only the latest
+        // occurrence under the catch-up rules, and an early one only re-arms.
+        const current = readSchedule();
+        catchUp(current);
+        armNext(current);
       }, Math.min(MAX_TIMER_MS, Math.max(0, due - now.getTime())));
       timer = token;
     } catch (error) {

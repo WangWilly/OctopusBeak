@@ -465,8 +465,12 @@ function collectionHarness(initial: { enabled: boolean; now: string }) {
     timers,
     starts,
     errors,
-    /** Runs the armed timer, and the ones it arms in turn, until one reaches its occurrence. */
-    advanceToNextTimer: () => {
+    /**
+     * Runs the armed timer, and the ones it arms in turn, until one starts a
+     * collection or the scheduler arms nothing; at most a day.
+     */
+    advanceToNextTimer: async () => {
+      const started = starts.length;
       let elapsed = 0;
       while (elapsed < 24 * 60 * 60 * 1000) {
         const timer = timers.at(-1)!;
@@ -474,8 +478,8 @@ function collectionHarness(initial: { enabled: boolean; now: string }) {
         currentNow = new Date(currentNow.getTime() + timer.ms);
         elapsed += timer.ms;
         timer.callback();
-        // A scheduler that armed nothing (stopped or paused), or a last wait shorter than the cap, ends the advance.
-        if (timers.length === armed || timer.ms < MAX_TIMER_MS) return;
+        await settle();
+        if (starts.length > started || timers.length === armed) return;
       }
     },
     setNow: (value: string) => { currentNow = new Date(value); },
@@ -488,9 +492,9 @@ test("scheduled collection starts once at the daily time on each following day",
   h.scheduler.start();
   await settle();
   assert.deepEqual(h.starts, ["2026-07-14T23:00:00.000Z"], "launch after today's 07:00 catches it up");
-  h.advanceToNextTimer();
+  await h.advanceToNextTimer();
   await settle();
-  h.advanceToNextTimer();
+  await h.advanceToNextTimer();
   await settle();
   assert.deepEqual(h.starts, [
     "2026-07-14T23:00:00.000Z",
@@ -512,7 +516,7 @@ test("scheduled collection does nothing while disabled", async () => {
   const h = collectionHarness({ enabled: false, now: "2026-07-14T23:30:00Z" });
   h.scheduler.start();
   await settle();
-  h.advanceToNextTimer();
+  await h.advanceToNextTimer();
   await settle();
   assert.deepEqual(h.starts, []);
 });
@@ -528,7 +532,7 @@ test("turning scheduled collection on or moving its time does not run a time tha
   h.scheduler.reschedule();
   await settle();
   assert.deepEqual(h.starts, [], "15:00 local is after both 07:00 and 09:00");
-  h.advanceToNextTimer();
+  await h.advanceToNextTimer();
   await settle();
   assert.deepEqual(h.starts, ["2026-07-16T01:00:00.000Z"], "the next 09:00 runs");
 });
@@ -546,7 +550,7 @@ test("a paused scheduled collection starts nothing until resumed, and resume lea
   resume();
   await settle();
   assert.equal(h.starts.length, 1, "resume skips the occurrence that came due while paused");
-  h.advanceToNextTimer();
+  await h.advanceToNextTimer();
   await settle();
   assert.deepEqual(h.starts.slice(1), ["2026-07-15T23:00:00.000Z"], "resume follows the normal schedule");
 
@@ -607,7 +611,7 @@ test("a missed collection is not caught up when the next one is due within the g
   soon.scheduler.start();
   await settle();
   assert.deepEqual(soon.starts, [], "launching at 06:00 leaves yesterday's run to today's 07:00");
-  soon.advanceToNextTimer();
+  await soon.advanceToNextTimer();
   await settle();
   assert.deepEqual(soon.starts, ["2026-07-14T23:00:00.000Z"], "07:00 runs once");
 
@@ -615,4 +619,70 @@ test("a missed collection is not caught up when the next one is due within the g
   early.scheduler.start();
   await settle();
   assert.deepEqual(early.starts, ["2026-07-13T23:00:00.000Z"], `more than ${COLLECTION_CATCH_UP_GRACE_MS / 3_600_000} hours ahead, the missed run catches up`);
+});
+
+test("a timer that fires days late runs only the latest occurrence, once, with a wake right after", async () => {
+  const h = collectionHarness({ enabled: true, now: "2026-07-14T02:00:00Z" });
+  h.scheduler.start();
+  await settle();
+  const starts = h.starts.length;
+  // Asleep from day 1 10:30 until day 3 08:20 local; the timer fires before any wake event.
+  h.setNow("2026-07-16T00:20:00Z");
+  h.timers.at(-1)!.callback();
+  await settle();
+  h.setNow("2026-07-16T00:25:00Z");
+  h.scheduler.wake();
+  await settle();
+  assert.deepEqual(h.starts.slice(starts), ["2026-07-15T23:00:00.000Z"], "day 3 07:00 once, never the stale day 2");
+});
+
+test("a timer that fires late but just before the next run leaves the missed one to it", async () => {
+  const h = collectionHarness({ enabled: true, now: "2026-07-14T02:00:00Z" });
+  h.scheduler.start();
+  await settle();
+  const starts = h.starts.length;
+  h.setNow("2026-07-15T21:30:00Z");
+  h.timers.at(-1)!.callback();
+  await settle();
+  assert.equal(h.starts.length, starts, "05:30 is within the grace of 07:00");
+  await h.advanceToNextTimer();
+  assert.deepEqual(h.starts.slice(starts), ["2026-07-15T23:00:00.000Z"]);
+});
+
+test("a timer that fires a moment before its occurrence still runs that day", async () => {
+  const h = collectionHarness({ enabled: true, now: "2026-07-14T22:30:00Z" });
+  h.scheduler.start();
+  await settle();
+  h.setNow("2026-07-14T22:59:59.999Z");
+  h.timers.at(-1)!.callback();
+  await settle();
+  assert.deepEqual(h.starts, [], "early: nothing yet");
+  assert.equal(h.timers.at(-1)!.ms, 1, "re-armed for the remaining millisecond");
+  h.setNow("2026-07-14T23:00:00Z");
+  h.timers.at(-1)!.callback();
+  await settle();
+  assert.deepEqual(h.starts, ["2026-07-14T23:00:00.000Z"]);
+});
+
+test("waking while paused, before start, or after stop runs nothing", async () => {
+  const h = collectionHarness({ enabled: true, now: "2026-07-15T02:00:00Z" });
+  h.scheduler.wake();
+  await settle();
+  assert.deepEqual(h.starts, [], "before start");
+  h.scheduler.start();
+  await settle();
+  const starts = h.starts.length;
+  const resume = h.scheduler.pause();
+  h.setNow("2026-07-16T02:00:00Z");
+  h.scheduler.wake();
+  await settle();
+  resume();
+  h.scheduler.wake();
+  await settle();
+  assert.equal(h.starts.length, starts, "a pause skips what came due, and a wake does not bring it back");
+  h.scheduler.stop();
+  h.setNow("2026-07-17T02:00:00Z");
+  h.scheduler.wake();
+  await settle();
+  assert.equal(h.starts.length, starts, "after stop");
 });
