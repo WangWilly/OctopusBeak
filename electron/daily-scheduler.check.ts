@@ -467,7 +467,7 @@ function collectionHarness(initial: { enabled: boolean; now: string }) {
     errors,
     /**
      * Runs the armed timer, and the ones it arms in turn, until one starts a
-     * collection or the scheduler arms nothing; at most a day.
+     * collection or a stopped or paused scheduler arms nothing; at most a day.
      */
     advanceToNextTimer: async () => {
       const started = starts.length;
@@ -685,4 +685,24 @@ test("waking while paused, before start, or after stop runs nothing", async () =
   h.scheduler.wake();
   await settle();
   assert.equal(h.starts.length, starts, "after stop");
+});
+
+test("a settings read that fails when a timer fires is reported, not thrown", async () => {
+  let failing = false;
+  const h = harness({
+    readSettings: () => {
+      if (failing) throw new Error("settings.json is unreadable");
+      return taipei;
+    },
+  });
+  h.setNow("2026-07-15T21:00:00Z");
+  h.scheduler.start();
+  await settle();
+  failing = true;
+  assert.doesNotThrow(() => h.timers.at(-1)!.callback());
+  assert.equal(h.errors.length, 1);
+  failing = false;
+  h.scheduler.wake();
+  await settle();
+  assert.ok(h.timers.length >= 2, "a later wake arms the scheduler again");
 });
