@@ -72,6 +72,8 @@ type SourceRow = Readonly<{
   descriptionDigest?: string;
   /** Text of the fact only; the record's payload does not carry it. */
   note?: string;
+  /** Stored record columns outside the payload, each set apart from its default. */
+  record?: Readonly<Partial<Record<"contentHash" | "sequenceLexeme" | "collisionKey" | "description", string>>>;
 }>;
 
 type Window = Readonly<{ startDate: string; endDate: string }>;
@@ -140,10 +142,11 @@ function grouped(
       pages: [{ pageOrdinal: 0, responseCode: "200", rowCount: rows.length, terminal: true, metadata: { pageCount: 1 } }],
       records: slots.map(({ row, occurrenceKey, collisionKey, group }) => ({
         occurrenceKey,
-        collisionKey,
-        sequenceLexeme: `${row.date}/${group.fingerprint}/${group.ordinal}`,
+        collisionKey: row.record?.collisionKey ?? collisionKey,
+        sequenceLexeme: row.record?.sequenceLexeme ?? `${row.date}/${group.fingerprint}/${group.ordinal}`,
         providerKey: "human-attested:no-provider-key",
-        contentHash: token(JSON.stringify([row.date, row.id])),
+        contentHash: row.record?.contentHash ?? token(JSON.stringify([row.date, row.id])),
+        ...(row.record?.description === undefined ? {} : { description: row.record.description }),
         compact: {
           amount: { coefficient: row.amount ?? "100", scale: 0 },
           ...(row.descriptionDigest === undefined ? {} : { descriptionDigest: row.descriptionDigest }),
@@ -195,7 +198,17 @@ function grouped(
 }
 
 /** A capture on a route without occurrence groups, whose omissions withdraw (ADR 0008). */
-function ungrouped(captureId: string, ids: readonly string[], window: Window): PGliteCanonicalFinancialCommitRequest {
+function ungrouped(
+  captureId: string,
+  ids: readonly string[],
+  window: Window,
+  options: Readonly<{
+    /** A ledger balance read from the first record, measured at this instant. */
+    balanceEffectiveAt?: string;
+    /** Conversion evidence on the first record's fact. */
+    conversion?: boolean;
+  }> = {},
+): PGliteCanonicalFinancialCommitRequest {
   const rule = "cathay/domestic-deposit/v1";
   return {
     capture: {
@@ -243,10 +256,45 @@ function ungrouped(captureId: string, ids: readonly string[], window: Window): P
       effectiveTimeBasis: "accounting" as const,
       effectiveTimeRuleVersion: rule,
       utcInstantUtcUs: 1,
+      ...(options.conversion && id === ids[0] ? { conversionEvidence: CONVERSION } : {}),
     })),
+    ...(options.balanceEffectiveAt === undefined ? {} : {
+      balanceObservations: [{
+        observationKey: "ledger-balance",
+        balanceKind: "ledger" as const,
+        balance: { coefficient: "500", scale: 0 },
+        currency: "TWD",
+        effectiveAt: options.balanceEffectiveAt,
+        effectiveTimeBasis: "source-reported" as const,
+        effectiveTimeRuleVersion: rule,
+        evidenceSourceRecordKey: `provider-${ids[0]}`,
+        evidenceSourceField: "balance",
+        evidenceSourceValue: "500",
+        evidenceContractVersion: "v1",
+        sourceOccurrenceKey: token(`occurrence-${ids[0]}`),
+      }],
+    }),
     withdrawalPolicy: "allow-inference",
   };
 }
+
+const CONVERSION = {
+  originalAmount: { coefficient: "250", scale: 2 },
+  originalCurrency: "USD",
+  bookedAmount: { coefficient: "100", scale: 0 },
+  bookedCurrency: "TWD",
+  sourceReportedRate: {
+    amount: { coefficient: "40", scale: 2 },
+    baseCurrency: "USD",
+    quoteCurrency: "TWD",
+    observedOn: "2026-01-01",
+  },
+  impliedRate: null,
+  comparison: "not-comparable" as const,
+  feeAmount: null,
+  feeCurrency: null,
+  evidenceOrigin: "synthetic-conversion-v1",
+};
 
 type Ledger = Readonly<{
   arm: PGliteDomainRecordCitation;
@@ -455,6 +503,27 @@ async function canonicalState(store: PGliteStore): Promise<Record<string, readon
   return state;
 }
 
+/**
+ * Rows a commit writes as new evidence cite a Source Record their own capture
+ * stored, never one it reused (ADR 0152). `canonicalState` names records by
+ * content, so it cannot see a row that cites the right record through the
+ * wrong capture.
+ */
+async function assertEvidenceCitesItsOwnCapture(store: PGliteStore, arm: PGliteDomainRecordCitation): Promise<void> {
+  for (const table of ["transaction_revisions", "balance_observation_revisions", "transaction_conversion_evidence"]) {
+    const { rows: [row] } = await store.query<{ rows: number; foreign: number }>(
+      `SELECT count(*)::int AS rows,
+              count(*) FILTER (WHERE NOT EXISTS (
+                SELECT 1 FROM source_records record
+                 WHERE record.source_record_id = entry.source_record_id
+                   AND record.capture_id = entry.capture_id
+              ))::int AS foreign
+         FROM "${table}" entry`,
+    );
+    assert.equal(row!.foreign, 0, `every ${table} row cites a record its own capture stored (${arm}, ${row!.rows} rows)`);
+  }
+}
+
 /** Run one sequence of commits with reuse and without, and require the same canonical state. */
 function equivalent(name: string, scenario: (ledger: Ledger) => Promise<void>): void {
   test(`${name}: reusing records leaves canonical state as storing them does`, async () => {
@@ -463,6 +532,7 @@ function equivalent(name: string, scenario: (ledger: Ledger) => Promise<void>): 
       const store = new PGliteStore(await createTestPGlite("full"));
       try {
         await scenario(openLedger(store, arm));
+        await assertEvidenceCitesItsOwnCapture(store, arm);
         states.push(await canonicalState(store));
       } finally {
         await store.close();
@@ -675,6 +745,61 @@ equivalent("a record seen without its fact", async (ledger) => {
   );
   assert.equal(withdrawn.rows[0]!.count, 0);
 });
+
+equivalent("a new balance measurement on an unchanged record", async (ledger) => {
+  const window: Window = { startDate: "20260101", endDate: "20260102" };
+  await ledger.commit(ungrouped("sync-1", ["a", "b"], window, { balanceEffectiveAt: "2026-01-02T00:00:00+08:00" }));
+  await ledger.commit(ungrouped("sync-2", ["a", "b"], window, { balanceEffectiveAt: "2026-01-02T00:00:00+08:00" }));
+  await ledger.holds("sync-2", { stored: 0, reused: 2 });
+  // The record that carries the balance is unchanged, but its balance is
+  // measured at a new instant, so a new balance revision cites it.
+  await ledger.commit(ungrouped("sync-3", ["a", "b"], window, { balanceEffectiveAt: "2026-01-03T00:00:00+08:00" }));
+  await ledger.holds("sync-3", { stored: 1, reused: 1 });
+  const revisions = await ledger.store.query<{ count: number }>("SELECT count(*)::int AS count FROM balance_observation_revisions");
+  assert.equal(revisions.rows[0]!.count, 2);
+});
+
+equivalent("a fact arriving for a record first seen without it", async (ledger) => {
+  const window: Window = { startDate: "20260101", endDate: "20260102" };
+  const bare = ungrouped("bare", ["a", "b"], window);
+  await ledger.commit({ ...bare, transactions: bare.transactions.slice(1), withdrawalPolicy: "never-infer" });
+  // The stored copy of `a` backs no assertion, and the fact of `a` now opens a
+  // revision that cites its record, so the record is stored again.
+  await ledger.commit(ungrouped("full", ["a", "b"], window));
+  await ledger.holds("full", { stored: 1, reused: 1 });
+  await ledger.commit(ungrouped("again", ["a", "b"], window));
+  await ledger.holds("again", { stored: 0, reused: 2 });
+});
+
+equivalent("conversion evidence added to an unchanged record", async (ledger) => {
+  const window: Window = { startDate: "20260101", endDate: "20260102" };
+  await ledger.commit(ungrouped("sync-1", ["a", "b"], window));
+  // The latest copy of `a` comes to back no assertion, so only the planned
+  // citation keeps the conversion evidence below off a reused record.
+  const bare = ungrouped("bare", ["a", "b"], window);
+  await ledger.commit({ ...bare, transactions: bare.transactions.slice(1), withdrawalPolicy: "never-infer" });
+  await ledger.holds("bare", { stored: 1, reused: 1 });
+  // The fact of `a` gains conversion evidence its revision lacks, which cites its record.
+  await ledger.commit(ungrouped("sync-2", ["a", "b"], window, { conversion: true }));
+  await ledger.holds("sync-2", { stored: 1, reused: 1 });
+  await ledger.commit(ungrouped("sync-3", ["a", "b"], window, { conversion: true }));
+  await ledger.holds("sync-3", { stored: 0, reused: 2 });
+  const evidence = await ledger.store.query<{ count: number }>("SELECT count(*)::int AS count FROM transaction_conversion_evidence");
+  assert.equal(evidence.rows[0]!.count, 1);
+});
+
+// Each stored column outside the payload and the group decides reuse on its own.
+for (const column of ["contentHash", "sequenceLexeme", "collisionKey", "description"] as const) {
+  equivalent(`a changed ${column}`, async (ledger) => {
+    const rows = [row("a", 5), row("b", 6), row("c", 7)];
+    const changed = rows.map((entry) => entry.id === "b" ? { ...entry, record: { [column]: token(`changed-${column}`) } } : entry);
+    await ledger.commit(grouped("deposit", "sync-1", rows));
+    await ledger.commit(grouped("deposit", "sync-2", changed));
+    await ledger.holds("sync-2", { stored: 1, reused: 2 });
+    await ledger.commit(grouped("deposit", "sync-3", changed));
+    await ledger.holds("sync-3", { stored: 0, reused: 3 });
+  });
+}
 
 equivalent("counterparty evidence on a reused record", async (ledger) => {
   const rows = [row("a", 5), row("b", 6)];
