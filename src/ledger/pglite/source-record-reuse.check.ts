@@ -9,7 +9,8 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
-import { assignOccurrenceSlots } from "../canonical/occurrence-groups.ts";
+import { assignOccurrenceSlots, canonicalOccurrenceGroupKey } from "../canonical/occurrence-groups.ts";
+import { canonicalLoanOccurrenceScopeKey } from "../canonical/loan-admission.ts";
 import { encodeCreditCardQueryBucket } from "../canonical/credit-card-query-inventory.ts";
 import { createTestPGlite } from "./baseline-test-template.ts";
 import { resetPGliteCanonicalStore } from "./canonical-reset.ts";
@@ -36,6 +37,7 @@ import {
   PGLITE_EINVOICE_ROUTE,
 } from "./einvoice.ts";
 import type { CanonicalEInvoiceCaptureInput, CanonicalEInvoiceInput } from "../canonical/einvoice-contract.ts";
+import { commitPGliteCanonicalLoanCapture, type PGliteCanonicalLoanCommitRequest } from "./loan.ts";
 import { resolvePGliteCanonicalLoanRepaymentRelations } from "./relations.ts";
 import { PGliteCanonicalSourceAdmissionError } from "./source-admission-validation.ts";
 import { PGliteStore } from "./transaction.ts";
@@ -329,6 +331,8 @@ type Ledger = Readonly<{
   rejectsCard(request: PGliteCanonicalCreditCardCaptureRequest, message: RegExp): Promise<void>;
   /** Commit through the e-invoice command, which also writes its observations only on change. */
   commitEInvoice(input: CanonicalEInvoiceCaptureInput): Promise<void>;
+  /** Commit through the loan command, which also writes its relation provenance only on change. */
+  commitLoan(request: PGliteCanonicalLoanCommitRequest): Promise<void>;
 }>;
 
 function openLedger(store: PGliteStore, arm: PGliteDomainRecordCitation): Ledger {
@@ -354,6 +358,9 @@ function openLedger(store: PGliteStore, arm: PGliteDomainRecordCitation): Ledger
     commitCard: (request) => commitPGliteCanonicalCreditCardCapture(store, request, cardOptions()),
     async commitEInvoice(input) {
       await commitPGliteCanonicalEInvoiceCapture(store, input, domainOptions());
+    },
+    async commitLoan(request) {
+      await commitPGliteCanonicalLoanCapture(store, request, domainOptions());
     },
     async commitCardBalance(request) {
       await commitPGliteCanonicalCreditCardBalanceCapture(store, request, cardOptions());
@@ -412,9 +419,9 @@ const RECORD_COPY_TABLES = new Set([
 
 /**
  * Columns no two runs agree on: a Canonical Reset stamps its commit with the
- * wall clock, and the other two are digests over generated ids.
+ * wall clock, and the others are digests over generated ids.
  */
-const UNSTABLE_COLUMNS = new Set(["recorded_at_utc_us", "event_digest", "resolution_key"]);
+const UNSTABLE_COLUMNS = new Set(["recorded_at_utc_us", "event_digest", "resolution_key", "relation_key"]);
 
 const digest = (value: unknown): string =>
   createHash("sha256").update(JSON.stringify(value), "utf8").digest("hex").slice(0, 16);
@@ -558,6 +565,9 @@ async function assertEvidenceCitesItsOwnCapture(store: PGliteStore, arm: PGliteD
     ["einvoice_invoice_revisions", "source_record_id"],
     ["einvoice_revision_observations", "source_record_id"],
     ["einvoice_revision_events", "source_record_id"],
+    ["loan_transaction_facts", "source_record_id"],
+    // The loan command's and the repayment resolver's, which cites the record of an endpoint's revision.
+    ["transaction_relation_provenance", "source_record_id"],
   ] as const) {
     const { rows: [row] } = await store.query<{ rows: number; foreign: number }>(
       `SELECT count(*)::int AS rows,
@@ -1656,6 +1666,297 @@ equivalent("an e-invoice that vanishes and returns", async (ledger) => {
   await einvoiceCommit(ledger, einvoiceSync("sync-3", [einvoice("x"), einvoice("y")]));
   await ledger.holds("sync-3", { stored: 0, reused: 2 });
   assert.deepEqual(await einvoiceRowCounts(ledger.store), { revisions: 2, observations: 2, events: 2 });
+});
+const LOAN_CONTRACT = "loan/canonical/v2.fubon";
+const LOAN_ACCOUNT = token("loan-account");
+const LOAN_COUNTERPART_CONTRACT = "loan/counterpart/v1.fubon";
+
+type LoanSync = Readonly<{
+  /** Payment ids, each on its own day of September. */
+  payments: readonly string[];
+  /** The payment repaid from the deposit account, linked by a relation. */
+  repaid?: string;
+  /** Which record evidences the relation. */
+  evidence?: "deposit" | "loan";
+  /** Description of each payment by id, a field the source may revise (ADR 0117). */
+  descriptions?: Readonly<Record<string, string>>;
+}>;
+
+/** A Fubon loan capture of September, with at most one repayment deposit in its own counterpart capture. */
+function loanSync(captureId: string, sync: LoanSync): PGliteCanonicalLoanCommitRequest {
+  const scopeKey = canonicalLoanOccurrenceScopeKey("fubon", LOAN_ACCOUNT);
+  const records = sync.payments.map((id, index) => {
+    const occurrenceGroup = { scopeKey, fingerprint: token(`loan-${id}`), partitionDate: september(index + 1), ordinal: 1 };
+    const sourceRecordKey = canonicalOccurrenceGroupKey(occurrenceGroup);
+    return {
+      sourceRecordKey,
+      occurrenceIndex: 1,
+      sourceSequenceIndex: index + 1,
+      occurrenceGroup,
+      occurrenceCollisionKey: token(`loan-collision-${id}`),
+      effectiveOn: september(index + 1),
+      sourceTime: { localTime: "12:00:00", precision: "second" as const, timeOrigin: "source_reported" as const },
+      postingStatus: "posted" as const,
+      eventKind: "payment" as const,
+      eventEvidence: { kind: "source-coded-loan-event" as const, sourceRecordKey, sourceCode: "LOAN-PAYMENT", contractVersion: LOAN_CONTRACT },
+      direction: "inflow" as const,
+      amount: { coefficient: "1000", scale: 0 },
+      currency: "TWD" as const,
+      sourceDescription: sync.descriptions?.[id] ?? `PAYMENT ${id}`,
+    };
+  });
+  const repaid = records.find((_, index) => sync.payments[index] === sync.repaid);
+  const depositKey = token(`loan-deposit-${sync.repaid}`);
+  const relationId = token(`loan-relation-${sync.repaid}`);
+  const counterpartAccountKey = token("loan-repayment-account");
+  const counterpartTransactions = repaid ? [{
+    captureId: `${captureId}-deposit`,
+    sourceRecordKey: depositKey,
+    occurrenceIndex: 1,
+    sourceConnectionKey: token("loan-connection"),
+    identityEpochKey: token("loan-epoch"),
+    accountKey: counterpartAccountKey,
+    subjectDigest: token("loan-counterpart-subject"),
+    accountNo: token("loan-counterpart-number"),
+    accountType: "depository" as const,
+    stream: "domestic-deposit" as const,
+    recordKind: "fubon-loan-counterpart-deposit",
+    authorityRoute: "fubon/loan/counterpart-deposit-v1",
+    contractVersion: LOAN_COUNTERPART_CONTRACT,
+    effectiveOn: repaid.effectiveOn,
+    sourceTime: repaid.sourceTime,
+    postingStatus: "posted" as const,
+    direction: "outflow" as const,
+    amount: repaid.amount,
+    currency: "TWD" as const,
+    description: "REPAYMENT",
+    sourceEvidence: { kind: "source-linked-counterpart" as const, sourceRecordKey: depositKey, relationId, contractVersion: LOAN_COUNTERPART_CONTRACT },
+  }] : [];
+  return {
+    capture: {
+      captureId,
+      sourceId: "fubon",
+      authorityRoute: "fubon/loan/canonical-v2",
+      contractVersion: LOAN_CONTRACT,
+      identity: {
+        sourceConnectionKey: token("loan-connection"),
+        identityEpochKey: token("loan-epoch"),
+        accountKey: LOAN_ACCOUNT,
+        subjectDigest: token("loan-subject"),
+        accountType: "loan",
+        accountNo: token("loan-display-identity"),
+        stream: "loan",
+        recordKind: "fubon-loan-transaction",
+        currency: "TWD",
+      },
+      observedAt: "2026-09-30T00:00:00.000Z",
+      scope: {
+        startDate: september(1),
+        endDate: september(30),
+        completeness: "complete-range",
+        completenessBasis: "source-declared-terminal-range",
+        completenessRuleVersion: LOAN_CONTRACT,
+        pageCount: 1,
+        terminal: true,
+      },
+      semantics: { status: "posted", effectiveTimeBasis: "source-reported", effectiveTimeRuleVersion: LOAN_CONTRACT, timeZone: "Asia/Taipei" },
+      pages: [{ pageOrdinal: 0, responseCode: "200", terminal: true, rowCount: records.length, proofKind: "source-declared-terminal-range" }],
+      occurrenceGroupCoverage: [{ scopeKey, startDate: september(1), endDate: september(30), contractVersion: LOAN_CONTRACT }],
+      records,
+      counterpartTransactions,
+      balanceObservations: [],
+      relations: repaid ? [{
+        kind: "transfer_counterpart" as const,
+        fromSourceRecordKey: repaid.sourceRecordKey,
+        toSourceRecordKey: depositKey,
+        fromAccountKey: LOAN_ACCOUNT,
+        toAccountKey: counterpartAccountKey,
+        fromDirection: "inflow" as const,
+        toDirection: "outflow" as const,
+        evidence: {
+          kind: "explicit-source-linkage" as const,
+          sourceRecordKey: sync.evidence === "loan" ? repaid.sourceRecordKey : depositKey,
+          relationId,
+          contractVersion: LOAN_CONTRACT,
+        },
+      }] : [],
+      relationCoverage: repaid ? "source-linked-complete" : "not-asserted",
+    },
+  };
+}
+
+async function loanRowCounts(store: PGliteStore): Promise<Record<string, number>> {
+  const { rows: [row] } = await store.query<Record<string, number>>(
+    `SELECT (SELECT count(*) FROM loan_transaction_facts)::int AS facts,
+            (SELECT count(*) FROM transaction_relations)::int AS relations,
+            (SELECT count(*) FROM transaction_relation_provenance)::int AS provenance`,
+  );
+  return { ...row! };
+}
+
+/**
+ * The latest provenance row of each relation, by highest commit sequence,
+ * names the evidence the last request gave it, and every payment's current
+ * revision has typed facts.
+ */
+async function assertLatestLoanRows(store: PGliteStore, request: PGliteCanonicalLoanCommitRequest): Promise<void> {
+  for (const relation of request.capture.relations) {
+    const { rows } = await store.query<{ evidence_source_record_key: string; evidence_relation_id: string }>(
+      `SELECT provenance.evidence_source_record_key, provenance.evidence_relation_id
+         FROM transaction_relations relation
+         JOIN LATERAL (
+           SELECT entry.* FROM transaction_relation_provenance entry
+             JOIN canonical_commits commit_row ON commit_row.commit_id = entry.commit_id
+            WHERE entry.relation_id = relation.relation_id
+            ORDER BY commit_row.commit_sequence DESC LIMIT 1
+         ) provenance ON TRUE
+        WHERE relation.from_source_record_key = $1 AND relation.to_source_record_key = $2`,
+      [relation.fromSourceRecordKey, relation.toSourceRecordKey],
+    );
+    assert.deepEqual(rows, [{ evidence_source_record_key: relation.evidence.sourceRecordKey, evidence_relation_id: relation.evidence.relationId }],
+      `the latest provenance of the relation from ${relation.fromSourceRecordKey}`);
+  }
+  const { rows: [missing] } = await store.query<{ count: number }>(
+    `SELECT count(*)::int AS count
+       FROM financial_transactions financial
+       JOIN LATERAL (SELECT revision_id FROM transaction_revisions revision
+                      WHERE revision.transaction_id = financial.transaction_id
+                      ORDER BY revision_number DESC LIMIT 1) latest ON TRUE
+      WHERE financial.source_sequence IN (SELECT jsonb_array_elements_text($1::jsonb))
+        AND NOT EXISTS (SELECT 1 FROM loan_transaction_facts fact WHERE fact.revision_id = latest.revision_id)`,
+    [JSON.stringify(request.capture.records.map((record) => record.sourceRecordKey))],
+  );
+  assert.equal(missing!.count, 0, "every payment's current revision has typed facts");
+}
+
+async function loanCommit(ledger: Ledger, request: PGliteCanonicalLoanCommitRequest): Promise<void> {
+  await ledger.commitLoan(request);
+  await assertLatestLoanRows(ledger.store, request);
+}
+
+equivalent("an unchanged loan re-sync", async (ledger) => {
+  const sync = { payments: ["p1", "p2"], repaid: "p2" };
+  await loanCommit(ledger, loanSync("sync-1", sync));
+  await ledger.holds("sync-1", { stored: 2, reused: 0 });
+  await ledger.holds("sync-1-deposit", { stored: 1, reused: 0 });
+  const written = await loanRowCounts(ledger.store);
+  assert.deepEqual(written, { facts: 2, relations: 1, provenance: 1 });
+  for (const captureId of ["sync-2", "sync-3"]) {
+    await loanCommit(ledger, loanSync(captureId, sync));
+    await ledger.holds(captureId, { stored: 0, reused: 2 });
+    await ledger.holds(`${captureId}-deposit`, { stored: 0, reused: 1 });
+  }
+  assert.deepEqual(await loanRowCounts(ledger.store), written, "an unchanged re-sync writes no loan row");
+});
+
+equivalent("a new loan payment", async (ledger) => {
+  await loanCommit(ledger, loanSync("sync-1", { payments: ["p1"] }));
+  // The new payment's revision gets typed facts, which cite its new record.
+  await loanCommit(ledger, loanSync("sync-2", { payments: ["p1", "p2"] }));
+  await ledger.holds("sync-2", { stored: 1, reused: 1 });
+  assert.deepEqual(await loanRowCounts(ledger.store), { facts: 2, relations: 0, provenance: 0 });
+  await loanCommit(ledger, loanSync("sync-3", { payments: ["p1", "p2"] }));
+  await ledger.holds("sync-3", { stored: 0, reused: 2 });
+});
+
+equivalent("a loan payment whose revision has no typed facts", async (ledger) => {
+  await loanCommit(ledger, loanSync("sync-1", { payments: ["p1", "p2"] }));
+  // A revision without typed facts, as one admitted before the command wrote them.
+  const [p1] = loanSync("sync-1", { payments: ["p1"] }).capture.records;
+  await ledger.store.query(
+    `DELETE FROM loan_transaction_facts
+      WHERE transaction_id = (SELECT transaction_id FROM financial_transactions WHERE source_sequence = $1)`,
+    [p1!.sourceRecordKey],
+  );
+  // The unchanged revision gets its facts, which cite the record, so it is stored again.
+  await loanCommit(ledger, loanSync("sync-2", { payments: ["p1", "p2"] }));
+  await ledger.holds("sync-2", { stored: 1, reused: 1 });
+  await loanCommit(ledger, loanSync("sync-3", { payments: ["p1", "p2"] }));
+  await ledger.holds("sync-3", { stored: 0, reused: 2 });
+});
+
+equivalent("a revised loan payment", async (ledger) => {
+  const sync = (description?: string) => ({ payments: ["p1", "p2"], ...(description ? { descriptions: { p1: description } } : {}) });
+  await loanCommit(ledger, loanSync("sync-1", sync()));
+  // A revised description opens a new revision, whose typed facts cite the new record.
+  await loanCommit(ledger, loanSync("sync-2", sync("PAYMENT p1 REVISED")));
+  await ledger.holds("sync-2", { stored: 1, reused: 1 });
+  assert.deepEqual(await loanRowCounts(ledger.store), { facts: 3, relations: 0, provenance: 0 });
+  await loanCommit(ledger, loanSync("sync-3", sync("PAYMENT p1 REVISED")));
+  await ledger.holds("sync-3", { stored: 0, reused: 2 });
+  // Only the current revision's facts count: without them, the next sync writes them again.
+  const [p1] = loanSync("sync-1", sync()).capture.records;
+  await ledger.store.query(
+    `DELETE FROM loan_transaction_facts
+      WHERE revision_id = (SELECT revision.revision_id FROM transaction_revisions revision
+                             JOIN financial_transactions financial ON financial.transaction_id = revision.transaction_id
+                            WHERE financial.source_sequence = $1 ORDER BY revision.revision_number DESC LIMIT 1)`,
+    [p1!.sourceRecordKey],
+  );
+  await loanCommit(ledger, loanSync("sync-4", sync("PAYMENT p1 REVISED")));
+  await ledger.holds("sync-4", { stored: 1, reused: 1 });
+  // And back to the first description: another revision.
+  await loanCommit(ledger, loanSync("sync-5", sync()));
+  await ledger.holds("sync-5", { stored: 1, reused: 1 });
+  assert.deepEqual(await loanRowCounts(ledger.store), { facts: 4, relations: 0, provenance: 0 });
+});
+
+equivalent("loan relation evidence that changes and changes back", async (ledger) => {
+  const sync = (evidence: "deposit" | "loan") => ({ payments: ["p1", "p2"], repaid: "p2", evidence });
+  await loanCommit(ledger, loanSync("sync-1", sync("deposit")));
+  // The loan payment now evidences the relation: its unchanged record is cited, so stored again.
+  await loanCommit(ledger, loanSync("sync-2", sync("loan")));
+  await ledger.holds("sync-2", { stored: 1, reused: 1 });
+  await ledger.holds("sync-2-deposit", { stored: 0, reused: 1 });
+  assert.deepEqual(await loanRowCounts(ledger.store), { facts: 2, relations: 1, provenance: 2 });
+  await loanCommit(ledger, loanSync("sync-3", sync("loan")));
+  await ledger.holds("sync-3", { stored: 0, reused: 2 });
+  // And back to the deposit: the latest provenance names the loan record, so this differs.
+  await loanCommit(ledger, loanSync("sync-4", sync("deposit")));
+  await ledger.holds("sync-4", { stored: 0, reused: 2 });
+  await ledger.holds("sync-4-deposit", { stored: 1, reused: 0 });
+  assert.deepEqual(await loanRowCounts(ledger.store), { facts: 2, relations: 1, provenance: 3 });
+  await loanCommit(ledger, loanSync("sync-5", sync("deposit")));
+  await ledger.holds("sync-5-deposit", { stored: 0, reused: 1 });
+});
+
+equivalent("a loan relation that vanishes and returns", async (ledger) => {
+  const linked = { payments: ["p1", "p2"], repaid: "p2" };
+  await loanCommit(ledger, loanSync("sync-1", linked));
+  // Loans infer no withdrawal: a capture without the deposit writes nothing for the relation.
+  await loanCommit(ledger, loanSync("sync-2", { payments: ["p1", "p2"] }));
+  await ledger.holds("sync-2", { stored: 0, reused: 2 });
+  // Back again, its latest provenance names the same evidence, so nothing is written.
+  await loanCommit(ledger, loanSync("sync-3", linked));
+  await ledger.holds("sync-3", { stored: 0, reused: 2 });
+  await ledger.holds("sync-3-deposit", { stored: 0, reused: 1 });
+  assert.deepEqual(await loanRowCounts(ledger.store), { facts: 2, relations: 1, provenance: 1 });
+});
+
+equivalent("a loan repayment resolved beside an unchanged loan re-sync", async (ledger) => {
+  // The repayment resolver writes relation provenance of its own, which the
+  // loan command's comparison must neither suppress nor be confused by.
+  const linked = { payments: ["p1", "p2"], repaid: "p2" };
+  await loanCommit(ledger, loanSync("sync-1", linked));
+  await loanCommit(ledger, loanSync("sync-2", linked));
+  const resolve = (fromCaptureId: string, toCaptureId: string) => resolvePGliteCanonicalLoanRepaymentRelations(ledger.store, {
+    sourceConnectionKey: token("loan-connection"),
+    explicitLinks: [{
+      fromCaptureId,
+      fromSourceRecordKey: token("loan-deposit-p2"),
+      toCaptureId,
+      toSourceRecordKey: loanSync(toCaptureId, linked).capture.relations[0]!.fromSourceRecordKey,
+      relationId: token("loan-relation-p2"),
+      contractVersion: LOAN_CONTRACT,
+    }],
+    observedAt: "2026-09-30T00:00:00.000Z",
+  }, { clock: ledger.clock });
+  // An explicit link names the captures that created the endpoints' revisions.
+  assert.equal((await resolve("sync-1-deposit", "sync-1")).outcome, "changed");
+  await loanCommit(ledger, loanSync("sync-3", linked));
+  await ledger.holds("sync-3", { stored: 0, reused: 2 });
+  await ledger.holds("sync-3-deposit", { stored: 0, reused: 1 });
+  assert.equal((await resolve("sync-1-deposit", "sync-1")).outcome, "unchanged");
 });
 
 test("the commit that reuses records is the one the app's deposit command runs", async () => {
