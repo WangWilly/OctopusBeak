@@ -2,7 +2,9 @@ import { createHash, randomUUID } from "node:crypto";
 import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
 import {
   assertPGliteCanonicalCommitNotCancelled,
+  assertPGliteStoredByThisCapture,
   admitPGliteCanonicalFinancialCaptureInTransaction,
+  findPGliteFinancialAccountId,
   refreshPGliteAdmittedFinancialProjection,
   type PGliteCanonicalCommitOptions,
   type PGliteCanonicalFinancialCommitResult,
@@ -121,7 +123,13 @@ async function first<T>(transaction: PGliteTransaction, sql: string, params: rea
   return (await query<T>(transaction, sql, params))[0];
 }
 
-function recordEnvelope(capture: InvestmentCaptureInput, record: { sourceRecordKey: string; description?: string | null; occurrenceGroup?: InvestmentCaptureInput["transactions"][number]["occurrenceGroup"] }, compact: Record<string, unknown>, index: number): CanonicalSourceRecord {
+/**
+ * A record's sequence lexeme is its source record key, which is unique in a
+ * capture. A position in the capture would renumber every later record when
+ * an earlier one leaves the collection window, and a renumbered record is
+ * stored again instead of reusing its unchanged copy (ADR 0152).
+ */
+function recordEnvelope(capture: InvestmentCaptureInput, record: { sourceRecordKey: string; description?: string | null; occurrenceGroup?: InvestmentCaptureInput["transactions"][number]["occurrenceGroup"] }, compact: Record<string, unknown>): CanonicalSourceRecord {
   return {
     occurrenceKey: record.sourceRecordKey,
     ...(record.occurrenceGroup ? { occurrenceGroup: record.occurrenceGroup } : {}),
@@ -130,27 +138,27 @@ function recordEnvelope(capture: InvestmentCaptureInput, record: { sourceRecordK
     contentHash: digest(compact),
     compact,
     compactJson: stableJson(compact),
-    sequenceLexeme: String(index + 1),
+    sequenceLexeme: record.sourceRecordKey,
     description: record.description ?? null,
   };
 }
 
 function sourceRecords(capture: InvestmentCaptureInput): CanonicalSourceRecord[] {
   const records: CanonicalSourceRecord[] = [];
-  for (const [index, holding] of capture.holdings.entries()) {
+  for (const holding of capture.holdings) {
     const { measurementKey: _measurementKey, observedAt: _observedAt, lineage: _lineage, ...sourceFact } = holding;
     records.push(recordEnvelope(capture, holding, { ...sourceFact,
       ...(holding.lineage.sourceLots ? { sourceLots: holding.lineage.sourceLots } : {}),
-      kind: "holding-measurement" }, index));
+      kind: "holding-measurement" }));
   }
-  for (const [index, transaction] of capture.transactions.entries()) {
+  for (const transaction of capture.transactions) {
     const { transactionKey: _transactionKey, ...sourceFact } = transaction;
-    records.push(recordEnvelope(capture, transaction, { kind: "investment-transaction", ...sourceFact }, capture.holdings.length + index));
+    records.push(recordEnvelope(capture, transaction, { kind: "investment-transaction", ...sourceFact }));
   }
   for (const movement of capture.passbookMovements ?? [])
-    records.push(recordEnvelope(capture, movement, { kind: "passbook-movement", ...movement }, records.length));
+    records.push(recordEnvelope(capture, movement, { kind: "passbook-movement", ...movement }));
   if (capture.margin?.kind === "embedded")
-    records.push(recordEnvelope(capture, capture.margin, { ...capture.margin, kind: "margin-balance" }, records.length));
+    records.push(recordEnvelope(capture, capture.margin, { ...capture.margin, kind: "margin-balance" }));
   return records;
 }
 
@@ -491,7 +499,92 @@ type InvestmentContext = {
   commitId: Uint8Array;
 };
 
-async function persistExtensions(transaction: PGliteTransaction, context: InvestmentContext, capture: InvestmentCaptureInput, result: PGliteCanonicalFinancialCommitResult): Promise<void> {
+type Holding = InvestmentCaptureInput["holdings"][number];
+
+/** A stored observation of exactly this measurement, which makes the holding a repeat that writes nothing. */
+async function exactHoldingObservation(transaction: PGliteTransaction, accountId: Uint8Array, securityId: Uint8Array, holding: Holding): Promise<boolean> {
+  return (await first<{ observation_id: unknown }>(transaction, `SELECT observation_id FROM investment_holding_observations WHERE account_id = ? AND measurement_key = ? AND security_id = ? AND effective_on = ? AND quantity_coefficient IS NOT DISTINCT FROM ? AND quantity_scale IS NOT DISTINCT FROM ? AND valuation_coefficient IS NOT DISTINCT FROM ? AND valuation_scale IS NOT DISTINCT FROM ? AND valuation_currency IS NOT DISTINCT FROM ? AND cost_coefficient IS NOT DISTINCT FROM ? AND cost_scale IS NOT DISTINCT FROM ? AND cost_currency IS NOT DISTINCT FROM ? LIMIT 1`, [accountId, holding.measurementKey, securityId, holding.effectiveOn, holding.quantity?.coefficient ?? null, holding.quantity?.scale ?? null, holding.valuation?.coefficient ?? null, holding.valuation?.scale ?? null, holding.valuation?.currency ?? null, holding.cost?.coefficient ?? null, holding.cost?.scale ?? null, holding.cost?.currency ?? null])) !== undefined;
+}
+
+/**
+ * What the command's own rows cite, decided before any record is stored
+ * (ADR 0152). A Security's name observation is written only when the
+ * Security is new or the name or contract version differs from its latest
+ * observation, the one with the highest commit sequence, as the overview
+ * reads it. A holding observation is a new measurement (ADR 0008), written
+ * unless an observation of exactly this measurement exists. Investment
+ * transactions, passbook movements and embedded margin balances are written
+ * once. Every record a row will cite is cited; every other may be reused.
+ */
+type InvestmentCitationPlan = Readonly<{
+  cited: ReadonlySet<string>;
+  /** Securities whose name observation this commit writes, by security key. */
+  names: ReadonlySet<string>;
+}>;
+
+async function planInvestmentCitations(transaction: PGliteTransaction, capture: InvestmentCaptureInput): Promise<InvestmentCitationPlan> {
+  const cited = new Set<string>();
+  const names = new Set<string>();
+  const accountId = await findPGliteFinancialAccountId(transaction, captureSource(capture), capture.identity.accountKey);
+  const securityIds = new Map<string, Uint8Array>();
+  const latestNames = new Map<string, string>();
+  for (const row of await query<{ security_key: string; security_id: unknown; name: string | null; contract_version: string | null }>(transaction, `
+    SELECT security.security_key, security.security_id, latest.name, latest.contract_version
+      FROM investment_securities security
+      LEFT JOIN LATERAL (
+        SELECT observation.name, observation.contract_version
+          FROM investment_security_name_observations observation
+          JOIN canonical_commits name_commit ON name_commit.commit_id = observation.commit_id
+         WHERE observation.security_id = security.security_id
+         ORDER BY name_commit.commit_sequence DESC, observation.capture_id DESC
+         LIMIT 1
+      ) latest ON TRUE
+     WHERE security.source_id = ? AND security.security_key IN (SELECT jsonb_array_elements_text(?::jsonb))`,
+  [capture.sourceId, JSON.stringify(capture.securities.map((security) => security.securityKey))])) {
+    securityIds.set(row.security_key, bytes(row.security_id, "Investment Security"));
+    if (row.contract_version !== null) latestNames.set(row.security_key, JSON.stringify([row.name, row.contract_version]));
+  }
+  for (const security of capture.securities)
+    if (security.nameEvidence && security.name !== undefined &&
+      latestNames.get(security.securityKey) !== JSON.stringify([security.name, security.nameEvidence.contractVersion])) {
+      names.add(security.securityKey);
+      cited.add(security.nameEvidence.sourceRecordKey);
+    }
+  for (const holding of capture.holdings) {
+    const securityId = securityIds.get(holding.securityKey);
+    if (!accountId || !securityId || !await exactHoldingObservation(transaction, accountId, securityId, holding))
+      cited.add(holding.sourceRecordKey);
+  }
+  const written = new Set<string>();
+  if (accountId && capture.transactions.length > 0)
+    for (const row of await query<{ source_sequence: string }>(transaction, `
+      SELECT financial.source_sequence
+        FROM financial_transactions financial
+        JOIN investment_transactions investment ON investment.transaction_id = financial.transaction_id
+       WHERE financial.account_id = ? AND financial.source_sequence IN (SELECT jsonb_array_elements_text(?::jsonb))`,
+    [accountId, JSON.stringify(capture.transactions.map((row) => row.sourceRecordKey))]))
+      written.add(row.source_sequence);
+  for (const row of capture.transactions) if (!written.has(row.sourceRecordKey)) cited.add(row.sourceRecordKey);
+  const movements = new Set<string>();
+  if (accountId && (capture.passbookMovements?.length ?? 0) > 0)
+    for (const row of await query<{ movement_key: string }>(transaction,
+      "SELECT movement_key FROM investment_passbook_movements WHERE account_id = ? AND movement_key IN (SELECT jsonb_array_elements_text(?::jsonb))",
+      [accountId, JSON.stringify(capture.passbookMovements!.map((movement) => movement.movementKey))]))
+      movements.add(row.movement_key);
+  for (const movement of capture.passbookMovements ?? []) if (!movements.has(movement.movementKey)) cited.add(movement.sourceRecordKey);
+  const margin = capture.margin;
+  if (margin?.kind === "embedded" && (!accountId || !await first(transaction,
+    "SELECT observation_id FROM investment_margin_balance_observations WHERE account_id = ? AND effective_on = ? AND coefficient = ? AND scale = ? AND currency = ?",
+    [accountId, margin.effectiveOn, margin.amount.coefficient, margin.amount.scale, margin.amount.currency])))
+    cited.add(margin.sourceRecordKey);
+  return { cited, names };
+}
+
+async function persistExtensions(transaction: PGliteTransaction, context: InvestmentContext, capture: InvestmentCaptureInput, result: PGliteCanonicalFinancialCommitResult, plan: InvestmentCitationPlan): Promise<void> {
+  const cites = (sourceRecordId: Uint8Array, row: string): Uint8Array => {
+    assertPGliteStoredByThisCapture(context.capture, sourceRecordId, row);
+    return sourceRecordId;
+  };
   await query(transaction, `INSERT INTO investment_captures(capture_id, commit_id, source_id, contract_version) VALUES (?, ?, ?, ?) ON CONFLICT(capture_id) DO NOTHING`, [context.capture.captureId, context.commitId, capture.sourceId, capture.contractVersion]);
   await query(transaction, `INSERT INTO investment_accounts(account_id, source_connection_id, identity_epoch_id, source_id, account_key, account_type, account_subtype) VALUES (?, ?, ?, ?, ?, 'investment', ?) ON CONFLICT(account_id) DO NOTHING`, [context.accountId, (await first<{ source_connection_id: unknown }>(transaction, "SELECT source_connection_id FROM financial_accounts WHERE account_id = ?", [context.accountId]))?.source_connection_id, (await first<{ identity_epoch_id: unknown }>(transaction, "SELECT identity_epoch_id FROM financial_accounts WHERE account_id = ?", [context.accountId]))?.identity_epoch_id, capture.sourceId, capture.identity.accountKey, capture.identity.accountSubtype ?? null]);
   const records = context.capture.sourceRecordIdsByOccurrence;
@@ -502,10 +595,10 @@ async function persistExtensions(transaction: PGliteTransaction, context: Invest
     const securityId = prior?.security_id ? bytes(prior.security_id, "Investment Security") : uuidBytes();
     if (!prior) await query(transaction, `INSERT INTO investment_securities(security_id, source_id, security_key, producer_security_id, name, ticker, currency, security_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, [securityId, capture.sourceId, security.securityKey, security.producerSecurityId, security.name ?? null, security.ticker ?? null, security.currency, security.securityType ?? "other"]);
     securities.set(security.securityKey, securityId);
-    if (security.nameEvidence && security.name !== undefined) {
+    if (security.nameEvidence && security.name !== undefined && plan.names.has(security.securityKey)) {
       const sourceRecordId = records.get(security.nameEvidence.sourceRecordKey);
       if (!sourceRecordId) fail("Investment Security name source record is missing.");
-      await query(transaction, `INSERT INTO investment_security_name_observations(security_id, capture_id, commit_id, source_record_id, contract_version, name) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(security_id, capture_id) DO NOTHING`, [securityId, context.capture.captureId, context.commitId, sourceRecordId, security.nameEvidence.contractVersion, security.name]);
+      await query(transaction, `INSERT INTO investment_security_name_observations(security_id, capture_id, commit_id, source_record_id, contract_version, name) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(security_id, capture_id) DO NOTHING`, [securityId, context.capture.captureId, context.commitId, cites(sourceRecordId, "an investment Security name"), security.nameEvidence.contractVersion, security.name]);
     }
   }
   const securityId = (key: string): Uint8Array => securities.get(key) ?? fail("Investment Security extension is missing.");
@@ -515,8 +608,7 @@ async function persistExtensions(transaction: PGliteTransaction, context: Invest
     const sourceRecordId = records.get(holding.sourceRecordKey);
     if (!sourceRecordId) fail("Investment holding source record is missing.");
     const security = securityId(holding.securityKey);
-    const exact = await first<{ observation_id: unknown }>(transaction, `SELECT observation_id FROM investment_holding_observations WHERE account_id = ? AND measurement_key = ? AND security_id = ? AND effective_on = ? AND quantity_coefficient IS NOT DISTINCT FROM ? AND quantity_scale IS NOT DISTINCT FROM ? AND valuation_coefficient IS NOT DISTINCT FROM ? AND valuation_scale IS NOT DISTINCT FROM ? AND valuation_currency IS NOT DISTINCT FROM ? AND cost_coefficient IS NOT DISTINCT FROM ? AND cost_scale IS NOT DISTINCT FROM ? AND cost_currency IS NOT DISTINCT FROM ? LIMIT 1`, [context.accountId, holding.measurementKey, security, holding.effectiveOn, holding.quantity?.coefficient ?? null, holding.quantity?.scale ?? null, holding.valuation?.coefficient ?? null, holding.valuation?.scale ?? null, holding.valuation?.currency ?? null, holding.cost?.coefficient ?? null, holding.cost?.scale ?? null, holding.cost?.currency ?? null]);
-    if (exact) continue;
+    if (await exactHoldingObservation(transaction, context.accountId, security, holding)) continue;
     let prior: { observation_id: unknown; revision_number: number | string; source_record_id: unknown; security_id: unknown; effective_on: string; target_source_record_key?: string } | undefined;
     if (holding.correction) {
       prior = await first<typeof prior & { target_source_record_key?: string }>(transaction, "SELECT observation.observation_id, observation.revision_number, observation.source_record_id, observation.security_id, observation.effective_on, source_record.occurrence_key AS target_source_record_key FROM investment_holding_observations observation JOIN source_records source_record ON source_record.source_record_id = observation.source_record_id WHERE observation.account_id = ? AND observation.measurement_key = ? AND observation.is_current = 1", [context.accountId, holding.correction.ofMeasurementKey]);
@@ -529,7 +621,7 @@ async function persistExtensions(transaction: PGliteTransaction, context: Invest
         await query(transaction, "UPDATE investment_holding_observations SET is_current = 0 WHERE observation_id = ?", [current.observation_id]);
       }
     }
-    await query(transaction, `INSERT INTO investment_holding_observations(observation_id, capture_id, commit_id, account_id, security_id, source_record_id, measurement_key, correction_of_observation_id, revision_number, is_current, quantity_coefficient, quantity_scale, valuation_coefficient, valuation_scale, valuation_currency, cost_coefficient, cost_scale, cost_currency, effective_on, observed_at, lineage_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [uuidBytes(), context.capture.captureId, context.commitId, context.accountId, security, sourceRecordId, holding.correction?.ofMeasurementKey ?? holding.measurementKey, prior?.observation_id ?? null, Number(prior?.revision_number ?? 0) + 1, holding.quantity?.coefficient ?? null, holding.quantity?.scale ?? null, holding.valuation?.coefficient ?? null, holding.valuation?.scale ?? null, holding.valuation?.currency ?? null, holding.cost?.coefficient ?? null, holding.cost?.scale ?? null, holding.cost?.currency ?? null, holding.effectiveOn, holding.observedAt, stableJson({ ...holding.lineage, measurementSubjectKey: holding.measurementSubjectKey, correction: holding.correction ?? null, effectiveTimeEvidence: holding.effectiveTimeEvidence })]);
+    await query(transaction, `INSERT INTO investment_holding_observations(observation_id, capture_id, commit_id, account_id, security_id, source_record_id, measurement_key, correction_of_observation_id, revision_number, is_current, quantity_coefficient, quantity_scale, valuation_coefficient, valuation_scale, valuation_currency, cost_coefficient, cost_scale, cost_currency, effective_on, observed_at, lineage_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [uuidBytes(), context.capture.captureId, context.commitId, context.accountId, security, cites(sourceRecordId, "a holding observation"), holding.correction?.ofMeasurementKey ?? holding.measurementKey, prior?.observation_id ?? null, Number(prior?.revision_number ?? 0) + 1, holding.quantity?.coefficient ?? null, holding.quantity?.scale ?? null, holding.valuation?.coefficient ?? null, holding.valuation?.scale ?? null, holding.valuation?.currency ?? null, holding.cost?.coefficient ?? null, holding.cost?.scale ?? null, holding.cost?.currency ?? null, holding.effectiveOn, holding.observedAt, stableJson({ ...holding.lineage, measurementSubjectKey: holding.measurementSubjectKey, correction: holding.correction ?? null, effectiveTimeEvidence: holding.effectiveTimeEvidence })]);
   }
   const resultByOccurrence = new Map(result.transactions.map((row) => [row.sourceOccurrenceKey, row]));
   for (const investmentTransaction of capture.transactions) {
@@ -553,7 +645,7 @@ async function persistExtensions(transaction: PGliteTransaction, context: Invest
       if (!Buffer.from(bytes(existing.security_id, "Investment Security")).equals(Buffer.from(expected.security)) || existing.action !== expected.action || existing.quantity_coefficient !== expected.quantityCoefficient || Number(existing.quantity_scale) !== expected.quantityScale || existing.cash_coefficient !== expected.cashCoefficient || Number(existing.cash_scale) !== expected.cashScale || existing.cash_currency !== expected.cashCurrency || existing.effective_on !== expected.effectiveOn || existing.funding_evidence_json !== expected.fundingEvidenceJson) fail("Investment transaction extension conflicts with prior canonical evidence.");
       continue;
     }
-    await query(transaction, `INSERT INTO investment_transactions(transaction_id, capture_id, commit_id, account_id, security_id, source_record_id, action, quantity_coefficient, quantity_scale, cash_coefficient, cash_scale, cash_currency, effective_on, funding_evidence_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [bytes(committed.transactionId, "Investment transaction"), context.capture.captureId, context.commitId, context.accountId, expected.security, sourceRecordId, expected.action, expected.quantityCoefficient, expected.quantityScale, expected.cashCoefficient, expected.cashScale, expected.cashCurrency, expected.effectiveOn, expected.fundingEvidenceJson]);
+    await query(transaction, `INSERT INTO investment_transactions(transaction_id, capture_id, commit_id, account_id, security_id, source_record_id, action, quantity_coefficient, quantity_scale, cash_coefficient, cash_scale, cash_currency, effective_on, funding_evidence_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [bytes(committed.transactionId, "Investment transaction"), context.capture.captureId, context.commitId, context.accountId, expected.security, cites(sourceRecordId, "an investment transaction"), expected.action, expected.quantityCoefficient, expected.quantityScale, expected.cashCoefficient, expected.cashScale, expected.cashCurrency, expected.effectiveOn, expected.fundingEvidenceJson]);
   }
   for (const movement of capture.passbookMovements ?? []) {
     const sourceRecordId = records.get(movement.sourceRecordKey);
@@ -564,13 +656,13 @@ async function persistExtensions(transaction: PGliteTransaction, context: Invest
       if (!Buffer.from(bytes(existing.security_id, "Investment Security")).equals(Buffer.from(security)) || existing.action !== movement.action || existing.quantity_coefficient !== movement.quantity.coefficient || Number(existing.quantity_scale) !== movement.quantity.scale || existing.trade_on !== movement.tradeOn || existing.posted_on !== movement.postedOn) fail("Passbook movement conflicts with prior canonical evidence.");
       continue;
     }
-    await query(transaction, `INSERT INTO investment_passbook_movements(movement_id, capture_id, commit_id, account_id, security_id, source_record_id, movement_key, action, quantity_coefficient, quantity_scale, trade_on, posted_on) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [uuidBytes(), context.capture.captureId, context.commitId, context.accountId, security, sourceRecordId, movement.movementKey, movement.action, movement.quantity.coefficient, movement.quantity.scale, movement.tradeOn, movement.postedOn]);
+    await query(transaction, `INSERT INTO investment_passbook_movements(movement_id, capture_id, commit_id, account_id, security_id, source_record_id, movement_key, action, quantity_coefficient, quantity_scale, trade_on, posted_on) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [uuidBytes(), context.capture.captureId, context.commitId, context.accountId, security, cites(sourceRecordId, "a passbook movement"), movement.movementKey, movement.action, movement.quantity.coefficient, movement.quantity.scale, movement.tradeOn, movement.postedOn]);
   }
   if (capture.margin?.kind === "embedded") {
     const sourceRecordId = records.get(capture.margin.sourceRecordKey);
     if (!sourceRecordId) fail("Investment margin source record is missing.");
     const existing = await first<{ observation_id: unknown }>(transaction, "SELECT observation_id FROM investment_margin_balance_observations WHERE account_id = ? AND effective_on = ? AND coefficient = ? AND scale = ? AND currency = ?", [context.accountId, capture.margin.effectiveOn, capture.margin.amount.coefficient, capture.margin.amount.scale, capture.margin.amount.currency]);
-    if (!existing) await query(transaction, `INSERT INTO investment_margin_balance_observations(observation_id, capture_id, commit_id, account_id, source_record_id, balance_kind, coefficient, scale, currency, effective_on) VALUES (?, ?, ?, ?, ?, 'margin_loan', ?, ?, ?, ?)`, [uuidBytes(), context.capture.captureId, context.commitId, context.accountId, sourceRecordId, capture.margin.amount.coefficient, capture.margin.amount.scale, capture.margin.amount.currency, capture.margin.effectiveOn]);
+    if (!existing) await query(transaction, `INSERT INTO investment_margin_balance_observations(observation_id, capture_id, commit_id, account_id, source_record_id, balance_kind, coefficient, scale, currency, effective_on) VALUES (?, ?, ?, ?, ?, 'margin_loan', ?, ?, ?, ?)`, [uuidBytes(), context.capture.captureId, context.commitId, context.accountId, cites(sourceRecordId, "a margin balance"), capture.margin.amount.coefficient, capture.margin.amount.scale, capture.margin.amount.currency, capture.margin.effectiveOn]);
   }
 }
 
@@ -611,16 +703,28 @@ export async function listPGliteTdccFundAccounts(
   });
 }
 
+/** An investment commit's options, and whether it reuses unchanged records. */
+export type PGliteCanonicalInvestmentCommitOptions = PGliteCanonicalCommitOptions & Readonly<{
+  /**
+   * `false` stores every record of the capture again, as before ADR 0152,
+   * while name observations are still written only where they changed. The
+   * reuse check compares a store built this way with one that reuses records.
+   */
+  reuseSourceRecords?: false;
+}>;
+
 export async function commitPGliteCanonicalInvestmentCapture(
   store: PGliteStore,
   request: PGliteCanonicalInvestmentCommitRequest,
-  options: PGliteCanonicalCommitOptions = {},
+  options: PGliteCanonicalInvestmentCommitOptions = {},
 ): Promise<PGliteCanonicalInvestmentCommitResult> {
   const snapshot = structuredClone(request);
   validateCapture(snapshot.capture);
   for (const holding of snapshot.capture.holdings) assertInvestmentHoldingSourceLots(snapshot.capture.sourceId, holding);
   return store.transaction(async (transaction) => {
     const margin = marginFact(snapshot.capture);
+    const plan = await planInvestmentCitations(transaction, snapshot.capture);
+    const reuse = options.reuseSourceRecords !== false;
     const admitted = await admitPGliteCanonicalFinancialCaptureInTransaction(transaction, {
       capture: captureSource(snapshot.capture),
       account: account(snapshot.capture),
@@ -628,10 +732,10 @@ export async function commitPGliteCanonicalInvestmentCapture(
       transactions: [...snapshot.capture.transactions.map((row) => financialFact(snapshot.capture, row)), ...(margin ? [margin] : [])],
       withdrawalPolicy: "never-infer",
       recordedAtUtcUs: snapshot.recordedAtUtcUs ?? options.recordedAtUtcUs,
-    }, options, "any");
+    }, options, reuse ? plan.cited : "any");
     const result = admitted.result;
     const context: InvestmentContext = { capture: admitted.capture, accountId: admitted.accountId, commitId: admitted.capture.commitId };
-    await persistExtensions(transaction, context, snapshot.capture, result);
+    await persistExtensions(transaction, context, snapshot.capture, result, plan);
     const marginBalance = independentMarginBalanceSource(snapshot.capture);
     const admittedCaptures = [admitted];
     if (marginBalance)
@@ -642,7 +746,8 @@ export async function commitPGliteCanonicalInvestmentCapture(
         balanceObservations: [marginBalance.observation],
         withdrawalPolicy: "never-infer",
         recordedAtUtcUs: snapshot.recordedAtUtcUs ?? options.recordedAtUtcUs,
-      }, options, "any"));
+        // No row of this command cites the independent margin account's record.
+      }, options, reuse ? "none" : "any"));
     await refreshPGliteAdmittedFinancialProjection(transaction, admittedCaptures, options);
     assertPGliteCanonicalCommitNotCancelled(options.signal);
     return {

@@ -15,9 +15,10 @@
  * the inventory with the window. `card-command` drives the credit-card
  * command on the same records, with an instrument, statements and each
  * purchase's card details and lifecycle, so it also measures the command's
- * own rows. `einvoice` and `loan` drive those domain commands on records in
- * the same moving window: invoices, and loan payments with three repayment
- * deposits linked to them.
+ * own rows. `einvoice`, `investment` and `loan` drive those domain commands
+ * on records in the same moving window: invoices; investment transactions
+ * with named securities and two holdings; loan payments with three
+ * repayment deposits linked to them.
  */
 import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
@@ -39,13 +40,14 @@ import {
   PGLITE_EINVOICE_CURRENCY_AUTHORITY,
   PGLITE_EINVOICE_ROUTE,
 } from "./einvoice.ts";
+import { commitPGliteCanonicalInvestmentCapture, type PGliteCanonicalInvestmentCommitRequest } from "./investment.ts";
 import { commitPGliteCanonicalLoanCapture, type PGliteCanonicalLoanCommitRequest } from "./loan.ts";
 import type { CanonicalEInvoiceCaptureInput } from "../canonical/einvoice-contract.ts";
 import { canonicalLoanOccurrenceScopeKey } from "../canonical/loan-admission.ts";
 import { installFinancialStore } from "./store-layout.ts";
 import type { PGliteStore } from "./transaction.ts";
 
-const ALL_MODES = ["deposit", "card-route", "card-command", "einvoice", "loan"] as const;
+const ALL_MODES = ["deposit", "card-route", "card-command", "einvoice", "investment", "loan"] as const;
 type Mode = (typeof ALL_MODES)[number];
 
 function positiveInteger(name: string, fallback: number, minimum: number): number {
@@ -328,6 +330,91 @@ function einvoiceCapture(sync: number): CanonicalEInvoiceCaptureInput {
   };
 }
 
+const INVESTMENT_CONTRACT = "yuanta-fund/investment/canonical-v1";
+const INVESTMENT_SECURITIES = 5;
+
+/**
+ * Investment transactions inside the window, over five securities, each
+ * named by its latest transaction, and a holding in each of the first two
+ * securities. A holding is a measurement as of the collection date, which
+ * moves with the window, so its record and observation are new each sync
+ * (ADR 0008).
+ */
+function investmentCapture(sync: number): PGliteCanonicalInvestmentCommitRequest {
+  const { startDate, endDate } = window(sync);
+  const scopeKey = token("investment-transaction-scope");
+  const observedAt = `${endDate}T01:00:00.000Z`;
+  const rows = windowRows(sync);
+  const slots = assignOccurrenceSlots({
+    rows,
+    complete: true,
+    scopeKey: () => scopeKey,
+    fingerprint: (row) => token(`investment-row-${row.index}`),
+    partitionDate: (row) => row.date,
+  });
+  const securityKey = (index: number) => `yuanta-fund:FUND${index % INVESTMENT_SECURITIES}`;
+  const transactions = slots.map(({ row, occurrenceKey, group }) => ({
+    sourceRecordKey: occurrenceKey,
+    occurrenceGroup: group,
+    transactionKey: token(`investment-transaction-${row.index}`),
+    securityKey: securityKey(row.index),
+    action: "buy" as const,
+    quantity: { coefficient: "5", scale: 0 },
+    cashEffect: { coefficient: String(1000 + row.index), scale: 0, currency: "TWD" },
+    effectiveOn: row.date,
+    description: `SYNTHETIC FUND BUY ${row.index}`,
+    fundingEvidence: { kind: "unresolved" as const, sourceRecordKey: occurrenceKey },
+  }));
+  const holdings = [0, 1].map((security) => {
+    const sourceRecordKey = token(`investment-holding-${security}-${endDate}`);
+    return {
+      measurementKey: token(`investment-holding-measurement-${sync}-${security}`),
+      measurementSubjectKey: token(`investment-holding-subject-${security}-${endDate}`),
+      sourceRecordKey,
+      securityKey: securityKey(security),
+      quantity: { coefficient: "50", scale: 0 },
+      valuation: { coefficient: "12500", scale: 0, currency: "TWD" },
+      effectiveOn: endDate,
+      observedAt,
+      effectiveTimeEvidence: { kind: "source-reported-as-of" as const, sourceRecordKey, sourceField: "asOfDate", value: endDate, contractVersion: INVESTMENT_CONTRACT },
+      lineage: { page: 1, row: security + 1, contractVersion: INVESTMENT_CONTRACT },
+    };
+  });
+  const securities = Array.from({ length: INVESTMENT_SECURITIES }, (_, security) => ({
+    securityKey: securityKey(security),
+    producerSecurityId: `FUND${security}`,
+    name: `Synthetic Fund ${security}`,
+    currency: "TWD",
+    securityType: "mutual_fund" as const,
+    identityEvidence: { kind: "producer-security-id" as const, contractVersion: INVESTMENT_CONTRACT },
+    nameEvidence: {
+      contractVersion: "yuanta-fund/security-name/source-reported-v1",
+      sourceRecordKey: transactions.findLast((transaction) => transaction.securityKey === securityKey(security))!.sourceRecordKey,
+    },
+  }));
+  return {
+    capture: {
+      captureId: `investment-capture-${sync}`,
+      sourceId: "yuanta-fund",
+      authorityRoute: INVESTMENT_CONTRACT,
+      contractVersion: INVESTMENT_CONTRACT,
+      observedAt,
+      identity: {
+        sourceConnectionKey: token("investment-connection"),
+        identityEpochKey: token("investment-epoch"),
+        accountKey: token("investment-account"),
+        accountType: "investment",
+        reportingCurrency: "TWD",
+      },
+      scope: { effectiveOn: endDate, complete: true, transactionHistory: { startDate, endDate, complete: true } },
+      occurrenceGroupCoverage: [{ scopeKey, startDate, endDate, contractVersion: INVESTMENT_CONTRACT }],
+      securities,
+      holdings,
+      transactions,
+    },
+  };
+}
+
 const LOAN_CONTRACT = "loan/canonical/v2.fubon";
 const COUNTERPART_CONTRACT = "loan/counterpart/v1.fubon";
 const LOAN_COUNTERPARTS = 3;
@@ -453,6 +540,7 @@ async function commit(store: PGliteStore, mode: Mode, sync: number): Promise<voi
   switch (mode) {
     case "card-command": await commitPGliteCanonicalCreditCardCapture(store, cardCommandCapture(sync)); return;
     case "einvoice": await commitPGliteCanonicalEInvoiceCapture(store, einvoiceCapture(sync)); return;
+    case "investment": await commitPGliteCanonicalInvestmentCapture(store, investmentCapture(sync)); return;
     case "loan": await commitPGliteCanonicalLoanCapture(store, loanCapture(sync)); return;
     case "deposit":
     case "card-route": await commitPGliteCanonicalFinancialCapture(store, capture(mode, sync));
