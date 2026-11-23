@@ -128,10 +128,13 @@ async function activeGeneration(reader: PGliteSpendingReader): Promise<number | 
 
 type DateFact = Readonly<{ consumeDate: string | null; postingDate: string | null; basis: "consume-date" | "posting-date-fallback" | null }>;
 
-/** The installed tables that carry a revision's consume and posting dates. */
+/**
+ * The installed tables that carry a revision's consume and posting dates:
+ * the card details table, which a store without the ledger baseline lacks.
+ */
 async function dateFactTables(reader: PGliteSpendingReader): Promise<readonly { table_name: string }[]> {
   return rows(await pgliteQuery<{ table_name: string }>(reader,
-    "SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema() AND table_name IN ('canonical_credit_card_transaction_details', 'fubon_credit_transaction_details')",
+    "SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = 'canonical_credit_card_transaction_details'",
   ));
 }
 
@@ -183,14 +186,10 @@ async function transactionDateFacts(
       // The credit-card command writes a details row only on change, so a
       // revision may hold several; only the latest is current (ADR 0152).
       const facts = rows(await pgliteQuery<Row>(reader,
-        table.table_name === "canonical_credit_card_transaction_details"
-          ? latestCardDetailsByRevisionSql(
-            "detail.revision_id, detail.consume_date, detail.posting_date, detail.effective_date_basis",
-            inChunk("detail.revision_id"),
-          )
-          : `SELECT revision_id, consume_date, posting_date, effective_date_basis
-           FROM ${table.table_name}
-          WHERE ${inChunk("revision_id")}`,
+        latestCardDetailsByRevisionSql(
+          "detail.revision_id, detail.consume_date, detail.posting_date, detail.effective_date_basis",
+          inChunk("detail.revision_id"),
+        ),
         chunk?.map((value) => bytes(value, "Transaction revision")) ?? [],
       ));
       for (const row of facts) {
