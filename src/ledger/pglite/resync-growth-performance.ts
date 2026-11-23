@@ -1,17 +1,19 @@
 /**
  * How much the canonical store grows when a source is synced again with
  * nothing new (ADR 0152). It commits the same records repeatedly, each time
- * under a new capture id and a window that ends a day later, as a collection
- * window does. It fails when any table gains rows in proportion to the
- * records re-sighted rather than a fixed number per capture.
+ * under a new capture id and a window that starts and ends a day later, as a
+ * collection window does, so the oldest rows age out. It fails when any table
+ * gains rows in proportion to the records re-sighted rather than a fixed
+ * number per capture.
  *
  *   npm run check:pglite-resync-growth
  *
  * PGLITE_RESYNC_RECORDS (default 200) and PGLITE_RESYNC_SYNCS (default 10)
  * size the run; PGLITE_RESYNC_MODE is `deposit`, `card-route` or `both`.
  * Both modes go through the generic commit; `card-route` uses a credit-card
- * route and bucket coverage but not the credit-card command, whose own rows
- * a later step measures.
+ * route and bucket coverage, one bucket per day so a day leaves the inventory
+ * with the window, but not the credit-card command, whose own rows a later
+ * step measures.
  */
 import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
@@ -58,9 +60,10 @@ const BYTES_PER_RECORD_BUDGET = 256;
 const token = (value: string) => `sha256:${createHash("sha256").update(value, "utf8").digest("base64url")}`;
 const day = (index: number) => new Date(Date.UTC(2026, 0, 1) + index * 86_400_000).toISOString().slice(0, 10);
 
-/** One complete bounded capture of `RECORDS` synthetic rows; sync `sync` ends its window that many days later. */
+/** One complete bounded capture of the `RECORDS` synthetic rows inside the window, which moves a day per sync. */
 function capture(mode: Mode, sync: number): PGliteCanonicalFinancialCommitRequest {
   const captureId = `${mode}-capture-${sync}`;
+  const startDate = day(sync - 1);
   const endDate = day(180 + sync);
   const card = mode === "card-route";
   const scopeKey = token("scope");
@@ -71,8 +74,7 @@ function capture(mode: Mode, sync: number): PGliteCanonicalFinancialCommitReques
     index,
     date: day((index % 10 === 9 ? index - 1 : index) % 180),
     fingerprint: token(`row-${index % 10 === 9 ? index - 1 : index}`),
-    bucketKey: card ? `2026-${String(1 + Math.floor((index % 180) / 30)).padStart(2, "0")}` : undefined,
-  }));
+  })).filter((row) => row.date >= startDate).map((row) => ({ ...row, bucketKey: card ? row.date : undefined }));
   const slots = assignOccurrenceSlots({
     rows,
     complete: true,
@@ -117,7 +119,7 @@ function capture(mode: Mode, sync: number): PGliteCanonicalFinancialCommitReques
         sourceField: "accountNumber",
       },
       scope: {
-        startDate: "2026-01-01",
+        startDate,
         endDate,
         dateFormat: "YYYY-MM-DD",
         kind: "bounded-range",
@@ -130,7 +132,7 @@ function capture(mode: Mode, sync: number): PGliteCanonicalFinancialCommitReques
       records,
       occurrenceGroupCoverage: [{
         scopeKey,
-        startDate: "2026-01-01",
+        startDate,
         endDate,
         contractVersion,
         ...(bucketKeys ? { bucketKeys } : {}),
