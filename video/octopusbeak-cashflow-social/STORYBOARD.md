@@ -8,7 +8,7 @@ music: shared with the 16:9 film (identical timing; the audio cues in index.html
 ---
 
 The vertical social cut of `../octopusbeak-cashflow` (read its `STORYBOARD.md` and `BRIEF.md` first:
-the concept, the real numbers, the palette, the engraving, the motion grammar, every string in zh and
+the concept, the real numbers, the palette, the water river, the motion grammar, every string in zh and
 en, and every scene's content carry over unchanged). **Scene timings are identical to the 16:9 film**
 (so the shared music and SFX land on the same beats). Only the layout changes: the river flows from top
 to bottom and everything is re-composed for 1080×1920. Treat the finished 16:9 compositions
