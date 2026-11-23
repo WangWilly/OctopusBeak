@@ -128,11 +128,11 @@ async function activeGeneration(reader: PGliteSpendingReader): Promise<number | 
 
 type DateFact = Readonly<{ consumeDate: string | null; postingDate: string | null; basis: "consume-date" | "posting-date-fallback" | null }>;
 
-/** The installed tables that carry a revision's consume and posting dates. */
-async function dateFactTables(reader: PGliteSpendingReader): Promise<readonly { table_name: string }[]> {
+/** Whether the card details table, which carries consume and posting dates, is installed; a store without the ledger baseline lacks it. */
+async function hasCardDetails(reader: PGliteSpendingReader): Promise<boolean> {
   return rows(await pgliteQuery<{ table_name: string }>(reader,
-    "SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema() AND table_name IN ('canonical_credit_card_transaction_details', 'fubon_credit_transaction_details')",
-  ));
+    "SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = 'canonical_credit_card_transaction_details'",
+  )).length > 0;
 }
 
 /**
@@ -155,11 +155,11 @@ export async function currentTransactionIdsByFinancialDate(
        FROM current_transactions current_row
        JOIN transaction_revisions revision ON revision.revision_id = current_row.revision_id
       WHERE revision.effective_on BETWEEN ? AND ?`, [startDate, endDate])));
-  for (const table of await dateFactTables(reader)) {
+  if (await hasCardDetails(reader)) {
     add(rows(await pgliteQuery<{ transaction_id: unknown }>(reader,
       `SELECT current_row.transaction_id
          FROM current_transactions current_row
-         JOIN ${table.table_name} fact ON fact.revision_id = current_row.revision_id
+         JOIN canonical_credit_card_transaction_details fact ON fact.revision_id = current_row.revision_id
         WHERE fact.consume_date BETWEEN ? AND ?`, [startDate, endDate])));
   }
   return [...ids];
@@ -169,39 +169,32 @@ async function transactionDateFacts(
   reader: PGliteSpendingReader,
   revisionIds?: readonly string[],
 ): Promise<ReadonlyMap<string, DateFact>> {
-  const tableRows = await dateFactTables(reader);
   const result = new Map<string, DateFact>();
-  if (revisionIds?.length === 0) return result;
-  for (const table of tableRows) {
-    const chunks = revisionIds === undefined
-      ? [undefined]
-      : Array.from({ length: Math.ceil(revisionIds.length / 2_048) }, (_, index) =>
-        revisionIds.slice(index * 2_048, (index + 1) * 2_048));
-    for (const chunk of chunks) {
-      const inChunk = (column: string) =>
-        chunk === undefined ? "TRUE" : `${column} IN (${chunk.map(() => "?").join(",")})`;
-      // The credit-card command writes a details row only on change, so a
-      // revision may hold several; only the latest is current (ADR 0152).
-      const facts = rows(await pgliteQuery<Row>(reader,
-        table.table_name === "canonical_credit_card_transaction_details"
-          ? latestCardDetailsByRevisionSql(
-            "detail.revision_id, detail.consume_date, detail.posting_date, detail.effective_date_basis",
-            inChunk("detail.revision_id"),
-          )
-          : `SELECT revision_id, consume_date, posting_date, effective_date_basis
-           FROM ${table.table_name}
-          WHERE ${inChunk("revision_id")}`,
-        chunk?.map((value) => bytes(value, "Transaction revision")) ?? [],
-      ));
-      for (const row of facts) {
-        result.set(idString(row.revision_id, "Transaction revision"), {
-          consumeDate: nullableString(row.consume_date),
-          postingDate: nullableString(row.posting_date),
-          basis: row.effective_date_basis === "consume-date" || row.effective_date_basis === "posting-date-fallback"
-            ? row.effective_date_basis
-            : null,
-        });
-      }
+  if (revisionIds?.length === 0 || !await hasCardDetails(reader)) return result;
+  const chunks = revisionIds === undefined
+    ? [undefined]
+    : Array.from({ length: Math.ceil(revisionIds.length / 2_048) }, (_, index) =>
+      revisionIds.slice(index * 2_048, (index + 1) * 2_048));
+  for (const chunk of chunks) {
+    const inChunk = (column: string) =>
+      chunk === undefined ? "TRUE" : `${column} IN (${chunk.map(() => "?").join(",")})`;
+    // The credit-card command writes a details row only on change, so a
+    // revision may hold several; only the latest is current (ADR 0152).
+    const facts = rows(await pgliteQuery<Row>(reader,
+      latestCardDetailsByRevisionSql(
+        "detail.revision_id, detail.consume_date, detail.posting_date, detail.effective_date_basis",
+        inChunk("detail.revision_id"),
+      ),
+      chunk?.map((value) => bytes(value, "Transaction revision")) ?? [],
+    ));
+    for (const row of facts) {
+      result.set(idString(row.revision_id, "Transaction revision"), {
+        consumeDate: nullableString(row.consume_date),
+        postingDate: nullableString(row.posting_date),
+        basis: row.effective_date_basis === "consume-date" || row.effective_date_basis === "posting-date-fallback"
+          ? row.effective_date_basis
+          : null,
+      });
     }
   }
   return result;

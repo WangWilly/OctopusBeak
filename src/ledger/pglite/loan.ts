@@ -179,9 +179,12 @@ function sourceRecord(record: LoanTransactionInput | LoanCounterpartTransactionI
     contentHash: digest(content),
     compact,
     compactJson: stableJson(compact),
-    sequenceLexeme: String("eventEvidence" in record
-      ? record.sourceSequenceIndex
-      : record.occurrenceIndex),
+    // A loan record's position in the response shifts when an older row ages
+    // out of the window, so its sequence lexeme is its occurrence key, which
+    // does not (ADR 0152).
+    sequenceLexeme: "eventEvidence" in record
+      ? record.sourceRecordKey
+      : String(record.occurrenceIndex),
     description: "description" in record
       ? record.description ?? null
       : (record as LoanTransactionInput).sourceDescription ?? null,
