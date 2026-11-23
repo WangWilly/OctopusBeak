@@ -61,6 +61,7 @@ import {
   type Row,
 } from "./spending-sql.ts";
 import { readKnowledgePoint } from "./knowledge-point.ts";
+import { latestCardDetailsSql } from "./card-details-sql.ts";
 
 /**
  * Canonical fact readers for PGlite Spending: transactions with their
@@ -1031,11 +1032,7 @@ export async function queryPaymentSourceFacts(
     `SELECT current_row.transaction_id, instrument.card_mask, statement.cycle_start, statement.cycle_end
        FROM current_transactions current_row
        LEFT JOIN LATERAL (
-         SELECT detail.instrument_id
-           FROM canonical_credit_card_transaction_details detail
-          WHERE detail.revision_id = current_row.revision_id
-          ORDER BY detail.source_record_id
-          LIMIT 1
+         ${latestCardDetailsSql("current_row.revision_id", "detail.instrument_id")}
        ) detail ON TRUE
        LEFT JOIN canonical_credit_card_instruments instrument ON instrument.instrument_id = detail.instrument_id
        LEFT JOIN LATERAL (

@@ -102,6 +102,7 @@ import {
 } from "./spending-sql.ts";
 import { readKnowledgePoint } from "./knowledge-point.ts";
 import { CARD_CHARGE_KINDS, CREDIT_CARD_ACCOUNT_STREAM } from "../canonical/card-charge.ts";
+import { latestCardDetailsSql } from "./card-details-sql.ts";
 
 export type { PGliteSpendingReader, PGliteSpendingStore } from "./spending-sql.ts";
 export { recordedAtIso, querySpendingRecognition } from "./spending-facts.ts";
@@ -993,11 +994,7 @@ export async function queryCurrentSpendingMergeLog(
        LEFT JOIN financial_transactions payment_identity ON payment_identity.transaction_id = event.transaction_id
        LEFT JOIN financial_accounts payment_account ON payment_account.account_id = payment_identity.account_id
        LEFT JOIN LATERAL (
-         SELECT consume_date, posting_date
-           FROM canonical_credit_card_transaction_details detail
-          WHERE detail.revision_id = current_row.revision_id
-          ORDER BY detail.source_record_id
-          LIMIT 1
+         ${latestCardDetailsSql("current_row.revision_id", "detail.consume_date, detail.posting_date")}
        ) detail ON TRUE
       WHERE commit_row.commit_sequence <= ?
         ${cursor ? "AND (commit_row.commit_sequence < ? OR (commit_row.commit_sequence = ? AND event.event_id > ?))" : ""}

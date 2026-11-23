@@ -76,6 +76,7 @@ import {
 import { readKnowledgePoint } from "./knowledge-point.ts";
 import { kindAcceptsCategory } from "../canonical/transaction-taxonomy.ts";
 import { timeOfDay } from "../../lib/spending/spending-display.ts";
+import { latestCardDetailsSql } from "./card-details-sql.ts";
 
 /**
  * The Purchase report: the one interface for Purchase-basis spending
@@ -371,11 +372,7 @@ function purchaseRowsCte(scope: "all" | "month"): string {
         JOIN current_transaction_enrichment kind
           ON kind.transaction_id = current_row.transaction_id AND kind.field_name = 'kind'
         LEFT JOIN LATERAL (
-          SELECT consume_date, posting_date
-            FROM canonical_credit_card_transaction_details detail
-           WHERE detail.revision_id = current_row.revision_id
-           ORDER BY detail.source_record_id
-           LIMIT 1
+          ${latestCardDetailsSql("current_row.revision_id", "detail.consume_date, detail.posting_date")}
         ) facts ON TRUE
        WHERE revision.administrative_state = 'active'
          AND revision.economic_status = 'normal'

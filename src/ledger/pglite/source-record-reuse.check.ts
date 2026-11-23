@@ -23,8 +23,11 @@ import {
 } from "./canonical-source-store.ts";
 import { captureSourceRecordIdsSql } from "./capture-manifest.ts";
 import {
+  commitPGliteCanonicalCreditCardBalanceCapture,
   commitPGliteCanonicalCreditCardCapture,
+  type PGliteCanonicalCreditCardBalanceCaptureRequest,
   type PGliteCanonicalCreditCardCaptureRequest,
+  type PGliteCanonicalCreditCardCommitResult,
 } from "./credit-card.ts";
 import { resolvePGliteCanonicalLoanRepaymentRelations } from "./relations.ts";
 import { PGliteCanonicalSourceAdmissionError } from "./source-admission-validation.ts";
@@ -309,6 +312,14 @@ type Ledger = Readonly<{
    */
   holds(captureId: string, expected: Readonly<{ stored: number; reused: number }>): Promise<void>;
   transactionId(sourceSequence: string): Promise<string>;
+  /**
+   * Commit through the credit-card command. Where every record is stored,
+   * the command still writes its own rows only where they changed.
+   */
+  commitCard(request: PGliteCanonicalCreditCardCaptureRequest): Promise<PGliteCanonicalCreditCardCommitResult>;
+  commitCardBalance(request: PGliteCanonicalCreditCardBalanceCaptureRequest): Promise<void>;
+  /** The card command must fail the same way in both arms. */
+  rejectsCard(request: PGliteCanonicalCreditCardCaptureRequest, message: RegExp): Promise<void>;
 }>;
 
 function openLedger(store: PGliteStore, arm: PGliteDomainRecordCitation): Ledger {
@@ -324,11 +335,23 @@ function openLedger(store: PGliteStore, arm: PGliteDomainRecordCitation): Ledger
       await refreshPGliteAdmittedFinancialProjection(transaction, [admitted], { clock });
     });
   };
+  const cardOptions = () => ({ clock, ...(arm === "any" ? { reuseSourceRecords: false as const } : {}) });
   return {
     arm,
     store,
     clock,
     commit,
+    commitCard: (request) => commitPGliteCanonicalCreditCardCapture(store, request, cardOptions()),
+    async commitCardBalance(request) {
+      await commitPGliteCanonicalCreditCardBalanceCapture(store, request, cardOptions());
+    },
+    async rejectsCard(request, message) {
+      await assert.rejects(
+        commitPGliteCanonicalCreditCardCapture(store, request, cardOptions()),
+        message,
+        `${request.capture.captureId} is rejected (${arm})`,
+      );
+    },
     async rejects(request, reason) {
       await assert.rejects(
         commit(request).catch((error: unknown) => {
@@ -510,12 +533,21 @@ async function canonicalState(store: PGliteStore): Promise<Record<string, readon
  * wrong capture.
  */
 async function assertEvidenceCitesItsOwnCapture(store: PGliteStore, arm: PGliteDomainRecordCitation): Promise<void> {
-  for (const table of ["transaction_revisions", "balance_observation_revisions", "transaction_conversion_evidence"]) {
+  for (const [table, recordColumn] of [
+    ["transaction_revisions", "source_record_id"],
+    ["balance_observation_revisions", "source_record_id"],
+    ["transaction_conversion_evidence", "source_record_id"],
+    ["canonical_credit_card_instrument_evidence", "source_record_id"],
+    ["canonical_credit_card_transaction_details", "source_record_id"],
+    ["canonical_credit_card_transaction_lifecycle", "source_record_id"],
+    ["canonical_credit_card_statement_summary_evidence", "evidence_source_record_id"],
+    ["canonical_credit_card_relations", "evidence_source_record_id"],
+  ] as const) {
     const { rows: [row] } = await store.query<{ rows: number; foreign: number }>(
       `SELECT count(*)::int AS rows,
               count(*) FILTER (WHERE NOT EXISTS (
                 SELECT 1 FROM source_records record
-                 WHERE record.source_record_id = entry.source_record_id
+                 WHERE record.source_record_id = entry.${recordColumn}
                    AND record.capture_id = entry.capture_id
               ))::int AS foreign
          FROM "${table}" entry`,
@@ -950,7 +982,7 @@ function cardCommandCapture(captureId: string): PGliteCanonicalCreditCardCapture
 
 equivalent("card lifecycle read across a reusing capture", async (ledger) => {
   const command = cardCommandCapture("command-1");
-  await commitPGliteCanonicalCreditCardCapture(ledger.store, command, { clock: ledger.clock });
+  await ledger.commitCard(command);
   // The same records through the shared commit: a capture that writes no lifecycle row.
   await ledger.commit({
     capture: { ...command.capture, captureId: "shared-2" },
@@ -962,12 +994,470 @@ equivalent("card lifecycle read across a reusing capture", async (ledger) => {
   // Billed Monotonicity reads the purchase's lifecycle by transaction, so it
   // still finds it billed and refuses to see it unbilled again (ADR 0062).
   const unbilled = cardCommandCapture("command-3");
-  await assert.rejects(commitPGliteCanonicalCreditCardCapture(ledger.store, {
+  await ledger.rejectsCard({
     ...unbilled,
     transactions: unbilled.transactions.map(({ statementKey: _statementKey, ...fact }) => ({ ...fact, billingStatus: "unbilled" as const })),
     statements: [],
-  }, { clock: ledger.clock }));
-  await commitPGliteCanonicalCreditCardCapture(ledger.store, cardCommandCapture("command-4"), { clock: ledger.clock });
+  }, /cannot reduce their billed member count/u);
+  await ledger.commitCard(cardCommandCapture("command-4"));
+});
+
+const CARD_SCOPE_KEY = token("card-scope");
+const SEPTEMBER_STATEMENT = encodeCreditCardQueryBucket({ kind: "statement", period: "2026/09" });
+const UNBILLED = encodeCreditCardQueryBucket({ kind: "unbilled" });
+const september = (day: number): string => `2026-09-${String(day).padStart(2, "0")}`;
+
+/** One purchase on the card. Rows sharing an id and a day are members of one occurrence group. */
+type CardPurchase = Readonly<{
+  id: string;
+  day: number;
+  /** Billed purchases sit in the September statement bucket and on its statement; unbilled ones in the unbilled bucket. */
+  billing?: "billed" | "unbilled";
+  instrument?: string;
+  /** Card details that change nothing in the record or the fact; a billed purchase posts on its day unless told otherwise. */
+  postingDay?: number | null;
+  /** A billed purchase the statement does not list yet. */
+  onStatement?: false;
+  consumeDay?: number;
+  effectiveDateBasis?: "consume-date" | "posting-date-fallback";
+  /** Text of the fact only; the record's payload does not carry it. */
+  note?: string;
+}>;
+
+type CardSync = Readonly<{
+  /** Each listed card and the listing record that evidences it. */
+  instruments?: readonly Readonly<{ key: string; evidence: string }>[];
+  /** The September statement, when any purchase is billed. */
+  statement?: Readonly<{ revision: string; balance: string; evidence: string }>;
+}>;
+
+/** A complete September capture through the credit-card command. */
+function cardSync(captureId: string, purchases: readonly CardPurchase[], options: CardSync = {}): PGliteCanonicalCreditCardCaptureRequest {
+  const instruments = options.instruments ?? [{ key: "primary", evidence: "listing-1" }];
+  const statement = options.statement ?? { revision: "revision-1", balance: "1000", evidence: "statement-1" };
+  const slots = assignOccurrenceSlots({
+    rows: purchases,
+    complete: true,
+    scopeKey: () => CARD_SCOPE_KEY,
+    fingerprint: (purchase) => token(`purchase-${purchase.id}`),
+    partitionDate: (purchase) => september(purchase.day),
+  });
+  const listed = slots.filter(({ row }) => (row.billing ?? "billed") === "billed" && row.onStatement !== false);
+  const statementOccurrence = token(`statement:${statement.evidence}`);
+  const records = [
+    ...[...new Set(instruments.map((instrument) => instrument.evidence))].map((evidence) => ({
+      occurrenceKey: token(`instrument:${evidence}`),
+      providerKey: token(`instrument-provider:${evidence}`),
+      contentHash: token(`instrument-content:${evidence}`),
+      compact: { kind: "instrument", listing: evidence },
+    })),
+    ...slots.map(({ row, occurrenceKey, collisionKey, group }) => ({
+      occurrenceKey,
+      collisionKey,
+      providerKey: token(`purchase-provider:${row.id}:${group.ordinal}`),
+      contentHash: token(`purchase-content:${row.id}`),
+      compact: { kind: "transaction", amount: "100" },
+      occurrenceGroup: group,
+      occurrenceGroupBucketKey: (row.billing ?? "billed") === "billed" ? SEPTEMBER_STATEMENT : UNBILLED,
+    })),
+    ...(listed.length === 0 ? [] : [{
+      occurrenceKey: statementOccurrence,
+      providerKey: token(`statement-provider:${statement.evidence}`),
+      contentHash: token(`statement-content:${statement.evidence}`),
+      compact: { kind: "statement", evidence: statement.evidence },
+    }]),
+  ];
+  return {
+    capture: {
+      captureId,
+      integrationNamespace: "esun",
+      sourceConnectionKey: token("card-connection"),
+      identityEpoch: token("card-epoch"),
+      stream: "credit-card",
+      recordKind: "credit-card-capture",
+      routeKey: CARD_ROUTE,
+      contractVersion: CARD_ROUTE,
+      subjectDigest: token("card-subject"),
+      observedAt: "2026-09-30T01:00:00.000Z",
+      scope: {
+        startDate: september(1),
+        endDate: september(30),
+        dateFormat: "YYYY-MM-DD",
+        kind: "bounded-range",
+        completeness: "complete-range",
+        ruleVersion: CARD_ROUTE,
+        completenessBasis: "credit-card-check",
+        sourceAccountKey: "credit-portfolio-1",
+        absenceAuthority: "comparable-complete-range",
+      },
+      pages: [{ pageOrdinal: 0, responseCode: "200", rowCount: records.length, terminal: true, metadata: { fixture: "source-record-reuse" } }],
+      records,
+      occurrenceGroupCoverage: [{
+        scopeKey: CARD_SCOPE_KEY,
+        startDate: september(1),
+        endDate: september(30),
+        contractVersion: CARD_ROUTE,
+        bucketKeys: [SEPTEMBER_STATEMENT, UNBILLED],
+      }],
+    },
+    account: { sourceAccountKey: "credit-portfolio-1", accountType: "credit", currency: "TWD" },
+    identity: { accountNaturalKey: token("opaque-card-account"), identityMethod: "opaque-provider-account" },
+    instruments: instruments.map((instrument, index) => ({
+      instrumentKey: instrument.key,
+      cardMask: `****${4281 + index}`,
+      role: index === 0 ? "primary" : "supplementary",
+      lifecycle: "active",
+      evidenceSourceOccurrenceKey: token(`instrument:${instrument.evidence}`),
+    })),
+    transactions: slots.map(({ row, occurrenceKey, group }) => {
+      const isBilled = (row.billing ?? "billed") === "billed";
+      return {
+        sourceOccurrenceKey: occurrenceKey,
+        sourceSequence: `purchase-${row.id}-${group.ordinal}`,
+        amount: { coefficient: "100", scale: 0 },
+        currency: "TWD",
+        direction: "outflow" as const,
+        postingStatus: "posted" as const,
+        postingOrigin: "provider_booked_history",
+        postingBasis: "statement-posted-history",
+        postingRuleVersion: CARD_ROUTE,
+        description: `purchase ${row.id} ${row.note ?? ""}`,
+        economicStatus: "normal" as const,
+        administrativeState: "active" as const,
+        semanticRuleVersion: CARD_ROUTE,
+        effectiveOn: september(row.day),
+        transactionDateTimeLocal: `${september(row.day)}T10:00:00`,
+        timeZone: "Asia/Taipei" as const,
+        timePrecision: "minute" as const,
+        timeOrigin: "source_reported" as const,
+        effectiveTimeBasis: "source-reported",
+        effectiveTimeRuleVersion: CARD_ROUTE,
+        utcInstantUtcUs: Date.parse(`${september(row.day)}T02:00:00Z`) * 1000,
+        instrumentKey: row.instrument ?? "primary",
+        billingStatus: isBilled ? "billed" as const : "unbilled" as const,
+        consumeDate: september(row.consumeDay ?? row.day),
+        postingDate: isBilled && row.postingDay !== null ? september(row.postingDay ?? row.day) : null,
+        effectiveDateBasis: row.effectiveDateBasis ?? "consume-date",
+        statementKey: isBilled && row.onStatement !== false ? "statement-2026-09" : null,
+      };
+    }),
+    statements: listed.length === 0 ? [] : [{
+      statementKey: "statement-2026-09",
+      revisionKey: statement.revision,
+      cycleStart: september(1),
+      cycleEnd: september(30),
+      issueDate: "2026-10-01",
+      dueDate: "2026-10-20",
+      currency: "TWD",
+      balance: { coefficient: statement.balance, scale: 0 },
+      minimumPayment: { coefficient: "100", scale: 0 },
+      transactionSourceOccurrenceKeys: listed.map((slot) => slot.occurrenceKey),
+      evidenceSourceOccurrenceKey: statementOccurrence,
+    }],
+    relations: [],
+  };
+}
+
+/** A current used-credit reading of the card account, measured at `effectiveAt`. */
+function usedCredit(captureId: string, effectiveAt: string): PGliteCanonicalCreditCardBalanceCaptureRequest {
+  const history = cardSync(captureId, []);
+  const usedCreditRoute = "esun/credit-card/current-used-credit-v1";
+  const occurrenceKey = token(`used-credit:${effectiveAt}`);
+  return {
+    capture: {
+      ...history.capture,
+      recordKind: "credit-card-current-used-credit",
+      routeKey: usedCreditRoute,
+      contractVersion: usedCreditRoute,
+      scope: { ...history.capture.scope, kind: "point-in-time", completeness: "single-page", ruleVersion: usedCreditRoute, absenceAuthority: undefined },
+      occurrenceGroupCoverage: undefined,
+      records: [{ occurrenceKey, providerKey: token(`used-credit-provider:${effectiveAt}`), contentHash: token(`used-credit-content:${effectiveAt}`), compact: { kind: "balance", effectiveAt } }],
+      pages: [{ pageOrdinal: 0, responseCode: "200", rowCount: 1, terminal: true, metadata: {} }],
+    },
+    account: history.account,
+    identity: history.identity,
+    balance: {
+      observation: {
+        observationKey: "issuer-aggregate",
+        balanceKind: "credit_used",
+        balance: { coefficient: "500", scale: 0 },
+        currency: "TWD",
+        effectiveAt,
+        effectiveTimeBasis: "provider-http-date",
+        effectiveTimeRuleVersion: usedCreditRoute,
+        evidenceSourceRecordKey: occurrenceKey,
+        evidenceSourceField: "usedCredit",
+        evidenceSourceValue: "500",
+        evidenceContractVersion: usedCreditRoute,
+        sourceOccurrenceKey: occurrenceKey,
+        evidenceEndpoint: "https://issuer.example/current-used-credit",
+        evidenceResponseStatus: 200,
+        evidenceCachePolicy: "no-store",
+      },
+      estimate: { kind: "estimate", basis: "provider-used-credit", formula: "provider-used-credit" },
+    },
+  };
+}
+
+/** Rows in each table the credit-card command writes only on change. */
+async function cardRowCounts(store: PGliteStore): Promise<Record<string, number>> {
+  const { rows: [row] } = await store.query<Record<string, number>>(
+    `SELECT (SELECT count(*) FROM canonical_credit_card_instrument_evidence)::int AS instrument_evidence,
+            (SELECT count(*) FROM canonical_credit_card_transaction_details)::int AS details,
+            (SELECT count(*) FROM canonical_credit_card_transaction_lifecycle)::int AS lifecycle,
+            (SELECT count(*) FROM canonical_credit_card_statement_summary_evidence)::int AS statement_summary`,
+  );
+  return { ...row! };
+}
+
+/**
+ * The latest stored card rows, by highest commit sequence, say what the last
+ * commit's request says: each instrument's evidence, each transaction's
+ * details and lifecycle on its current revision, and the statement's summary.
+ * A commit that skips a row it should have written leaves an older value
+ * here, which the comparison between arms cannot see, since both skip it.
+ */
+async function assertLatestCardRows(store: PGliteStore, request: PGliteCanonicalCreditCardCaptureRequest): Promise<void> {
+  const latest = (table: string, where: string) => `
+    SELECT entry.* FROM ${table} entry
+      JOIN source_captures entry_capture ON entry_capture.capture_id = entry.capture_id
+      JOIN canonical_commits entry_commit ON entry_commit.commit_id = entry_capture.commit_id
+     WHERE ${where}
+     ORDER BY entry_commit.commit_sequence DESC LIMIT 1`;
+  for (const instrument of request.instruments) {
+    const { rows } = await store.query<{ occurrence_key: string }>(
+      `SELECT record.occurrence_key
+         FROM canonical_credit_card_instruments instrument
+         JOIN LATERAL (${latest("canonical_credit_card_instrument_evidence", "entry.instrument_id = instrument.instrument_id")}) evidence ON TRUE
+         JOIN source_records record ON record.source_record_id = evidence.source_record_id
+        WHERE instrument.instrument_key = $1`,
+      [instrument.instrumentKey],
+    );
+    assert.deepEqual(rows, [{ occurrence_key: instrument.evidenceSourceOccurrenceKey }], `latest evidence of ${instrument.instrumentKey}`);
+  }
+  for (const fact of request.transactions) {
+    const current = await store.query<Record<string, unknown>>(
+      `SELECT instrument.instrument_key, details.billing_status, details.consume_date, details.posting_date,
+              details.effective_date_basis, details.statement_key,
+              details.revision_id = current_revision.revision_id AS details_on_current_revision,
+              lifecycle_instrument.instrument_key AS lifecycle_instrument_key,
+              lifecycle.billing_status AS lifecycle_billing_status, lifecycle.statement_key AS lifecycle_statement_key,
+              lifecycle.revision_id = current_revision.revision_id AS lifecycle_on_current_revision
+         FROM financial_transactions financial
+         JOIN LATERAL (SELECT revision_id FROM transaction_revisions revision
+                        WHERE revision.transaction_id = financial.transaction_id
+                        ORDER BY revision_number DESC LIMIT 1) current_revision ON TRUE
+         JOIN LATERAL (${latest("canonical_credit_card_transaction_details", "entry.transaction_id = financial.transaction_id")}) details ON TRUE
+         JOIN canonical_credit_card_instruments instrument ON instrument.instrument_id = details.instrument_id
+         JOIN LATERAL (${latest("canonical_credit_card_transaction_lifecycle", "entry.transaction_id = financial.transaction_id")}) lifecycle ON TRUE
+         JOIN canonical_credit_card_instruments lifecycle_instrument ON lifecycle_instrument.instrument_id = lifecycle.instrument_id
+        WHERE financial.source_sequence = $1`,
+      [fact.sourceSequence],
+    );
+    assert.deepEqual(current.rows, [{
+      instrument_key: fact.instrumentKey,
+      billing_status: fact.billingStatus,
+      consume_date: fact.consumeDate ?? null,
+      posting_date: fact.postingDate ?? null,
+      effective_date_basis: fact.effectiveDateBasis ?? null,
+      statement_key: fact.statementKey ?? null,
+      details_on_current_revision: true,
+      lifecycle_instrument_key: fact.instrumentKey,
+      lifecycle_billing_status: fact.billingStatus,
+      lifecycle_statement_key: fact.statementKey ?? null,
+      lifecycle_on_current_revision: true,
+    }], `latest card rows of ${fact.sourceSequence}`);
+  }
+  for (const statement of request.statements) {
+    const { rows } = await store.query<{ revision_key: string; evidence_key: string }>(
+      `SELECT revision.revision_key, summary.evidence_key
+         FROM canonical_credit_card_statements statement
+         JOIN LATERAL (${latest(
+           "canonical_credit_card_statement_summary_evidence",
+           `entry.statement_revision_id IN (SELECT statement_revision_id FROM canonical_credit_card_statement_revisions
+                                            WHERE statement_id = statement.statement_id)`,
+         )}) summary ON TRUE
+         JOIN canonical_credit_card_statement_revisions revision ON revision.statement_revision_id = summary.statement_revision_id
+        WHERE statement.statement_key = $1`,
+      [statement.statementKey],
+    );
+    assert.deepEqual(rows, [{ revision_key: statement.revisionKey, evidence_key: statement.evidenceSourceOccurrenceKey }], `latest summary of ${statement.statementKey}`);
+  }
+}
+
+/** Commit through the card command and require the latest card rows to match the request. */
+async function cardCommit(ledger: Ledger, request: PGliteCanonicalCreditCardCaptureRequest): Promise<PGliteCanonicalCreditCardCommitResult> {
+  const result = await ledger.commitCard(request);
+  await assertLatestCardRows(ledger.store, request);
+  return result;
+}
+
+// Rows `b` form one occurrence group of two members; `hold` is not billed yet.
+const CARD_PURCHASES: readonly CardPurchase[] = [
+  { id: "a", day: 5 },
+  { id: "b", day: 6 },
+  { id: "b", day: 6 },
+  { id: "hold", day: 20, billing: "unbilled" },
+];
+
+equivalent("an unchanged card re-sync", async (ledger) => {
+  await cardCommit(ledger, cardSync("sync-1", CARD_PURCHASES));
+  await ledger.holds("sync-1", { stored: 6, reused: 0 });
+  const written = await cardRowCounts(ledger.store);
+  assert.deepEqual(written, { instrument_evidence: 1, details: 4, lifecycle: 4, statement_summary: 1 });
+  for (const sync of ["sync-2", "sync-3"]) {
+    await cardCommit(ledger, cardSync(sync, CARD_PURCHASES));
+    await ledger.holds(sync, { stored: 0, reused: 6 });
+  }
+  assert.deepEqual(await cardRowCounts(ledger.store), written, "an unchanged re-sync writes no card row");
+});
+
+equivalent("an unbilled purchase billed under a new occurrence (ADR 0040)", async (ledger) => {
+  await cardCommit(ledger, cardSync("sync-1", CARD_PURCHASES));
+  // The issuer rewrote the merchant text at posting, so the billed row is a
+  // new occurrence on the same card, day and direction, and supersedes the hold.
+  const posted = [...CARD_PURCHASES.slice(0, 3), { id: "hold-posted", day: 20 }];
+  const statement = { revision: "revision-2", balance: "1100", evidence: "statement-1" };
+  await cardCommit(ledger, cardSync("sync-2", posted, { statement }));
+  // The successor is new, and the statement's new revision cites its unchanged record again.
+  await ledger.holds("sync-2", { stored: 2, reused: 4 });
+  const relations = await ledger.store.query<{ relation_kind: string; capture_key: string }>(
+    `SELECT relation.relation_kind, capture.capture_key FROM canonical_credit_card_relations relation
+       JOIN source_captures capture ON capture.capture_id = relation.capture_id`,
+  );
+  assert.deepEqual(relations.rows, [{ relation_kind: "unbilled_to_billed", capture_key: "sync-2" }]);
+  await cardCommit(ledger, cardSync("sync-3", posted, { statement }));
+  await ledger.holds("sync-3", { stored: 0, reused: 6 });
+  // The replaced hold cannot be listed again.
+  await ledger.rejectsCard(cardSync("sync-relisted", [...posted, CARD_PURCHASES[3]!], { statement }), /replaced by its billed successor/u);
+});
+
+equivalent("an unbilled purchase billed under its own occurrence", async (ledger) => {
+  await cardCommit(ledger, cardSync("sync-1", CARD_PURCHASES));
+  const hold = (change: Partial<CardPurchase>) =>
+    CARD_PURCHASES.map((purchase) => (purchase.id === "hold" ? { ...purchase, ...change } : purchase));
+  // Billed before it posts or reaches a statement: the record moves bucket,
+  // and only the billing status of its details and lifecycle changes.
+  await cardCommit(ledger, cardSync("sync-2", hold({ billing: "billed", postingDay: null, onStatement: false })));
+  await ledger.holds("sync-2", { stored: 1, reused: 5 });
+  assert.deepEqual(await cardRowCounts(ledger.store), { instrument_evidence: 1, details: 5, lifecycle: 5, statement_summary: 1 });
+  // It posts: its details change, its record does not, and the new details row cites it.
+  await cardCommit(ledger, cardSync("sync-3", hold({ billing: "billed", postingDay: 21, onStatement: false })));
+  await ledger.holds("sync-3", { stored: 1, reused: 5 });
+  assert.deepEqual(await cardRowCounts(ledger.store), { instrument_evidence: 1, details: 6, lifecycle: 5, statement_summary: 1 });
+  // The statement lists it: a new statement revision, and a statement key on both rows.
+  const billed = hold({ billing: "billed", postingDay: 21 });
+  const statement = { revision: "revision-2", balance: "1100", evidence: "statement-1" };
+  await cardCommit(ledger, cardSync("sync-4", billed, { statement }));
+  await ledger.holds("sync-4", { stored: 2, reused: 4 });
+  assert.deepEqual(await cardRowCounts(ledger.store), { instrument_evidence: 1, details: 7, lifecycle: 6, statement_summary: 2 });
+  await cardCommit(ledger, cardSync("sync-5", billed, { statement }));
+  await ledger.holds("sync-5", { stored: 0, reused: 6 });
+  // Billed, it may not revert (ADR 0062).
+  await ledger.rejectsCard(cardSync("sync-reverted", CARD_PURCHASES, { statement }), /cannot reduce their billed member count/u);
+});
+
+equivalent("a billed card purchase that vanishes", async (ledger) => {
+  await cardCommit(ledger, cardSync("sync-1", CARD_PURCHASES));
+  await ledger.commitCard(cardSync("sync-2", CARD_PURCHASES));
+  await ledger.rejectsCard(cardSync("sync-lost", CARD_PURCHASES.filter((purchase) => purchase.id !== "a")), /cannot lose members/u);
+  await cardCommit(ledger, cardSync("sync-3", CARD_PURCHASES));
+  await ledger.holds("sync-3", { stored: 0, reused: 6 });
+});
+
+equivalent("an unbilled card purchase that vanishes and returns", async (ledger) => {
+  await cardCommit(ledger, cardSync("sync-1", CARD_PURCHASES));
+  const withoutHold = CARD_PURCHASES.filter((purchase) => purchase.id !== "hold");
+  const cancelled = await cardCommit(ledger, cardSync("sync-2", withoutHold));
+  assert.equal(cancelled.withdrawnTransactionCount, 1, "the vanished hold is withdrawn");
+  await ledger.holds("sync-2", { stored: 0, reused: 5 });
+  await cardCommit(ledger, cardSync("sync-3", CARD_PURCHASES));
+  await cardCommit(ledger, cardSync("sync-4", CARD_PURCHASES));
+  await ledger.holds("sync-4", { stored: 0, reused: 6 });
+  const events = await ledger.store.query<{ event_kind: string }>(
+    `SELECT transition.event_kind FROM assertion_transitions transition
+       JOIN canonical_commits commit_row ON commit_row.commit_id = transition.commit_id
+       JOIN financial_transactions financial ON financial.transaction_id = transition.transaction_id
+      WHERE financial.source_sequence = 'purchase-hold-1' AND transition.field_name = 'transaction_revision'
+      ORDER BY commit_row.commit_sequence`,
+  );
+  assert.deepEqual(events.rows.map((event) => event.event_kind), ["observed", "withdrawn", "restored"]);
+});
+
+equivalent("a card instrument change", async (ledger) => {
+  await cardCommit(ledger, cardSync("sync-1", CARD_PURCHASES));
+  // The unchanged listing now also shows a supplementary card, which carries `a`:
+  // the new card's evidence cites the listing record, so it is stored again.
+  const added = [{ key: "primary", evidence: "listing-1" }, { key: "supplementary", evidence: "listing-1" }];
+  const moved = CARD_PURCHASES.map((purchase) => (purchase.id === "a" ? { ...purchase, instrument: "supplementary" } : purchase));
+  await cardCommit(ledger, cardSync("sync-2", moved, { instruments: added }));
+  await ledger.holds("sync-2", { stored: 2, reused: 4 });
+  assert.deepEqual(await cardRowCounts(ledger.store), { instrument_evidence: 2, details: 5, lifecycle: 5, statement_summary: 1 });
+  await cardCommit(ledger, cardSync("sync-3", moved, { instruments: added }));
+  await ledger.holds("sync-3", { stored: 0, reused: 6 });
+  // A new listing evidences both cards.
+  const relisted = [{ key: "primary", evidence: "listing-2" }, { key: "supplementary", evidence: "listing-2" }];
+  await cardCommit(ledger, cardSync("sync-4", moved, { instruments: relisted }));
+  await ledger.holds("sync-4", { stored: 1, reused: 5 });
+  assert.equal((await cardRowCounts(ledger.store)).instrument_evidence, 4);
+  await cardCommit(ledger, cardSync("sync-5", moved, { instruments: relisted }));
+  await ledger.holds("sync-5", { stored: 0, reused: 6 });
+});
+
+equivalent("a card statement summary change", async (ledger) => {
+  await cardCommit(ledger, cardSync("sync-1", CARD_PURCHASES));
+  // The issuer revises the statement balance; its record is unchanged, but the new revision's summary cites it.
+  const statement = { revision: "revision-2", balance: "1200", evidence: "statement-1" };
+  await cardCommit(ledger, cardSync("sync-2", CARD_PURCHASES, { statement }));
+  await ledger.holds("sync-2", { stored: 1, reused: 5 });
+  await cardCommit(ledger, cardSync("sync-3", CARD_PURCHASES, { statement }));
+  await ledger.holds("sync-3", { stored: 0, reused: 6 });
+  // A summary served from a new record of the same revision is new evidence too.
+  const reissued = { ...statement, evidence: "statement-2" };
+  await ledger.rejectsCard(cardSync("sync-reissued", CARD_PURCHASES, { statement: reissued }), /reused with changed evidence/u);
+  await cardCommit(ledger, cardSync("sync-4", CARD_PURCHASES, { statement: { ...reissued, revision: "revision-3" } }));
+  await ledger.holds("sync-4", { stored: 1, reused: 5 });
+  assert.equal((await cardRowCounts(ledger.store)).statement_summary, 3);
+});
+
+equivalent("a card details-only change", async (ledger) => {
+  await cardCommit(ledger, cardSync("sync-1", CARD_PURCHASES));
+  // Each step changes one details column of `a` alone; neither its record nor its fact changes.
+  const steps: readonly Partial<CardPurchase>[] = [
+    { postingDay: 7 },
+    { postingDay: 7, consumeDay: 4 },
+    { postingDay: 7, consumeDay: 4, effectiveDateBasis: "posting-date-fallback" },
+  ];
+  for (const [index, change] of steps.entries()) {
+    const changed = CARD_PURCHASES.map((purchase) => (purchase.id === "a" ? { ...purchase, ...change } : purchase));
+    await cardCommit(ledger, cardSync(`sync-${index + 2}`, changed));
+    await ledger.holds(`sync-${index + 2}`, { stored: 1, reused: 5 });
+    assert.deepEqual(await cardRowCounts(ledger.store), { instrument_evidence: 1, details: 5 + index, lifecycle: 4, statement_summary: 1 });
+  }
+  // A changed fact opens a new revision, which both rows and a new statement revision follow.
+  const noted = CARD_PURCHASES.map((purchase) => (purchase.id === "a" ? { ...purchase, ...steps[2], note: "revised" } : purchase));
+  const statement = { revision: "revision-2", balance: "1000", evidence: "statement-1" };
+  await cardCommit(ledger, cardSync("sync-revised", noted, { statement }));
+  await ledger.holds("sync-revised", { stored: 2, reused: 4 });
+  assert.deepEqual(await cardRowCounts(ledger.store), { instrument_evidence: 1, details: 8, lifecycle: 5, statement_summary: 2 });
+  await cardCommit(ledger, cardSync("sync-again", noted, { statement }));
+  await ledger.holds("sync-again", { stored: 0, reused: 6 });
+});
+
+equivalent("a current used-credit reading beside an unchanged card re-sync", async (ledger) => {
+  await cardCommit(ledger, cardSync("sync-1", CARD_PURCHASES));
+  await ledger.commitCardBalance(usedCredit("used-credit-1", "2026-09-30T00:00:00.000Z"));
+  await cardCommit(ledger, cardSync("sync-2", CARD_PURCHASES));
+  await ledger.holds("sync-2", { stored: 0, reused: 6 });
+  // The same reading again is reused; a new measurement cites its record.
+  await ledger.commitCardBalance(usedCredit("used-credit-2", "2026-09-30T00:00:00.000Z"));
+  await ledger.holds("used-credit-2", { stored: 0, reused: 1 });
+  await ledger.commitCardBalance(usedCredit("used-credit-3", "2026-10-01T00:00:00.000Z"));
+  await ledger.holds("used-credit-3", { stored: 1, reused: 0 });
+  const revisions = await ledger.store.query<{ count: number }>("SELECT count(*)::int AS count FROM credit_card_balance_estimate_details");
+  assert.equal(revisions.rows[0]!.count, 2);
+  await cardCommit(ledger, cardSync("sync-3", CARD_PURCHASES));
+  await ledger.holds("sync-3", { stored: 0, reused: 6 });
 });
 
 test("the commit that reuses records is the one the app's deposit command runs", async () => {
