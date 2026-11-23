@@ -11,15 +11,22 @@ import {
 } from "../src/lib/automation/server/workflow-failure-diagnostics.ts";
 import { pgliteWorkflowAdmissionReason, type PGliteWorkflowAdmissionReason } from "../src/ledger/pglite/workflow-client.ts";
 import {
+  refusalDiagnosticCode,
+  workflowWriteAdmission,
+  type WorkflowWriteAdmission,
+  type WorkflowWriteAdmissionCheck,
+} from "../src/lib/pglite-rpc/workflow-admission.ts";
+import {
   isPGliteFinancialOperation,
   PGLITE_FINANCIAL_CONTRACTS,
   type PGliteFinancialCancelRequest,
+  type PGliteFinancialErrorCode,
   type PGliteFinancialFailureCategory,
   type PGliteFinancialOperation,
   type PGliteFinancialResponse,
   type PGliteFinancialPort,
 } from "../src/lib/pglite-rpc/pglite-financial-contracts.ts";
-import { PGliteFinancialError } from "../src/lib/pglite-rpc/pglite-financial-rpc-client.ts";
+import { PGliteFinancialError, pgliteFinancialErrorMessage } from "../src/lib/pglite-rpc/pglite-financial-rpc-client.ts";
 import { createWorkerCallServer, plainRecord, type WorkerCall, type WorkerPort } from "../src/lib/pglite-rpc/pglite-worker-call.ts";
 
 export type PGliteFinancialRpcServer = Readonly<{ close(): Promise<void> }>;
@@ -34,7 +41,7 @@ function validCancelRequest(value: unknown): value is PGliteFinancialCancelReque
 
 function genericFailure(
   id: number,
-  code: "invalid-request" | "operation-failed" | "worker-closed" | "cancelled",
+  code: PGliteFinancialErrorCode,
   category?: PGliteFinancialFailureCategory,
   diagnosticError?: SafeWorkflowFailureError,
   reason?: PGliteWorkflowAdmissionReason,
@@ -45,13 +52,7 @@ function genericFailure(
     id,
     ok: false,
     code,
-    message: code === "invalid-request"
-      ? "Invalid PGlite financial request."
-      : code === "worker-closed"
-        ? "PGlite financial worker is closed."
-        : code === "cancelled"
-          ? "PGlite financial operation was cancelled."
-        : "PGlite financial operation failed.",
+    message: pgliteFinancialErrorMessage(code),
     ...(category ? { category } : {}),
     ...(reason ? { reason } : {}),
     ...(diagnosticError ? { diagnosticError } : {}),
@@ -99,10 +100,28 @@ function failureCategory(error: unknown): PGliteFinancialFailureCategory {
 }
 
 /**
- * False refuses a workflow's canonical write before it reaches the database
- * (ADR 0058). A throw is an ordinary failure, not a refusal.
+ * Anything but `admitted` refuses a workflow's canonical write before it
+ * reaches the database (ADR 0058). A throw is an ordinary failure, not a
+ * refusal. A commit that names no run is refused without asking (ADR 0148).
  */
-export type PGliteCanonicalCommitAdmission = (context: WorkflowFailureCorrelation) => boolean;
+export type PGliteCanonicalCommitAdmission = WorkflowWriteAdmissionCheck;
+
+/** A gated write the host refused; nothing was written. */
+class RefusedWorkflowWrite extends PGliteFinancialError {
+  readonly admission: Exclude<WorkflowWriteAdmission, "admitted">;
+  constructor(admission: Exclude<WorkflowWriteAdmission, "admitted">) {
+    super("operation-failed", "refused");
+    this.admission = admission;
+  }
+}
+
+export type PGliteFinancialRpcServerOptions = Readonly<{
+  /** Gates every `workflow: "commit"` operation. Without it, commits are not gated. */
+  isCommitAdmissible?: PGliteCanonicalCommitAdmission;
+  /** The operations this connection serves; any other is refused as `not-allowed`. Defaults to all. */
+  serves?: (operation: PGliteFinancialOperation) => boolean;
+  scheduler?: PGliteWorkScheduler;
+}>;
 
 /**
  * Runs one PGlite operation at a time for a worker. Interactive work (a click
@@ -155,8 +174,11 @@ type CoalescedRead = {
 export function createPGliteFinancialRpcServer(
   port: WorkerPort,
   financial: PGliteFinancialPort,
-  isCommitAdmissible?: PGliteCanonicalCommitAdmission,
-  scheduler: PGliteWorkScheduler = createPGliteWorkScheduler(),
+  {
+    isCommitAdmissible,
+    serves = () => true,
+    scheduler = createPGliteWorkScheduler(),
+  }: PGliteFinancialRpcServerOptions = {},
 ): PGliteFinancialRpcServer {
   const controllers = new Map<number, AbortController>();
   const queuedReads = new Map<PGliteFinancialOperation, CoalescedRead>();
@@ -200,6 +222,20 @@ export function createPGliteFinancialRpcServer(
   const start = (call: WorkerCall): Promise<PGliteFinancialResponse> | undefined => {
     const { id, operation, args, diagnosticContext } = call;
     if (!isPGliteFinancialOperation(operation)) return undefined;
+    if (!serves(operation)) {
+      return (async () => {
+        if (diagnosticContext) {
+          await appendWorkflowFailureDiagnostic(process.env[WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV], {
+            workflowId: diagnosticContext.workflowId,
+            taskRunId: diagnosticContext.taskRunId,
+            source: "financial-rpc",
+            errorCode: "operation-not-allowed",
+            operation,
+          }, { repoRoot: workflowFailureDiagnosticRepoRoot() });
+        }
+        return genericFailure(id, "not-allowed");
+      })();
+    }
     const contract = PGLITE_FINANCIAL_CONTRACTS[operation];
     if (!contract.accepts(args)) return undefined;
     const controller = new AbortController();
@@ -208,9 +244,12 @@ export function createPGliteFinancialRpcServer(
       ? joinLatestRead(operation, args, controller.signal)
       : scheduler.schedule(contract.lane, async () => {
         if (controller.signal.aborted) throw new Error("PGlite financial operation was cancelled before execution.");
-        if (isCommitAdmissible && diagnosticContext && contract.canonicalCommit
-          && !isCommitAdmissible(diagnosticContext)) {
-          throw new PGliteFinancialError("operation-failed", "refused");
+        if (isCommitAdmissible && (contract.workflow === "commit" || contract.workflow === "resolve")) {
+          const admission = workflowWriteAdmission(isCommitAdmissible, diagnosticContext);
+          // A resolution derives rows only from evidence admitted earlier, so a changed scope does not stop it.
+          if (admission !== "admitted" && (contract.workflow === "commit" || admission === "run-not-current")) {
+            throw new RefusedWorkflowWrite(admission);
+          }
         }
         return financial.request(operation, args as never, { signal: controller.signal });
       });
@@ -224,13 +263,15 @@ export function createPGliteFinancialRpcServer(
           ? captureSafeWorkflowFailureError(error, workflowFailureDiagnosticRepoRoot())
           : undefined;
         if (!controller.signal.aborted && diagnosticContext) {
-          const refused = error instanceof PGliteFinancialError && error.category === "refused";
           await appendWorkflowFailureDiagnostic(process.env[WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV], {
             workflowId: diagnosticContext.workflowId,
             taskRunId: diagnosticContext.taskRunId,
             source: "financial-rpc",
-            errorCode: refused ? "collection-scope-changed" : "workflow-failed",
-            stage: operation === "financial.source.admit" ? "validation" : "commit",
+            errorCode: error instanceof RefusedWorkflowWrite ? refusalDiagnosticCode(error.admission) : "workflow-failed",
+            // Relation resolution has no stage in the workflow stage vocabulary; its operation names it.
+            ...(contract.workflow === "resolve" ? {} : {
+              stage: operation === "financial.source.admit" ? "validation" as const : "commit" as const,
+            }),
             operation,
             reason: failureReason(error),
             safeError: diagnosticError,

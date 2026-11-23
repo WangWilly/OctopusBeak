@@ -15,8 +15,10 @@ import { PGliteCanonicalCreditCardAdmissionError } from "../src/ledger/pglite/cr
 import {
   createPGliteOperationalRpcClient,
   createPGliteOperationalRpcServer,
+  PGliteOperationalError,
   type PGliteOperationalDomains,
 } from "../src/lib/pglite-rpc/pglite-operational-rpc.ts";
+import type { WorkflowWriteAdmission } from "../src/lib/pglite-rpc/workflow-admission.ts";
 import {
   captureSafeWorkflowFailureError,
   workflowFailureDiagnosticRepoRoot,
@@ -271,5 +273,74 @@ test("financial diagnostics stay absent by default and ignore hostile optional f
     client.close(); await server.close();
     if (previousPath === undefined) delete process.env[WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV];
     else process.env[WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV] = previousPath;
+  }
+});
+
+test("a refusal names its cause, and a disallowed operation names itself", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "octopus-beak-refusal-diagnostic-"));
+  const path = join(directory, "workflow-failures.jsonl");
+  const previousPath = process.env[WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV];
+  process.env[WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV] = path;
+  const admissions: Record<string, WorkflowWriteAdmission> = { "run-ended": "run-not-current", "run-edited": "scope-changed" };
+  const gate = ({ taskRunId }: WorkflowFailureCorrelation) => admissions[taskRunId] ?? "admitted";
+  const servers: Array<{ close(): Promise<void> }> = [];
+  const clients: Array<{ close(): void }> = [];
+  const financialFor = (taskRunId: string) => {
+    const ports = memoryPair();
+    servers.push(createPGliteFinancialRpcServer(ports[1], createPGliteFinancialLocalPort({
+      "financial.deposit.commit": async () => ({}),
+      "financial.loanRelations.resolve": async () => ({ outcome: "unchanged" }),
+    } as unknown as PGliteFinancialRegistry), {
+      isCommitAdmissible: gate,
+      serves: (operation) => operation !== "financial.canonical.reset",
+    }));
+    const client = createPGliteFinancialRpcClient(ports[0], undefined, { workflowId: "fubon-all-statements", taskRunId });
+    clients.push(client);
+    return client;
+  };
+  const operationalFor = (taskRunId: string) => {
+    const ports = memoryPair();
+    servers.push(createPGliteOperationalRpcServer(ports[1], {
+      preview: { write: async () => ({ accounts: 0 }) },
+    } as unknown as PGliteOperationalDomains, { isWriteAdmissible: gate }));
+    const client = createPGliteOperationalRpcClient(ports[0], undefined, { workflowId: "fubon-all-statements", taskRunId });
+    clients.push(client);
+    return client;
+  };
+  try {
+    for (const taskRunId of ["run-ended", "run-edited"]) {
+      await assert.rejects(
+        financialFor(taskRunId).request("financial.deposit.commit", [{ capture: {} }] as never),
+        (error: unknown) => error instanceof PGliteFinancialError && error.category === "refused",
+      );
+      await assert.rejects(
+        operationalFor(taskRunId).request("preview.write", [{ sourceId: "s", institution: "i", product: "p", collection: {} }]),
+        (error: unknown) => error instanceof PGliteOperationalError && error.code === "refused",
+      );
+    }
+    await assert.rejects(
+      financialFor("run-ended").request("financial.loanRelations.resolve", [{ sourceConnectionKey: "source" }] as never),
+      (error: unknown) => error instanceof PGliteFinancialError && error.category === "refused",
+    );
+    await assert.rejects(
+      financialFor("run-live").request("financial.canonical.reset", []),
+      (error: unknown) => error instanceof PGliteFinancialError && error.code === "not-allowed",
+    );
+    const records = (await readFile(path, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as Record<string, string>);
+    assert.deepEqual(records.map(({ taskRunId, source, errorCode, operation, stage }) => ({ taskRunId, source, errorCode, operation, stage })), [
+      { taskRunId: "run-ended", source: "financial-rpc", errorCode: "run-not-current", operation: "financial.deposit.commit", stage: "commit" },
+      { taskRunId: "run-ended", source: "operational-rpc", errorCode: "run-not-current", operation: "preview.write", stage: undefined },
+      { taskRunId: "run-edited", source: "financial-rpc", errorCode: "collection-scope-changed", operation: "financial.deposit.commit", stage: "commit" },
+      { taskRunId: "run-edited", source: "operational-rpc", errorCode: "collection-scope-changed", operation: "preview.write", stage: undefined },
+      // Relation resolution is not the commit stage; its operation names it.
+      { taskRunId: "run-ended", source: "financial-rpc", errorCode: "run-not-current", operation: "financial.loanRelations.resolve", stage: undefined },
+      { taskRunId: "run-live", source: "financial-rpc", errorCode: "operation-not-allowed", operation: "financial.canonical.reset", stage: undefined },
+    ]);
+  } finally {
+    for (const client of clients) client.close();
+    for (const server of servers) await server.close();
+    if (previousPath === undefined) delete process.env[WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV];
+    else process.env[WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV] = previousPath;
+    await rm(directory, { recursive: true, force: true });
   }
 });

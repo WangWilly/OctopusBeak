@@ -3,8 +3,12 @@ import { unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, type Server, type Socket } from "node:net";
-import { createPGliteOperationalRpcServer, type PGliteOperationalDomains } from "../src/lib/pglite-rpc/pglite-operational-rpc.ts";
-import type { PGliteFinancialPort } from "../src/lib/pglite-rpc/pglite-financial-contracts.ts";
+import {
+  createPGliteOperationalRpcServer,
+  WORKFLOW_OPERATIONAL_OPERATIONS,
+  type PGliteOperationalDomains,
+} from "../src/lib/pglite-rpc/pglite-operational-rpc.ts";
+import { WORKFLOW_FINANCIAL_OPERATIONS, type PGliteFinancialPort } from "../src/lib/pglite-rpc/pglite-financial-contracts.ts";
 import {
   createPGliteFinancialRpcServer,
   type PGliteCanonicalCommitAdmission,
@@ -111,9 +115,11 @@ export type PGliteChildRpcServerOptions = {
 };
 
 /**
- * Serve both typed registries through one authenticated local endpoint. The
- * server forwards to the already-created worker RPC clients; it never opens
- * PGlite and never accepts SQL or unregistered method names.
+ * Serve the workflow operations of both typed registries through one
+ * authenticated local endpoint. The server forwards to the already-created
+ * worker RPC clients; it never opens PGlite, never accepts SQL or
+ * unregistered method names, and refuses every operation not marked for
+ * workflows as `not-allowed` (ADR 0148).
  */
 export function createPGliteChildRpcServer({
   provider,
@@ -200,8 +206,14 @@ export function createPGliteChildRpcServer({
           version: PGLITE_CHILD_RPC_VERSION,
           ok: true,
         } satisfies AuthResponse);
-        operationalServer = createPGliteOperationalRpcServer(port, provider.operational);
-        financialServer = createPGliteFinancialRpcServer(port, provider.financial, isCommitAdmissible);
+        operationalServer = createPGliteOperationalRpcServer(port, provider.operational, {
+          serves: (operation) => WORKFLOW_OPERATIONAL_OPERATIONS.has(operation),
+          isWriteAdmissible: isCommitAdmissible,
+        });
+        financialServer = createPGliteFinancialRpcServer(port, provider.financial, {
+          isCommitAdmissible,
+          serves: (operation) => WORKFLOW_FINANCIAL_OPERATIONS.has(operation),
+        });
         return;
       }
       if (!validRpcEnvelope(value)) {

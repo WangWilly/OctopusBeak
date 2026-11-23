@@ -78,11 +78,20 @@ import { plainRecord } from "./pglite-worker-call.ts";
  */
 export type PGliteFinancialLane = "interactive" | "background" | "latest-wins";
 
-type FinancialOperationFlags = Readonly<{
-  lane: PGliteFinancialLane;
-  /** Canonical writes from a workflow run must pass isCommitAdmissible first. */
-  canonicalCommit?: true;
-}>;
+/**
+ * Whether a workflow may call an operation over the child socket (ADR 0148).
+ * The child socket refuses an operation without this flag.
+ * - "commit": a canonical write of new evidence; refused unless the run's
+ *   execution is current and its Collection scope is unchanged.
+ * - "resolve": a canonical write derived only from rows already admitted,
+ *   such as relation resolution; refused only when the run is not current.
+ */
+export type WorkflowAccess = "call" | "commit" | "resolve";
+
+/** A gated write is checked inside its scheduled task, which a latest-wins read never runs, so it cannot be latest-wins. */
+type FinancialOperationFlags =
+  | Readonly<{ lane: PGliteFinancialLane; workflow?: "call" }>
+  | Readonly<{ lane: Exclude<PGliteFinancialLane, "latest-wins">; workflow: "commit" | "resolve" }>;
 
 type FinancialOperationContract<Args extends readonly unknown[], Result> = FinancialOperationFlags & Readonly<{
   accepts(args: readonly unknown[]): boolean;
@@ -168,7 +177,7 @@ function einvoiceCaptureShape(value: unknown): boolean {
 export const PGLITE_FINANCIAL_CONTRACTS = Object.freeze({
   "financial.overview.current": operation<[expectedSources?: PGliteFinancialExpectedSources], OverviewPageDto>(
     (args) => args.length === 0 || (args.length === 1 && Array.isArray(args[0])),
-    { lane: "background" },
+    { lane: "background", workflow: "call" },
   ),
   "financial.assets.current": operation<[expectedSources?: PGliteFinancialExpectedSources], AssetsPageDto>(
     (args) => args.length === 0 || (args.length === 1 && Array.isArray(args[0])),
@@ -240,27 +249,27 @@ export const PGLITE_FINANCIAL_CONTRACTS = Object.freeze({
   )),
   "financial.source.admit": operation<[request: PGliteCanonicalSourceAdmissionRequest], PGliteCanonicalSourceAdmissionReceipt>(
     (args) => args.length === 1 && sourceEvidenceShape(args[0]),
-    { lane: "background" },
+    { lane: "background", workflow: "call" },
   ),
   "financial.source.commit": operation<[request: PGliteCanonicalFinancialCommitRequest], PGliteCanonicalFinancialCommitResult>(
     (args) => args.length === 1 && sourceCommitShape(args[0]),
-    { lane: "background", canonicalCommit: true },
+    { lane: "background", workflow: "commit" },
   ),
   "financial.deposit.commit": operation<[request: PGliteCanonicalDepositCommitRequest], PGliteCanonicalDepositCommitResult>(
     (args) => args.length === 1 && plainRecord(args[0])
       && plainRecord((args[0] as Record<string, unknown>).capture),
-    { lane: "background", canonicalCommit: true },
+    { lane: "background", workflow: "commit" },
   ),
   "financial.balance.capture": operation<[request: PGliteCanonicalBalanceCaptureRequest], PGliteCanonicalBalanceCommitResult>(
     (args) => args.length === 1 && plainRecord(args[0])
       && sourceEvidenceShape((args[0] as Record<string, unknown>).capture)
       && plainRecord((args[0] as Record<string, unknown>).account)
       && Array.isArray((args[0] as Record<string, unknown>).observations),
-    { lane: "background", canonicalCommit: true },
+    { lane: "background", workflow: "commit" },
   ),
   "financial.einvoice.commit": operation<[request: CanonicalEInvoiceCaptureInput], PGliteCanonicalEInvoiceCommitResult>(
     (args) => args.length === 1 && einvoiceCaptureShape(args[0]),
-    { lane: "background", canonicalCommit: true },
+    { lane: "background", workflow: "commit" },
   ),
   "financial.creditCard.commit": operation<[request: PGliteCanonicalCreditCardCaptureRequest], PGliteCanonicalCreditCardCommitResult>(
     (args) => args.length === 1 && plainRecord(args[0])
@@ -270,7 +279,7 @@ export const PGLITE_FINANCIAL_CONTRACTS = Object.freeze({
       && Array.isArray((args[0] as Record<string, unknown>).instruments)
       && Array.isArray((args[0] as Record<string, unknown>).transactions)
       && Array.isArray((args[0] as Record<string, unknown>).statements),
-    { lane: "background", canonicalCommit: true },
+    { lane: "background", workflow: "commit" },
   ),
   "financial.creditCard.balance": operation<[request: PGliteCanonicalCreditCardBalanceCaptureRequest], PGliteCanonicalCreditCardCommitResult>(
     (args) => args.length === 1 && plainRecord(args[0])
@@ -278,26 +287,26 @@ export const PGLITE_FINANCIAL_CONTRACTS = Object.freeze({
       && plainRecord((args[0] as Record<string, unknown>).account)
       && plainRecord((args[0] as Record<string, unknown>).identity)
       && plainRecord((args[0] as Record<string, unknown>).balance),
-    { lane: "background", canonicalCommit: true },
+    { lane: "background", workflow: "commit" },
   ),
   "financial.loan.commit": operation<[request: PGliteCanonicalLoanCommitRequest], PGliteCanonicalLoanCommitResult>(
     (args) => args.length === 1 && plainRecord(args[0])
       && plainRecord((args[0] as Record<string, unknown>).capture),
-    { lane: "background", canonicalCommit: true },
+    { lane: "background", workflow: "commit" },
   ),
   "financial.investment.commit": operation<[request: PGliteCanonicalInvestmentCommitRequest], PGliteCanonicalInvestmentCommitResult>(
     (args) => args.length === 1 && plainRecord(args[0])
       && plainRecord((args[0] as Record<string, unknown>).capture),
-    { lane: "background", canonicalCommit: true },
+    { lane: "background", workflow: "commit" },
   ),
   "financial.loanRelations.resolve": operation<[request: PGliteCanonicalLoanRelationResolutionRequest], PGliteCanonicalLoanRelationResolutionResult>(
     (args) => args.length === 1 && plainRecord(args[0])
       && typeof (args[0] as Record<string, unknown>).sourceConnectionKey === "string",
-    { lane: "background" },
+    { lane: "background", workflow: "resolve" },
   ),
   "financial.investmentRelations.resolve": operation<[request: PGliteCanonicalInvestmentRelationResolutionRequest], PGliteCanonicalInvestmentRelationResolutionResult>(
     (args) => args.length === 0 || (args.length === 1 && plainRecord(args[0])),
-    { lane: "background" },
+    { lane: "background", workflow: "resolve" },
   ),
   "financial.loanRelations.current": operation<[options?: { sourceConnectionKey?: string; integrationNamespace?: string }], readonly Readonly<Record<string, unknown>>[]>(
     (args) => args.length === 0 || (args.length === 1 && plainRecord(args[0])),
@@ -313,11 +322,11 @@ export const PGLITE_FINANCIAL_CONTRACTS = Object.freeze({
   ),
   "financial.tdccFundAccounts.list": operation<[connection: Readonly<{ sourceConnectionKey: string; identityEpochKey: string }>], readonly TdccAdmittedFundAccount[]>(
     (args) => args.length === 1 && stringField(args[0], "sourceConnectionKey") && stringField(args[0], "identityEpochKey"),
-    { lane: "background" },
+    { lane: "background", workflow: "call" },
   ),
   "financial.accountIdentity.continuity": operation<[request: AccountIdentityContinuityRequest], AccountIdentityContinuity>(
     (args) => args.length === 1 && accountIdentityContinuityRequestShape(args[0]),
-    { lane: "background" },
+    { lane: "background", workflow: "call" },
   ),
   /** One Manual Asset command (ADR 0087); the worker parses it against the category registry. */
   "financial.manualAssets.apply": rendered("manualAssets", "apply", operation<[command: ManualAssetCommand], ManualAssetCommandResult>(
@@ -358,6 +367,11 @@ export type RendererFinancialOperation = {
 
 export const RENDERER_FINANCIAL_OPERATIONS = Object.freeze(
   PGLITE_FINANCIAL_OPERATIONS.filter((operation) => "renderer" in PGLITE_FINANCIAL_CONTRACTS[operation]) as RendererFinancialOperation[],
+);
+
+/** The financial operations a workflow may call over the child socket (ADR 0148). */
+export const WORKFLOW_FINANCIAL_OPERATIONS: ReadonlySet<PGliteFinancialOperation> = new Set(
+  PGLITE_FINANCIAL_OPERATIONS.filter((operation) => PGLITE_FINANCIAL_CONTRACTS[operation].workflow !== undefined),
 );
 
 export type RendererFinancialGroup<Op extends RendererFinancialOperation> =
@@ -405,13 +419,16 @@ export type PGliteFinancialResponse =
     version: 1;
     id: number;
     ok: false;
-    code: "invalid-request" | "operation-failed" | "worker-closed" | "cancelled";
+    code: PGliteFinancialErrorCode;
     /** Safe domain classification; raw worker/database errors never cross IPC. */
     category?: PGliteFinancialFailureCategory;
     reason?: PGliteWorkflowAdmissionReason;
     diagnosticError?: SafeWorkflowFailureError;
     message: string;
   }>;
+
+/** "not-allowed" refuses an operation this connection does not serve, such as a non-workflow operation on the child socket. */
+export type PGliteFinancialErrorCode = "invalid-request" | "not-allowed" | "operation-failed" | "worker-closed" | "cancelled";
 
 export type PGliteFinancialRequestOptions = Readonly<{
   signal?: AbortSignal;

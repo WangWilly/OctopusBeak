@@ -11,6 +11,8 @@ import {
   type PGliteOperationalOperation,
 } from "../src/lib/pglite-rpc/pglite-operational-rpc.ts";
 import { createPGliteOperationalRuntime } from "./pglite-runtime.ts";
+import { createPGliteChildRpcClient } from "./pglite-child-rpc.ts";
+import { PGliteFinancialError } from "../src/lib/pglite-rpc/pglite-financial-rpc-client.ts";
 import { createPGliteViewWorkerClient } from "./pglite-view-worker-client.ts";
 import { credentialStoreForCheck, settingsStoreForCheck } from "../src/lib/automation/server/task-run-check-support.ts";
 
@@ -231,5 +233,48 @@ test("the operational server refuses a second call under an id that is still run
   } finally {
     release();
     await server.close();
+  }
+});
+
+test("the runtime's child socket refuses a canonical write from an unknown run or with no run identity", async () => {
+  const reached: string[] = [];
+  const worker = {
+    operationalProvider: {},
+    financial: {
+      request: async (operation: string) => {
+        reached.push(operation);
+        return {};
+      },
+    },
+    close: async () => undefined,
+  };
+  const runtime = createPGliteOperationalRuntime({
+    dataDir: "unused-by-the-fake-worker",
+    worker: worker as never,
+    activeRun: () => null,
+    credentials: credentialStoreForCheck(),
+    settings: settingsStoreForCheck(),
+  });
+  await runtime.childRpc.ready;
+  const correlated = createPGliteChildRpcClient({
+    endpoint: runtime.childRpc.endpoint,
+    token: runtime.childRpc.token,
+    diagnosticContext: { workflowId: "fubon-all-statements", taskRunId: "ended-run" },
+  });
+  const anonymous = createPGliteChildRpcClient({ endpoint: runtime.childRpc.endpoint, token: runtime.childRpc.token });
+  try {
+    await correlated.ready;
+    await anonymous.ready;
+    for (const child of [correlated, anonymous]) {
+      await assert.rejects(
+        child.request("financial.deposit.commit", [{ capture: {} }]),
+        (error: unknown) => error instanceof PGliteFinancialError && error.category === "refused",
+      );
+    }
+    assert.deepEqual(reached, [], "a refused write never reaches the worker");
+  } finally {
+    correlated.close();
+    anonymous.close();
+    await runtime.close();
   }
 });

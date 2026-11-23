@@ -30,6 +30,8 @@ const STAGES = new Set<WorkflowRunEvent["stage"]>(WORKFLOW_STAGES);
 const FAILURE_CODES = new Set<string>([
   ...TYPED_WORKFLOW_ERROR_CODES,
   "worker-start-failed", "worker-crash", "unexpected-exit", "protocol-invalid",
+  // Diagnostics only: the child socket refused a write or an operation (ADR 0148).
+  "run-not-current", "operation-not-allowed",
 ]);
 const SOURCES = new Set(["workflow-worker", "workflow-host", "financial-rpc", "operational-rpc"]);
 const STATEMENT_TYPES = new Set<string>(WORKFLOW_PROGRESS_STATEMENT_TYPE_IDS);
@@ -311,7 +313,7 @@ export function buildWorkflowFailureDiagnostic(
     || !FAILURE_CODES.has(input.errorCode)
     || (input.stage !== undefined && !STAGES.has(input.stage))
     || (input.statementType !== undefined && !STATEMENT_TYPES.has(input.statementType))) return null;
-  const operation = input.operation && /^(?:financial|maicoin|exchangeRates|automation)(?:\.[A-Za-z]+)+$/u.test(input.operation)
+  const operation = input.operation && /^(?:financial|maicoin|exchangeRates|automation|preview)(?:\.[A-Za-z]+)+$/u.test(input.operation)
     ? input.operation
     : undefined;
   const reason = pgliteWorkflowAdmissionReason(input.reason);

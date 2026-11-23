@@ -112,7 +112,7 @@ export async function startPGliteViewWorker(
     ),
   });
   const source = createViewSource(host);
-  const financialServer = createPGliteFinancialRpcServer(port, createPGliteFinancialLocalPort(host.registry), undefined, host.scheduler);
+  const financialServer = createPGliteFinancialRpcServer(port, createPGliteFinancialLocalPort(host.registry), { scheduler: host.scheduler });
   const server = createViewPortServer(port, source);
   const operationalServer = createPGliteOperationalRpcServer(
     port,
