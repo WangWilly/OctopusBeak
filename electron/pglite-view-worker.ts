@@ -26,6 +26,7 @@ import {
 } from "../src/lib/automation/server/config-files.ts";
 import { dateInTimeZone } from "../src/lib/shared-ledger/twd-valuation.ts";
 import { readCardIdentityVerifier } from "../src/lib/automation/server/card-identity-verifier.ts";
+import type { CardIdentitySecret } from "../src/lib/shared-identity/card-identity-secret.ts";
 
 /** Picks the worker's only named-view source from the ledger it opened. */
 export type PGliteWorkerViewSourceFactory = (host: PGliteLedgerHost) => ViewSource;
@@ -83,10 +84,10 @@ async function assertIndexesUsable(db: PGlite): Promise<void> {
 export async function startPGliteViewWorker(
   port: MessagePort,
   createViewSource: PGliteWorkerViewSourceFactory,
-  { readSettings, dataDir, cardIdentityVerifier }: Readonly<{
+  { readSettings, dataDir, cardIdentitySecret }: Readonly<{
     readSettings: () => AutomationSettingsFile;
     dataDir?: string;
-    cardIdentityVerifier?: () => string | undefined;
+    cardIdentitySecret?: () => CardIdentitySecret | undefined;
   }>,
 ): Promise<PGliteViewWorkerRuntime> {
   const ownsDataDir = dataDir === undefined;
@@ -108,7 +109,7 @@ export async function startPGliteViewWorker(
     clock: createLocalDateClock(() => dateInTimeZone(new Date(), automationBusinessTimezone(readSettings()))),
     previewVisibility: () => currentPreviewVisibility(readSettings()),
     expectedSources: () => configuredOverviewSources(readSettings()),
-    cardIdentityVerifier,
+    cardIdentitySecret,
   });
   const walCheckpoints = startPgliteWalCheckpoints(database, {
     run: (task) => host.scheduler.schedule("background", task),
@@ -172,7 +173,7 @@ if (parentPort) {
     return startPGliteViewWorker(port, financialWorkerViewSource, {
       readSettings: () => readAutomationSettingsFile(settingsPath),
       dataDir: configuredDataDir,
-      cardIdentityVerifier: verifierPath ? () => readCardIdentityVerifier(verifierPath) : undefined,
+      cardIdentitySecret: verifierPath ? () => readCardIdentityVerifier(verifierPath) : undefined,
     });
   }).catch((error: unknown) => {
     try {

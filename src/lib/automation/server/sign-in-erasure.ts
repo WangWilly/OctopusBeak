@@ -27,7 +27,9 @@ export function eraseSignInDetails({
   let stored: AutomationCredentialsFile;
   try {
     stored = credentials.read();
-  } catch {
+  } catch (error) {
+    // A file that cannot be reached is not one that cannot be decoded; try again later.
+    if (typeof (error as NodeJS.ErrnoException).code === "string") throw error;
     stored = {};
   }
   const kept = AUTOMATION_MANAGED_SECRET_KEYS.flatMap((key) =>

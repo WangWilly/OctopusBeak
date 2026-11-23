@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { cardIdentitySecretVerifier } from "../../../ledger/pglite/card-identity-secret.ts";
+import { cardIdentitySecretVerifier } from "../../shared-identity/card-identity-secret.ts";
 import {
   CARD_IDENTITY_VERIFIER_FILE,
   provisionCardIdentitySecretAtStartup,
@@ -49,12 +49,24 @@ test("startup gives a new install its Card identity secret and records only its 
 
   const secret = credentials.read()[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY]!;
   assert.match(secret, /^[A-Za-z0-9_-]{43}$/u);
-  assert.equal(readCardIdentityVerifier(verifierPath), cardIdentitySecretVerifier(secret));
+  assert.deepEqual(readCardIdentityVerifier(verifierPath), { verifier: cardIdentitySecretVerifier(secret), created: true });
   assert.doesNotMatch(readFileSync(verifierPath, "utf8"), new RegExp(secret, "u"), "the worker's file never holds the secret");
   assert.deepEqual(logged, []);
 
   provisionCardIdentitySecretAtStartup(credentials, verifierPath, (code) => assert.fail(code));
   assert.equal(credentials.read()[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY], secret, "a second start keeps the secret");
+  assert.deepEqual(readCardIdentityVerifier(verifierPath), { verifier: cardIdentitySecretVerifier(secret), created: true }, "and remembers it created it");
+}));
+
+test("a secret already in credentials.json when the record is first written counts as found", () => withUserData((root) => {
+  const credentials = createAutomationCredentialStore(join(root, AUTOMATION_CREDENTIALS_FILE), codec);
+  const secret = "b".repeat(43);
+  credentials.write({ [CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY]: secret });
+  const verifierPath = join(root, CARD_IDENTITY_VERIFIER_FILE);
+
+  provisionCardIdentitySecretAtStartup(credentials, verifierPath, (code) => assert.fail(code));
+
+  assert.deepEqual(readCardIdentityVerifier(verifierPath), { verifier: cardIdentitySecretVerifier(secret), created: false });
 }));
 
 test("startup with credentials the Keychain cannot decrypt opens and leaves them untouched", () => withUserData((root) => {
@@ -68,7 +80,7 @@ test("startup with credentials the Keychain cannot decrypt opens and leaves them
 
   provisionCardIdentitySecretAtStartup(createAutomationCredentialStore(path, lostKeychain), verifierPath, (code) => logged.push(code));
 
-  assert.deepEqual(logged, ["automation-credentials-unreadable"]);
+  assert.deepEqual(logged, ["automation-card-identity-secret-unprovisioned"]);
   assert.equal(readFileSync(path, "utf8"), envelope, "the unreadable envelope stays until the person clears it");
   assert.equal(readFileSync(verifierPath, "utf8"), verifier);
 }));
@@ -80,7 +92,7 @@ test("startup with credentials that are not JSON opens and leaves them untouched
 
   provisionCardIdentitySecretAtStartup(createAutomationCredentialStore(path, codec), join(root, CARD_IDENTITY_VERIFIER_FILE), (code) => logged.push(code));
 
-  assert.deepEqual(logged, ["automation-credentials-unreadable"]);
+  assert.deepEqual(logged, ["automation-card-identity-secret-unprovisioned"]);
   assert.equal(readFileSync(path, "utf8"), "{ truncated");
   assert.equal(existsSync(join(root, CARD_IDENTITY_VERIFIER_FILE)), false);
 }));
@@ -99,13 +111,29 @@ test("clearing unreadable sign-in details replaces them and records the new secr
 
   const secret = credentials.read()[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY]!;
   assert.match(secret, /^[A-Za-z0-9_-]{43}$/u);
-  assert.equal(readCardIdentityVerifier(verifierPath), cardIdentitySecretVerifier(secret));
-  assert.notEqual(readCardIdentityVerifier(verifierPath), before, "the ledger sees the new secret and asks for a Canonical Reset");
+  assert.deepEqual(readCardIdentityVerifier(verifierPath), { verifier: cardIdentitySecretVerifier(secret), created: true });
+  assert.notEqual(readCardIdentityVerifier(verifierPath)?.verifier, before?.verifier, "the ledger sees the new secret and asks for a Canonical Reset");
+}));
+
+test("clearing sign-in details that cannot be reached keeps them and fails", () => withUserData((root) => {
+  const path = join(root, AUTOMATION_CREDENTIALS_FILE);
+  const credentials = createAutomationCredentialStore(path, codec);
+  provisionCardIdentitySecretAtStartup(credentials, join(root, CARD_IDENTITY_VERIFIER_FILE), () => {});
+  const envelope = readFileSync(path, "utf8");
+  chmodSync(path, 0o000);
+  try {
+    assert.throws(() => eraseSignInDetails({ credentials, userDataDirectory: root }), { code: "EACCES" });
+  } finally {
+    chmodSync(path, 0o600);
+  }
+  assert.equal(readFileSync(path, "utf8"), envelope, "an unreachable file is not mistaken for an undecodable one");
 }));
 
 test("a missing or damaged verifier record reads as none", () => withUserData((root) => {
   const verifierPath = join(root, CARD_IDENTITY_VERIFIER_FILE);
   assert.equal(readCardIdentityVerifier(verifierPath), undefined);
   writeFileSync(verifierPath, "not-a-verifier\n");
+  assert.equal(readCardIdentityVerifier(verifierPath), undefined);
+  writeFileSync(verifierPath, JSON.stringify({ verifier: "a".repeat(64) }));
   assert.equal(readCardIdentityVerifier(verifierPath), undefined);
 }));

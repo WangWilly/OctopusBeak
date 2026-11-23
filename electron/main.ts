@@ -405,12 +405,7 @@ async function start() {
     cardIdentityVerifierPath,
   );
   const automationSettings = createAutomationSettingsStore(path.join(userData, AUTOMATION_SETTINGS_FILE));
-  try {
-    migrateAutomationEnvFile({ envPath: path.join(userData, ".env"), settings: automationSettings, credentials });
-  } catch (error) {
-    // Unreadable credentials keep the legacy .env for a later start.
-    console.error("automation-env-migration-failed", error instanceof Error ? error.message : String(error));
-  }
+  migrateAutomationEnvFile({ envPath: path.join(userData, ".env"), settings: automationSettings, credentials });
   migrateStatementSelectionIds(automationSettings.path);
   const operationalRuntime = createPGliteOperationalRuntime({
     dataDir: path.join(userData, "data", "pglite"),

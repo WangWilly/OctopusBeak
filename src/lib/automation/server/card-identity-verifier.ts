@@ -1,5 +1,9 @@
 import { readFileSync } from "node:fs";
-import { cardIdentitySecretVerifier } from "../../../ledger/pglite/card-identity-secret.ts";
+import {
+  CARD_IDENTITY_SECRET_VERIFIER,
+  cardIdentitySecretVerifier,
+  type CardIdentitySecret,
+} from "../../shared-identity/card-identity-secret.ts";
 import {
   atomicWriteFile,
   CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY,
@@ -8,20 +12,20 @@ import {
   type AutomationCredentialStore,
 } from "./config-files.ts";
 
-/** Beside credentials.json; the PGlite worker reads it, so it holds only the verifier (ADR 0149). */
-export const CARD_IDENTITY_VERIFIER_FILE = "card-identity-verifier";
-
-const VERIFIER = /^[0-9a-f]{64}$/u;
+/** Beside credentials.json; the PGlite worker reads it, so it never holds the secret (ADR 0149). */
+export const CARD_IDENTITY_VERIFIER_FILE = "card-identity-verifier.json";
 
 /**
- * The recorded verifier, or undefined when none is recorded or the record is
- * unreadable; the ledger then leaves its own record as it is. Startup writes
- * the file again from the credentials.
+ * The recorded secret, or undefined when none is recorded or the record is
+ * damaged; the ledger then leaves its own records as they are. Provisioning
+ * writes the file again from the credentials.
  */
-export function readCardIdentityVerifier(path: string): string | undefined {
+export function readCardIdentityVerifier(path: string): CardIdentitySecret | undefined {
   try {
-    const text = readFileSync(path, "utf8").trim();
-    return VERIFIER.test(text) ? text : undefined;
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as { verifier?: unknown; created?: unknown } | null;
+    if (typeof parsed?.verifier !== "string" || !CARD_IDENTITY_SECRET_VERIFIER.test(parsed.verifier)) return undefined;
+    if (typeof parsed.created !== "boolean") return undefined;
+    return { verifier: parsed.verifier, created: parsed.created };
   } catch {
     return undefined;
   }
@@ -29,21 +33,28 @@ export function readCardIdentityVerifier(path: string): string | undefined {
 
 /**
  * Gives the credentials file its Card identity secret, creating one when it
- * has none, and records the secret's verifier for the ledger. A secret
- * created while the ledger holds card accounts from an earlier one does not
- * split them silently: the ledger compares verifiers and asks for a
- * Canonical Reset. Throws when the credentials cannot be read.
+ * has none, and records the secret's verifier for the ledger. The record says
+ * whether this install created the secret, which the ledger needs when a
+ * namespace with card accounts has no record of its own yet: a created secret
+ * cannot be the one those accounts came from. Throws when the credentials
+ * cannot be read.
  */
 export function provisionCardIdentitySecret(
   credentials: AutomationCredentialStore,
   verifierPath: string,
 ): void {
   migrateAutomationCredentialsFileEncryption(credentials.path, credentials.codec);
-  ensureAutomationManagedSecrets({ credentialsPath: credentials.path, codec: credentials.codec });
+  const { created } = ensureAutomationManagedSecrets({ credentialsPath: credentials.path, codec: credentials.codec });
   const secret = credentials.read()[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY];
   if (!secret) throw new Error("The Card identity secret is missing after provisioning.");
   const verifier = cardIdentitySecretVerifier(secret);
-  if (readCardIdentityVerifier(verifierPath) !== verifier) atomicWriteFile(verifierPath, `${verifier}\n`);
+  const recorded = readCardIdentityVerifier(verifierPath);
+  const next: CardIdentitySecret = {
+    verifier,
+    created: created || (recorded?.verifier === verifier && recorded.created),
+  };
+  if (recorded?.verifier === next.verifier && recorded.created === next.created) return;
+  atomicWriteFile(verifierPath, `${JSON.stringify(next)}\n`);
 }
 
 /**
@@ -60,6 +71,6 @@ export function provisionCardIdentitySecretAtStartup(
   try {
     provisionCardIdentitySecret(credentials, verifierPath);
   } catch (error) {
-    log("automation-credentials-unreadable", error instanceof Error ? error.message : String(error));
+    log("automation-card-identity-secret-unprovisioned", error instanceof Error ? error.message : String(error));
   }
 }

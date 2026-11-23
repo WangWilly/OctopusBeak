@@ -17,7 +17,8 @@ import {
 } from "./canonical-source-store.ts";
 import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
 import { canonicalResetRequiredFor } from "./canonical-reset.ts";
-import { cardIdentitySecretSplitNamespaces } from "./card-identity-secret.ts";
+import type { CardIdentitySecret } from "../../lib/shared-identity/card-identity-secret.ts";
+import { admitCardIdentitySecret } from "./card-identity-secret.ts";
 import {
   decodeCreditCardQueryBucket,
   promisesBilledMonotonicity,
@@ -695,7 +696,7 @@ async function persistBalanceEstimate(
 
 /** A card commit also knows which Card identity secret derived its identities (ADR 0149). */
 export type PGliteCanonicalCreditCardCommitOptions = PGliteCanonicalCommitOptions & Readonly<{
-  cardIdentityVerifier?: string;
+  cardIdentitySecret?: CardIdentitySecret;
 }>;
 
 export async function commitPGliteCanonicalCreditCardCapture(
@@ -709,8 +710,7 @@ export async function commitPGliteCanonicalCreditCardCapture(
     const snapshot = input;
     if (await canonicalResetRequiredFor(transaction, snapshot.capture))
       fail("canonical-reset-required", "Credit-card accounts of a superseded identity epoch remain; a Canonical Reset must remove them first.");
-    const split = await cardIdentitySecretSplitNamespaces(transaction, options.cardIdentityVerifier, { adopt: true });
-    if (split.includes(snapshot.capture.integrationNamespace))
+    if (!await admitCardIdentitySecret(transaction, snapshot.capture.integrationNamespace, options.cardIdentitySecret))
       fail("canonical-reset-required", "Credit-card accounts derived from an earlier Card identity secret remain; a Canonical Reset must remove them first.");
     const expectedBilled = await listExpectedBilledMembers(transaction, snapshot);
     await assertSupersededMembersStayReplaced(transaction, snapshot);

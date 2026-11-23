@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { CardIdentitySecret } from "../../lib/shared-identity/card-identity-secret.ts";
 import { cardIdentitySecretSplitNamespaces } from "./card-identity-secret.ts";
 import {
   CANONICAL_SOURCE_ROUTE_REGISTRY,
@@ -125,9 +126,9 @@ export async function canonicalResetRequiredFor(
 /** Integration namespaces whose captures the store refuses until a Canonical Reset. */
 export async function canonicalResetRequiredNamespaces(
   store: Pick<PGliteStore, "query">,
-  cardIdentityVerifier?: string,
+  cardIdentitySecret?: CardIdentitySecret,
 ): Promise<readonly string[]> {
   const rows = await store.query<{ integration_namespace: string }>(SUPERSEDED_ACCOUNTS_SQL, [ALL_SUPERSEDED_EPOCHS]);
-  const split = await cardIdentitySecretSplitNamespaces(store, cardIdentityVerifier, { adopt: false });
+  const split = await cardIdentitySecretSplitNamespaces(store, cardIdentitySecret);
   return [...new Set([...rows.rows.map((row) => row.integration_namespace), ...split])].sort();
 }

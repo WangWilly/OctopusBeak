@@ -4,6 +4,7 @@ import type { PreviewVisibility } from "../src/ledger/pglite/preview-financial-d
 import { createPGliteFinancialPageActions } from "../src/ledger/pglite/spending-command.ts";
 import type { FinancialPageActions } from "../src/ledger/pglite/financial-page-actions.ts";
 import type { PGliteStore } from "../src/ledger/pglite/transaction.ts";
+import type { CardIdentitySecret } from "../src/lib/shared-identity/card-identity-secret.ts";
 import type { PGliteFinancialExpectedSources } from "../src/lib/pglite-rpc/pglite-financial-contracts.ts";
 import { createPGliteLiveViewDependencies, type LocalDateClock } from "./pglite-financial-live-dependencies.ts";
 import { createPGliteFinancialLiveViews } from "./pglite-financial-live-views.ts";
@@ -15,7 +16,7 @@ export type PGliteLedgerHostReaders = Readonly<{
   clock: LocalDateClock;
   previewVisibility?: () => PreviewVisibility;
   expectedSources?: () => PGliteFinancialExpectedSources;
-  cardIdentityVerifier?: () => string | undefined;
+  cardIdentitySecret?: () => CardIdentitySecret | undefined;
 }>;
 
 /** The parts of the ledger that financial calls and live views share (ADR 0120). */
@@ -32,12 +33,12 @@ export type PGliteLedgerHost = Readonly<{
 export function createPGliteLedgerHost(
   db: PGliteWithLive,
   store: PGliteStore,
-  { clock, previewVisibility, expectedSources, cardIdentityVerifier }: PGliteLedgerHostReaders,
+  { clock, previewVisibility, expectedSources, cardIdentitySecret }: PGliteLedgerHostReaders,
 ): PGliteLedgerHost {
   const registry = createPGliteFinancialRegistry(store, createPGliteFinancialPageActions(store), {
     previewVisibility,
     today: clock.today,
-    cardIdentityVerifier,
+    cardIdentitySecret,
   });
   // One queue lets a Pairing click start before view refreshes that are still waiting.
   const scheduler = createPGliteWorkScheduler();

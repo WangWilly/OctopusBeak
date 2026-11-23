@@ -350,13 +350,13 @@ export function credentialStatusFromValues(
   return Object.fromEntries(keys.map((key) => [key, Boolean(credentials[key]?.trim())]));
 }
 
-function withoutKnownAutomationLines(envText: string) {
+function withoutAutomationLines(envText: string, keys: ReadonlySet<string>) {
   return `${envText
     .replace(/\r\n/g, "\n")
     .split("\n")
     .filter((line) => {
       const match = /^([A-Za-z_][A-Za-z0-9_]*)=/.exec(line);
-      return !match || !automationKnownKeys.has(match[1]);
+      return !match || !keys.has(match[1]);
     })
     .filter((line, index, lines) => line || index < lines.length - 1)
     .join("\n")}\n`;
@@ -375,7 +375,13 @@ export function migrateAutomationEnvFile({
   const envText = readFileSync(envPath, "utf8");
   const parsed = parseEnvText(envText);
   const existingSettings = readAutomationSettingsFile(settings.path);
-  const existingCredentials = credentials.read();
+  // Credentials that cannot be read keep their .env lines for a later start; settings migrate now.
+  let existingCredentials: AutomationCredentialsFile | null;
+  try {
+    existingCredentials = credentials.read();
+  } catch {
+    existingCredentials = null;
+  }
   const migrated = splitAutomationUpdates(parsed);
 
   const hasSettings = Object.keys(migrated.settings).length > 0 || existsSync(settings.path);
@@ -386,14 +392,15 @@ export function migrateAutomationEnvFile({
       ...existingSettings,
     });
   }
-  if (hasCredentials) {
+  if (hasCredentials && existingCredentials) {
     credentials.write({
       ...migrated.credentials,
       ...existingCredentials,
     });
   }
-  if (Object.keys(migrated.settings).length > 0 || Object.keys(migrated.credentials).length > 0) {
-    writeFileSync(envPath, withoutKnownAutomationLines(envText), { encoding: "utf8", mode: 0o600 });
+  const migratedKeys = existingCredentials ? automationKnownKeys : automationSettingKeys;
+  if (Object.keys(migrated.settings).length > 0 || (existingCredentials && Object.keys(migrated.credentials).length > 0)) {
+    writeFileSync(envPath, withoutAutomationLines(envText, migratedKeys), { encoding: "utf8", mode: 0o600 });
   }
 }
 

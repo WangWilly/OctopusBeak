@@ -47,6 +47,7 @@ import type { FinancialPageActions } from "../src/ledger/pglite/financial-page-a
 import { dateInTimeZone } from "../src/lib/shared-ledger/twd-valuation.ts";
 import { DEFAULT_SYSTEM_TIMEZONE } from "../src/lib/time/timezone.ts";
 import type { PGliteCanonicalCommitOptions } from "../src/ledger/pglite/canonical-source-store.ts";
+import type { CardIdentitySecret } from "../src/lib/shared-identity/card-identity-secret.ts";
 import {
   readAssetsPage,
   readLiabilitiesPage,
@@ -73,8 +74,8 @@ export type PGliteFinancialRegistryOptions = Readonly<{
   previewVisibility?: () => PreviewVisibility;
   /** The person's local date, which no manual row may be dated after, and which decides whether an ended asset still counts. */
   today?: () => string;
-  /** The verifier of the Card identity secret workflows derive card identities from, read at each card commit (ADR 0149). */
-  cardIdentityVerifier?: () => string | undefined;
+  /** The Card identity secret workflows derive card identities from, read at each card commit (ADR 0149). */
+  cardIdentitySecret?: () => CardIdentitySecret | undefined;
 }>;
 
 export function createPGliteFinancialRegistry(
@@ -85,7 +86,7 @@ export function createPGliteFinancialRegistry(
   const previewVisibility = options.previewVisibility ?? (() => NO_PREVIEW_VISIBILITY);
   const today = options.today ?? (() => dateInTimeZone(new Date(), DEFAULT_SYSTEM_TIMEZONE));
   const cardIdentity = (commit: PGliteCanonicalCommitOptions | undefined) =>
-    ({ ...commit, cardIdentityVerifier: options.cardIdentityVerifier?.() });
+    ({ ...commit, cardIdentitySecret: options.cardIdentitySecret?.() });
   const manualClock = { now: () => new Date().toISOString(), today };
   const pageScope = (expectedSources: FinancialPageScope["expectedSources"]): FinancialPageScope =>
     ({ expectedSources, previewVisibility: previewVisibility(), today: today() });
@@ -150,7 +151,7 @@ export function createPGliteFinancialRegistry(
     },
     "financial.canonical.reset": () => resetPGliteCanonicalStore(store),
     "financial.canonical.resetRequired": () =>
-      canonicalResetRequiredNamespaces(store, options.cardIdentityVerifier?.()),
+      canonicalResetRequiredNamespaces(store, options.cardIdentitySecret?.()),
   });
 }
 
