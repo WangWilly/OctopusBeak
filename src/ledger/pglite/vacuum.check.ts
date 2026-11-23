@@ -5,7 +5,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PGliteStore } from "./transaction.ts";
-import { pgliteTablesToVacuum, startPgliteVacuums, vacuumPgliteDeadTuples } from "./vacuum.ts";
+import { pgliteTablesBySize, pgliteTablesToVacuum, startPgliteVacuums, vacuumPgliteDeadTuples } from "./vacuum.ts";
 
 async function storeWithTables(dataDir?: string): Promise<PGliteStore> {
   const store = new PGliteStore(await PGlite.create(dataDir));
@@ -30,6 +30,26 @@ const dead = async (store: PGliteStore, table: string) => {
     "SELECT n_dead_tup AS dead FROM pg_stat_user_tables WHERE relname = $1", [table],
   )).rows[0]!.dead);
 };
+
+/** Starts the vacuums and resolves once their pass over every table, one queue task per table, is done. */
+async function runStartupPass(store: PGliteStore): Promise<void> {
+  const tasks = (await pgliteTablesBySize(store)).length + 1;
+  let done = 0;
+  let finished!: () => void;
+  const pass = new Promise<void>((resolve) => { finished = resolve; });
+  const vacuums = startPgliteVacuums(store, {
+    startupDelayMs: 0,
+    run: async (task) => {
+      try {
+        return await task();
+      } finally {
+        if (++done === tasks) finished();
+      }
+    },
+  });
+  await pass;
+  await vacuums.stop();
+}
 
 test("only a table whose dead tuples passed the threshold is vacuumed", async () => {
   const store = await storeWithTables();
@@ -115,20 +135,43 @@ test("a reopened store counts no dead tuples, and the startup pass still reclaim
     // PGlite writes no statistics file when it closes, so the threshold sees nothing.
     assert.equal(await dead(store, "rewritten"), 0);
     assert.deepEqual(await pgliteTablesToVacuum(store), []);
-    let passed!: () => void;
-    const startupPass = new Promise<void>((resolve) => { passed = resolve; });
-    const vacuums = startPgliteVacuums(store, {
-      startupDelayMs: 0,
-      run: async (task) => { const result = await task(); passed(); return result; },
-    });
-    await startupPass;
-    await vacuums.stop();
+    await runStartupPass(store);
     // The freed copies take the next rewrite, so the table does not grow.
     await rewriteAll(store);
     assert.equal(await pages(store, "rewritten"), grown);
     await store.close();
   } finally {
     await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("a table that grew past its statistics is analyzed by the pass after open", async () => {
+  // refreshPlannerStatistics analyzes a table once it outgrows, by a tenth, the
+  // page count its statistics describe. A plain VACUUM would record the grown
+  // page count and keep the old statistics, so the projection would never
+  // analyze the table again.
+  const store = new PGliteStore(await PGlite.create());
+  try {
+    await store.exec(`
+      CREATE TABLE appended (id int PRIMARY KEY, pad text);
+      INSERT INTO appended SELECT g, repeat('x', 200) FROM generate_series(1, 300) g;
+      ANALYZE appended;
+      INSERT INTO appended SELECT g, repeat('x', 200) FROM generate_series(301, 3600) g;
+    `);
+    const statistics = async () => (await store.query<{ pages: number | string; analyzed_pages: number; highest: string }>(
+      `SELECT pg_relation_size('appended') / current_setting('block_size')::int AS pages,
+              (SELECT relpages FROM pg_class WHERE relname = 'appended') AS analyzed_pages,
+              (SELECT histogram_bounds::text FROM pg_stats WHERE tablename = 'appended' AND attname = 'id') AS highest`,
+    )).rows[0]!;
+    const before = await statistics();
+    assert.ok(Number(before.pages) > before.analyzed_pages * 10, "the table grew tenfold past its statistics");
+    await runStartupPass(store);
+    const after = await statistics();
+    assert.equal(after.analyzed_pages, Number(after.pages));
+    assert.notEqual(after.highest, before.highest, "the statistics describe the grown table");
+    assert.ok(after.highest.includes("3600"), `the histogram reaches the new rows: ${after.highest}`);
+  } finally {
+    await store.close();
   }
 });
 
