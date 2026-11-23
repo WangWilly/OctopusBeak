@@ -14,12 +14,13 @@ import {
   isPGliteFinancialOperation,
   PGLITE_FINANCIAL_CONTRACTS,
   type PGliteFinancialCancelRequest,
+  type PGliteFinancialErrorCode,
   type PGliteFinancialFailureCategory,
   type PGliteFinancialOperation,
   type PGliteFinancialResponse,
   type PGliteFinancialPort,
 } from "../src/lib/pglite-rpc/pglite-financial-contracts.ts";
-import { PGliteFinancialError } from "../src/lib/pglite-rpc/pglite-financial-rpc-client.ts";
+import { PGliteFinancialError, pgliteFinancialErrorMessage } from "../src/lib/pglite-rpc/pglite-financial-rpc-client.ts";
 import { createWorkerCallServer, plainRecord, type WorkerCall, type WorkerPort } from "../src/lib/pglite-rpc/pglite-worker-call.ts";
 
 export type PGliteFinancialRpcServer = Readonly<{ close(): Promise<void> }>;
@@ -34,7 +35,7 @@ function validCancelRequest(value: unknown): value is PGliteFinancialCancelReque
 
 function genericFailure(
   id: number,
-  code: "invalid-request" | "operation-failed" | "worker-closed" | "cancelled",
+  code: PGliteFinancialErrorCode,
   category?: PGliteFinancialFailureCategory,
   diagnosticError?: SafeWorkflowFailureError,
   reason?: PGliteWorkflowAdmissionReason,
@@ -45,13 +46,7 @@ function genericFailure(
     id,
     ok: false,
     code,
-    message: code === "invalid-request"
-      ? "Invalid PGlite financial request."
-      : code === "worker-closed"
-        ? "PGlite financial worker is closed."
-        : code === "cancelled"
-          ? "PGlite financial operation was cancelled."
-        : "PGlite financial operation failed.",
+    message: pgliteFinancialErrorMessage(code),
     ...(category ? { category } : {}),
     ...(reason ? { reason } : {}),
     ...(diagnosticError ? { diagnosticError } : {}),
@@ -100,9 +95,18 @@ function failureCategory(error: unknown): PGliteFinancialFailureCategory {
 
 /**
  * False refuses a workflow's canonical write before it reaches the database
- * (ADR 0058). A throw is an ordinary failure, not a refusal.
+ * (ADR 0058). A throw is an ordinary failure, not a refusal. A commit that
+ * names no run is refused without asking (ADR 0148).
  */
 export type PGliteCanonicalCommitAdmission = (context: WorkflowFailureCorrelation) => boolean;
+
+export type PGliteFinancialRpcServerOptions = Readonly<{
+  /** Gates every `workflow: "commit"` operation. Without it, commits are not gated. */
+  isCommitAdmissible?: PGliteCanonicalCommitAdmission;
+  /** The operations this connection serves; any other is refused as `not-allowed`. Defaults to all. */
+  serves?: (operation: PGliteFinancialOperation) => boolean;
+  scheduler?: PGliteWorkScheduler;
+}>;
 
 /**
  * Runs one PGlite operation at a time for a worker. Interactive work (a click
@@ -155,8 +159,11 @@ type CoalescedRead = {
 export function createPGliteFinancialRpcServer(
   port: WorkerPort,
   financial: PGliteFinancialPort,
-  isCommitAdmissible?: PGliteCanonicalCommitAdmission,
-  scheduler: PGliteWorkScheduler = createPGliteWorkScheduler(),
+  {
+    isCommitAdmissible,
+    serves = () => true,
+    scheduler = createPGliteWorkScheduler(),
+  }: PGliteFinancialRpcServerOptions = {},
 ): PGliteFinancialRpcServer {
   const controllers = new Map<number, AbortController>();
   const queuedReads = new Map<PGliteFinancialOperation, CoalescedRead>();
@@ -200,6 +207,7 @@ export function createPGliteFinancialRpcServer(
   const start = (call: WorkerCall): Promise<PGliteFinancialResponse> | undefined => {
     const { id, operation, args, diagnosticContext } = call;
     if (!isPGliteFinancialOperation(operation)) return undefined;
+    if (!serves(operation)) return Promise.resolve(genericFailure(id, "not-allowed"));
     const contract = PGLITE_FINANCIAL_CONTRACTS[operation];
     if (!contract.accepts(args)) return undefined;
     const controller = new AbortController();
@@ -208,8 +216,8 @@ export function createPGliteFinancialRpcServer(
       ? joinLatestRead(operation, args, controller.signal)
       : scheduler.schedule(contract.lane, async () => {
         if (controller.signal.aborted) throw new Error("PGlite financial operation was cancelled before execution.");
-        if (isCommitAdmissible && diagnosticContext && contract.canonicalCommit
-          && !isCommitAdmissible(diagnosticContext)) {
+        if (isCommitAdmissible && contract.workflow === "commit"
+          && !(diagnosticContext && isCommitAdmissible(diagnosticContext))) {
           throw new PGliteFinancialError("operation-failed", "refused");
         }
         return financial.request(operation, args as never, { signal: controller.signal });

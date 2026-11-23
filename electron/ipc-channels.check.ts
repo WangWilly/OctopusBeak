@@ -17,8 +17,8 @@ import { PGLITE_FINANCIAL_CONTRACTS, RENDERER_FINANCIAL_OPERATIONS, type PGliteF
 test("the renderer can reach no canonical write", () => {
   for (const operation of RENDERER_FINANCIAL_OPERATIONS) {
     assert.equal(
-      (PGLITE_FINANCIAL_CONTRACTS[operation] as { canonicalCommit?: true }).canonicalCommit,
-      undefined,
+      PGLITE_FINANCIAL_CONTRACTS[operation].workflow === "commit",
+      false,
       `${operation} must not be callable from the renderer`,
     );
   }

@@ -56,13 +56,14 @@ export function launchedCollectionScope(
 
 /**
  * Commit admission for the PGlite child RPC: the run's current execution
- * checks its launched Collection scope version. A run id with no active run,
- * or an active run with no current execution, is not gated.
+ * checks its launched Collection scope version. Only a current execution
+ * commits, so a run id with no active run, an active run with no current
+ * execution, and an execution launched without a scope are refused (ADR 0148).
  */
 export function collectionScopeAdmitsCommit(
   run: Pick<ActiveAutomationTaskRun, "currentExecution"> | null,
   currentEnvironment: () => ScopeEnvironment,
 ): boolean {
   const scope = run?.currentExecution()?.collectionScope();
-  return scope ? scope.current(currentEnvironment) : true;
+  return scope ? scope.current(currentEnvironment) : false;
 }

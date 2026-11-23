@@ -95,18 +95,18 @@ test("commit admission goes through the runtime's active run to its current exec
     const { runId, settled } = await startForCheck(runtime, "exchange-rates");
     await settled;
     assert.deepEqual(observed, {
-      beforeExecution: true,
+      beforeExecution: false,
       unchanged: true,
       changed: false,
       reverted: false,
-      afterEnd: true,
+      afterEnd: false,
       secondExecution: true,
       secondChanged: false,
     });
     assert.equal(runtime.activeRun(runId), null, "a finished run is no longer active");
-    assert.equal(admits(runId), true);
+    assert.equal(admits(runId), false, "a finished run cannot commit");
     assert.equal(runtime.activeRun("no-such-run"), null);
-    assert.equal(admits("no-such-run"), true);
+    assert.equal(admits("no-such-run"), false, "an unknown run cannot commit");
   } finally {
     await store.close();
   }
@@ -142,7 +142,7 @@ test("an admission check that throws fails the write without calling it refused"
     createPGliteFinancialLocalPort({
       "financial.deposit.commit": async () => { reached += 1; return { captureId: "capture", commitSequence: 1 }; },
     } as unknown as PGliteFinancialRegistry),
-    () => { throw new SyntaxError("settings file is not JSON"); },
+    { isCommitAdmissible: () => { throw new SyntaxError("settings file is not JSON"); } },
   );
   const client = createPGliteFinancialRpcClient(ports[0], undefined, { workflowId: "fubon-all-statements", taskRunId: "run-unreadable" });
   try {
@@ -191,10 +191,12 @@ class CommittingFakeWorker extends EventEmitter implements AppWorkflowWorkerHand
     const server = createPGliteFinancialRpcServer(
       ports[1],
       createPGliteFinancialLocalPort(this.registry),
-      ({ taskRunId }) => collectionScopeAdmitsCommit(
-        taskRunId === this.run.taskRunId ? this.run : null,
-        () => automationConfigEnv({ baseEnv: process.env, settings: settingsStoreForCheck().read(), credentials: credentialStoreForCheck().read() }),
-      ),
+      {
+        isCommitAdmissible: ({ taskRunId }) => collectionScopeAdmitsCommit(
+          taskRunId === this.run.taskRunId ? this.run : null,
+          () => automationConfigEnv({ baseEnv: process.env, settings: settingsStoreForCheck().read(), credentials: credentialStoreForCheck().read() }),
+        ),
+      },
     );
     const client = createPGliteFinancialRpcClient(ports[0], undefined, {
       workflowId: start.workflowId,

@@ -12,7 +12,13 @@ import {
 } from "./pglite-child-rpc.ts";
 import { createPGliteViewWorkerClient } from "./pglite-view-worker-client.ts";
 import { PGliteFinancialError } from "../src/lib/pglite-rpc/pglite-financial-rpc-client.ts";
-import { PGLITE_OPERATIONAL_OPERATIONS } from "../src/lib/pglite-rpc/pglite-operational-rpc.ts";
+import {
+  PGLITE_OPERATIONAL_OPERATIONS,
+  PGliteOperationalError,
+  WORKFLOW_OPERATIONAL_OPERATIONS,
+} from "../src/lib/pglite-rpc/pglite-operational-rpc.ts";
+import { WORKFLOW_FINANCIAL_OPERATIONS } from "../src/lib/pglite-rpc/pglite-financial-contracts.ts";
+import * as PGLITE_WORKFLOW_COMMANDS from "../src/ledger/pglite/workflow-commands.ts";
 
 function providerForWorker(client: ReturnType<typeof createPGliteViewWorkerClient>): PGliteChildProvider {
   return {
@@ -36,9 +42,9 @@ test("child RPC preserves UTF-8 characters split across socket chunks", async ()
   const label = "全家便利商店";
   let received: string | undefined;
   const provider = {
-    operational: { automation: { taskRunById: async (value: string) => {
-      received = value;
-      return null;
+    operational: { exchangeRates: { readExchangeRates: async (currencies: string[]) => {
+      received = currencies[0];
+      return [];
     } } },
     financial: {},
   } as unknown as PGliteChildProvider;
@@ -59,7 +65,7 @@ test("child RPC preserves UTF-8 characters split across socket chunks", async ()
     });
     const frame = Buffer.from(JSON.stringify({
       kind: "pglite-operational-request", version: 1, id: 1,
-      operation: "automation.taskRunById", args: [label],
+      operation: "exchangeRates.readExchangeRates", args: [[label]],
     }) + "\n");
     const split = frame.indexOf(Buffer.from("家")) + 1;
     assert(split > 0);
@@ -126,20 +132,18 @@ test("authenticated child RPC reaches the same worker named registries", async (
     await server.ready;
     await child.ready;
     assert.equal(typeof child.workflow.commit, "function");
-    const created = await child.operationalProvider.automation.createTaskRun({
-      taskId: "exchange-rates",
-      kind: "sync",
-      status: "running",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: "2026-09-22T00:00:00.000Z",
-    });
-    assert.equal(
-      (await child.operationalProvider.automation.taskRunById(created.taskRunId))?.status,
-      "running",
+    await child.operationalProvider.exchangeRates.upsertExchangeRates([{
+      rateDate: "2026-09-22",
+      currency: "USD",
+      twdPerUnit: 32.5,
+      source: "synthetic",
+      fetchedAt: "2026-09-22T00:00:00.000Z",
+    }]);
+    assert.deepEqual(
+      (await child.operationalProvider.exchangeRates.readExchangeRates(["USD"])).map((row) => row.twdPerUnit),
+      [32.5],
     );
     assert.equal((await child.financial.request("financial.overview.current", [])).availability, "empty");
-    assert.deepEqual(await child.financial.request("financial.loanRelations.current", []), []);
     const unresolvedFunding = await child.workflow.commit({
       kind: "financial.investmentRelations.resolve",
       request: {},
@@ -156,6 +160,102 @@ test("authenticated child RPC reaches the same worker named registries", async (
     await server.close();
     await workerClient.close();
     await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("the child socket refuses every operation not marked for workflows", async () => {
+  const reached: string[] = [];
+  const operational = Object.fromEntries(
+    [...new Set(PGLITE_OPERATIONAL_OPERATIONS.map((operation) => operation.split(".")[0]!))].map((domain) => [
+      domain,
+      new Proxy({}, {
+        get: (_target, method) => async () => {
+          reached.push(`${domain}.${String(method)}`);
+          return null;
+        },
+      }),
+    ]),
+  );
+  const provider = {
+    operational,
+    financial: {
+      request: async (operation: string) => {
+        reached.push(operation);
+        return null;
+      },
+    },
+  } as unknown as PGliteChildProvider;
+  const server = createPGliteChildRpcServer({ provider, isCommitAdmissible: () => true });
+  const child = createPGliteChildRpcClient({ endpoint: server.endpoint, token: server.token });
+  try {
+    await server.ready;
+    await child.ready;
+    const refusedFinancial = [
+      ["financial.canonical.reset", []],
+      ["financial.manualAssets.apply", [{ kind: "synthetic" }]],
+      ["financial.pageAction", [{ kind: "synthetic" }]],
+      ["financial.spending.current", []],
+      ["financial.loanRelations.current", []],
+    ] as const;
+    for (const [operation, args] of refusedFinancial) {
+      await assert.rejects(
+        child.request(operation, args),
+        (error: unknown) => error instanceof PGliteFinancialError && error.code === "not-allowed",
+        `${operation} must not be open to workflows`,
+      );
+    }
+    const refusedOperational = [
+      ["automation.taskRunById", ["run"]],
+      ["automation.transitionTaskRunToTerminal", ["run", { status: "succeeded" }]],
+      ["automation.recordCommitAttempt", ["run", {}]],
+      ["preview.deleteAll", []],
+      ["preview.accounts", [{ visible: [] }]],
+    ] as const;
+    for (const [operation, args] of refusedOperational) {
+      await assert.rejects(
+        child.request(operation, args),
+        (error: unknown) => error instanceof PGliteOperationalError && error.code === "not-allowed",
+        `${operation} must not be open to workflows`,
+      );
+    }
+    assert.deepEqual(reached, [], "a refused operation never reaches the worker");
+    await child.request("financial.overview.current", []);
+    await child.request("exchangeRates.readExchangeRates", []);
+    assert.deepEqual(reached, ["financial.overview.current", "exchangeRates.readExchangeRates"]);
+  } finally {
+    child.close();
+    await server.close();
+  }
+});
+
+test("the workflow surface is exactly what workflows call", () => {
+  assert.deepEqual([...WORKFLOW_FINANCIAL_OPERATIONS].sort(), [
+    "financial.accountIdentity.continuity",
+    "financial.balance.capture",
+    "financial.creditCard.balance",
+    "financial.creditCard.commit",
+    "financial.deposit.commit",
+    "financial.einvoice.commit",
+    "financial.investment.commit",
+    "financial.investmentRelations.resolve",
+    "financial.loan.commit",
+    "financial.loanRelations.resolve",
+    "financial.overview.current",
+    "financial.source.admit",
+    "financial.source.commit",
+    "financial.tdccFundAccounts.list",
+  ]);
+  assert.deepEqual([...WORKFLOW_OPERATIONAL_OPERATIONS].sort(), [
+    "exchangeRates.readExchangeRates",
+    "exchangeRates.upsertExchangeRates",
+    "maicoin.appendSnapshots",
+    "maicoin.appendStatementRows",
+    "maicoin.finishRun",
+    "maicoin.startRun",
+    "preview.write",
+  ]);
+  for (const kind of Object.values(PGLITE_WORKFLOW_COMMANDS)) {
+    assert.ok(WORKFLOW_FINANCIAL_OPERATIONS.has(kind), `workflow command ${kind} must be open to workflows`);
   }
 });
 
@@ -233,8 +333,8 @@ test("missing owner endpoint and child disconnect fail explicitly", async () => 
   let cancelled = false;
   const provider = {
     operational: {
-      automation: {
-        activeTaskRuns: () => delayed,
+      exchangeRates: {
+        readExchangeRates: () => delayed,
       },
     },
     financial: {
@@ -284,7 +384,7 @@ test("missing owner endpoint and child disconnect fail explicitly", async () => 
     await assert.rejects(pendingWrite, /cancelled/u);
     await waitFor(() => cancelled);
     assert.equal(cancelled, true, "socket cancellation must reach the in-flight worker command");
-    const pending = child.operationalProvider.automation.activeTaskRuns();
+    const pending = child.operationalProvider.exchangeRates.readExchangeRates();
     child.close();
     await assert.rejects(pending, /closed/u);
     release();

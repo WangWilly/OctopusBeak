@@ -4,6 +4,8 @@ Status: accepted
 
 Refines [ADR 0056](0056-commit-attempt-is-the-authority-for-commit-outcome.md) and [ADR 0052](0052-active-automation-task-run-owns-run-lifecycle.md).
 
+Amended by [ADR 0148](0148-the-workflow-socket-serves-only-workflow-operations-and-refuses-unowned-commits.md): the host also refuses a canonical write from an unknown run, a run with no current Workflow execution, or a request that names no run.
+
 ## Context
 
 A run's Collection scope version is checked again before each canonical write. If the person changed a Statement Selection, enablement, or identity after the run started, the PGlite host refuses the write before it opens a transaction. Nothing is written.

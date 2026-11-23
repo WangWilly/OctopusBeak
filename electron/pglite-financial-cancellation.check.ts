@@ -161,7 +161,7 @@ test("an account identity continuity read crosses the workflow port only in its 
     },
   } as unknown as PGliteFinancialRegistry;
   const [clientPort, serverPort] = memoryPair();
-  const server = createPGliteFinancialRpcServer(serverPort, createPGliteFinancialLocalPort(registry), () => true);
+  const server = createPGliteFinancialRpcServer(serverPort, createPGliteFinancialLocalPort(registry), { isCommitAdmissible: () => true });
   const client = createPGliteFinancialRpcClient(clientPort);
   try {
     const { identifier: _identifier, ...withoutIdentifier } = request;
@@ -201,9 +201,11 @@ test("a correlated canonical write must pass the commit assertion while reads sk
   } as unknown as PGliteFinancialRegistry;
   const asserted: unknown[] = [];
   const [clientPort, serverPort] = memoryPair();
-  const server = createPGliteFinancialRpcServer(serverPort, createPGliteFinancialLocalPort(registry), (context) => {
-    asserted.push(context);
-    throw new Error("task run is no longer active");
+  const server = createPGliteFinancialRpcServer(serverPort, createPGliteFinancialLocalPort(registry), {
+    isCommitAdmissible: (context) => {
+      asserted.push(context);
+      throw new Error("task run is no longer active");
+    },
   });
   const correlation = { workflowId: "fubon", taskRunId: "run-1" };
   const client = createPGliteFinancialRpcClient(clientPort, undefined, correlation);
@@ -215,6 +217,38 @@ test("a correlated canonical write must pass the commit assertion while reads sk
     assert.equal(await client.request("financial.spending.version", []), 7);
     assert.deepEqual(asserted, [correlation], "only the canonical write is asserted");
     assert.deepEqual(served, ["version"], "the rejected write never reaches the store");
+  } finally {
+    client.close();
+    await server.close();
+  }
+});
+
+test("a gated server refuses a canonical write that names no run, without asking the gate", async () => {
+  const served: string[] = [];
+  const registry = {
+    "financial.deposit.commit": async () => {
+      served.push("deposit");
+      return {};
+    },
+    "financial.spending.version": async () => 7,
+  } as unknown as PGliteFinancialRegistry;
+  let asked = 0;
+  const [clientPort, serverPort] = memoryPair();
+  const server = createPGliteFinancialRpcServer(serverPort, createPGliteFinancialLocalPort(registry), {
+    isCommitAdmissible: () => {
+      asked += 1;
+      return true;
+    },
+  });
+  const client = createPGliteFinancialRpcClient(clientPort);
+  try {
+    await assert.rejects(
+      client.request("financial.deposit.commit", [{ capture: {} }] as never),
+      (error: unknown) => error instanceof PGliteFinancialError && error.category === "refused",
+    );
+    assert.equal(await client.request("financial.spending.version", []), 7, "an uncorrelated read still runs");
+    assert.equal(asked, 0);
+    assert.deepEqual(served, [], "the refused write never reaches the store");
   } finally {
     client.close();
     await server.close();
