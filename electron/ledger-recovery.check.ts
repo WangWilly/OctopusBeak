@@ -29,6 +29,7 @@ function deps(answer: number, calls: string[], asked: Parameters<LedgerRecoveryD
     },
     relaunch: () => calls.push("relaunch"),
     exit: (code) => calls.push(`exit ${code}`),
+    showError: (_title, message) => calls.push(`error ${message}`),
     now: () => NOW,
   };
 }
@@ -42,7 +43,9 @@ test("retry starts the App again and leaves the ledger where it is", () => withL
   assert.deepEqual(asked[0]?.buttons, ["Retry", "Back up and rebuild", "Quit"]);
   assert.equal(asked[0]?.defaultId, 0, "the default changes nothing");
   assert.equal(asked[0]?.cancelId, 2, "closing the dialog quits");
-  assert.match(asked[0]!.detail, /Manual assets, spending categories, and pairings/u, "the cost of rebuilding is named before it is chosen");
+  assert.match(asked[0]!.detail, /Anything you entered or edited in the app/u, "the cost of rebuilding is named before it is chosen");
+  assert.match(asked[0]!.detail, /older than what each source still provides/u);
+  assert.ok(asked[0]!.detail.includes(`${dataDir}.damaged-2026-11-23T05-12-34Z`), "the person learns where the backup goes");
 }));
 
 test("rebuild moves the whole ledger aside, untouched, and starts the App again", () => withLedger(async (dataDir) => {
@@ -70,5 +73,20 @@ test("the dialog speaks Traditional Chinese to a Traditional Chinese system", as
   const asked: Parameters<LedgerRecoveryDeps["ask"]>[0][] = [];
   await recoverUnusableLedger("/nonexistent", { ...deps(2, [], asked), locale: "zh-TW" });
   assert.deepEqual(asked[0]?.buttons, ["重試", "備份後重建帳本", "結束"]);
-  assert.match(asked[0]!.detail, /手動資產、消費分類與配對/u);
+  assert.match(asked[0]!.detail, /你在 app 裡輸入或修改過的資料/u);
 });
+
+test("a rebuild that cannot move the ledger says so, changes nothing, and quits", () => withLedger(async (dataDir) => {
+  const calls: string[] = [];
+  const choice = await recoverUnusableLedger(dataDir, {
+    ...deps(1, calls),
+    rename: () => {
+      throw new Error("operation not permitted");
+    },
+  });
+  assert.equal(choice, "rebuild-failed");
+  assert.equal(calls.length, 2);
+  assert.match(calls[0]!, /^error The ledger could not be moved to ".*damaged-2026-11-23T05-12-34Z": operation not permitted/u);
+  assert.equal(calls[1], "exit 1", "it does not relaunch into the same refusal");
+  assert.ok(existsSync(join(dataDir, "PG_VERSION")));
+}));

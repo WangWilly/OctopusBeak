@@ -6,36 +6,39 @@ export type LedgerRecoveryChoice = "retry" | "rebuild" | "quit";
 type Copy = Readonly<{
   title: string;
   message: string;
-  detail: string;
+  detail(backupPath: string): string;
   retry: string;
   rebuild: string;
   quit: string;
+  moveFailed(backupPath: string, reason: string): string;
 }>;
 
 const COPY: Readonly<Record<"zh-TW" | "en", Copy>> = {
   "zh-TW": {
     title: "OctopusBeak",
     message: "本機帳本損壞，無法安全開啟",
-    detail: [
-      "帳本的索引壞了，而且修不好。照常開啟可能讓同一筆交易被收集兩次，所以 OctopusBeak 沒有開啟它。",
-      "重試：再檢查並嘗試修復一次。",
-      "備份後重建：把目前的帳本整個搬到旁邊保留，建立一個新的空帳本，之後重新同步各來源。手動資產、消費分類與配對無法從銀行重新下載，會留在備份裡，app 內看不到。",
+    detail: (backupPath) => [
+      "帳本的索引壞了，無法檢查或修復。照常開啟可能讓同一筆交易被收集兩次，所以 OctopusBeak 沒有開啟它。",
+      "重試：再檢查並嘗試修復一次。只有在問題是暫時性的時候才有幫助。",
+      `備份後重建帳本：把目前的帳本原封不動搬到「${backupPath}」，建立一個新的空帳本，之後重新同步各來源。你在 app 裡輸入或修改過的資料（例如手動資產、標籤、消費分類與配對），以及各來源已不再提供的較舊紀錄，都只留在備份裡，app 內看不到。`,
     ].join("\n\n"),
     retry: "重試",
     rebuild: "備份後重建帳本",
     quit: "結束",
+    moveFailed: (backupPath, reason) => `無法把帳本搬到「${backupPath}」：${reason}\n\n帳本沒有被變更。OctopusBeak 將結束。`,
   },
   en: {
     title: "OctopusBeak",
     message: "The local ledger is damaged and cannot open safely",
-    detail: [
-      "An index the ledger needs is damaged and could not be repaired. Opening it anyway could collect the same transaction twice, so OctopusBeak did not open it.",
-      "Retry: check and try to repair it again.",
-      "Back up and rebuild: move the current ledger aside, untouched, and start a new empty one, then sync each source again. Manual assets, spending categories, and pairings cannot be downloaded again from your banks; they stay in the backup and do not appear in the app.",
+    detail: (backupPath) => [
+      "An index the ledger needs is damaged and could not be checked or repaired. Opening it anyway could collect the same transaction twice, so OctopusBeak did not open it.",
+      "Retry: check and try to repair it again. This only helps if the problem was temporary.",
+      `Back up and rebuild: move the current ledger, untouched, to "${backupPath}", start a new empty one, then sync each source again. Anything you entered or edited in the app, such as manual assets, tags, spending categories, and pairings, and history older than what each source still provides, stays only in the backup and does not appear in the app.`,
     ].join("\n\n"),
     retry: "Retry",
     rebuild: "Back up and rebuild",
     quit: "Quit",
+    moveFailed: (backupPath, reason) => `The ledger could not be moved to "${backupPath}": ${reason}\n\nThe ledger was not changed. OctopusBeak will quit.`,
   },
 };
 
@@ -58,6 +61,8 @@ export type LedgerRecoveryDeps = Readonly<{
   relaunch(): void;
   exit(code: number): void;
   now(): Date;
+  /** Tells the person why a rebuild could not move the ledger aside. */
+  showError(title: string, message: string): void;
   rename?(from: string, to: string): void;
   exists?(path: string): boolean;
 }>;
@@ -78,23 +83,29 @@ export function damagedLedgerPath(dataDir: string, now: Date, exists: (path: str
  * record. Rebuild moves the whole data directory aside first, untouched, so
  * nothing is deleted. Returns the choice for diagnostics.
  */
-export async function recoverUnusableLedger(dataDir: string, deps: LedgerRecoveryDeps): Promise<LedgerRecoveryChoice> {
+export async function recoverUnusableLedger(dataDir: string, deps: LedgerRecoveryDeps): Promise<LedgerRecoveryChoice | "rebuild-failed"> {
   const copy = COPY[deps.locale];
+  const exists = deps.exists ?? existsSync;
+  const backupPath = damagedLedgerPath(dataDir, deps.now(), exists);
   const index = await deps.ask({
     type: "error",
     title: copy.title,
     message: copy.message,
-    detail: copy.detail,
+    detail: copy.detail(backupPath),
     buttons: [copy.retry, copy.rebuild, copy.quit],
     defaultId: 0,
     cancelId: 2,
     noLink: true,
   });
   const choice = CHOICES[index] ?? "quit";
-  if (choice === "rebuild") {
-    const exists = deps.exists ?? existsSync;
-    const rename = deps.rename ?? renameSync;
-    if (exists(dataDir)) rename(dataDir, damagedLedgerPath(dataDir, deps.now(), exists));
+  if (choice === "rebuild" && exists(dataDir)) {
+    try {
+      (deps.rename ?? renameSync)(dataDir, backupPath);
+    } catch (error) {
+      deps.showError(copy.title, copy.moveFailed(backupPath, error instanceof Error ? error.message : String(error)));
+      deps.exit(1);
+      return "rebuild-failed";
+    }
   }
   if (choice === "quit") {
     deps.exit(1);

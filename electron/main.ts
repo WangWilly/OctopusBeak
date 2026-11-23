@@ -446,24 +446,42 @@ async function start() {
         .catch(reject);
     });
   });
+  const exitForLedgerRecovery = (code: number) => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.destroy();
+    app.exit(code);
+  };
+  /** Asks the person what to do with a ledger that refused to open; only the first refusal asks. */
+  const recoverLedger = (error: unknown) => {
+    if (ledgerRecoveryPending || automationRuntimeFatalHandled) return;
+    ledgerRecoveryPending = true;
+    console.error("pglite-ledger-unusable", error instanceof Error ? error.message : String(error));
+    automationRuntime?.abortAll();
+    void recoverUnusableLedger(ledgerDataDir, {
+      locale: app.getLocale().startsWith("zh") ? "zh-TW" : "en",
+      ask: async (options) => {
+        const owner = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+        return (await (owner ? dialog.showMessageBox(owner, options) : dialog.showMessageBox(options))).response;
+      },
+      showError: (title, message) => dialog.showErrorBox(title, message),
+      relaunch: () => app.relaunch(),
+      exit: exitForLedgerRecovery,
+      now: () => new Date(),
+    }).then(
+      (choice) => console.error("pglite-ledger-recovery", choice),
+      (failure: unknown) => {
+        console.error("pglite-ledger-recovery-failed", failure instanceof Error ? failure.message : String(failure));
+        exitForLedgerRecovery(1);
+      },
+    );
+  };
+  // A worker restarted mid-session after a crash checks the ledger again and may refuse it too.
+  operationalRuntime.worker.onError((error) => {
+    if (isLedgerUnusable(error)) recoverLedger(error);
+  });
   void automationRuntimeReady.catch((error) => {
+    // Registered before any other reader of this promise, so the flag is set before they report it as fatal.
     if (isLedgerUnusable(error)) {
-      // Registered before any other reader of this promise, so the flag is set before they report it as fatal.
-      ledgerRecoveryPending = true;
-      console.error("pglite-ledger-unusable", error instanceof Error ? error.message : String(error));
-      void recoverUnusableLedger(ledgerDataDir, {
-        locale: app.getLocale().startsWith("zh") ? "zh-TW" : "en",
-        ask: async (options) => {
-          const owner = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
-          return (await (owner ? dialog.showMessageBox(owner, options) : dialog.showMessageBox(options))).response;
-        },
-        relaunch: () => app.relaunch(),
-        exit: (code) => {
-          if (mainWindow && !mainWindow.isDestroyed()) mainWindow.destroy();
-          app.exit(code);
-        },
-        now: () => new Date(),
-      }).then((choice) => console.error("pglite-ledger-recovery", choice));
+      recoverLedger(error);
       return;
     }
     handleAutomationRuntimeFatal(automationRuntimeFatalDetails("startup-reconcile", error));

@@ -38,8 +38,8 @@ assert.match(
 );
 assert.match(
   source,
-  /void automationRuntimeReady\.catch\(\(error\) => \{\s*if \(isLedgerUnusable\(error\)\) \{[\s\S]*?ledgerRecoveryPending = true;[\s\S]*?recoverUnusableLedger\(ledgerDataDir,/u,
-  "an unusable ledger asks the person what to do instead of ending the App",
+  /const recoverLedger = \(error: unknown\) => \{\s*if \(ledgerRecoveryPending \|\| automationRuntimeFatalHandled\) return;\s*ledgerRecoveryPending = true;[\s\S]*?recoverUnusableLedger\(ledgerDataDir,[\s\S]*?operationalRuntime\.worker\.onError\(\(error\) => \{\s*if \(isLedgerUnusable\(error\)\) recoverLedger\(error\);\s*\}\);\s*void automationRuntimeReady\.catch\(\(error\) => \{[\s\S]*?if \(isLedgerUnusable\(error\)\) \{\s*recoverLedger\(error\);/u,
+  "an unusable ledger, at startup or after a restart mid-session, asks the person what to do instead of ending the App",
 );
 assert.match(
   source,

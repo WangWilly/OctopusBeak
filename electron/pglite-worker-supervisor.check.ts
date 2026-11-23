@@ -4,6 +4,7 @@ import { PGliteFinancialError } from "../src/lib/pglite-rpc/pglite-financial-rpc
 import { PGliteOperationalError } from "../src/lib/pglite-rpc/pglite-operational-rpc.ts";
 import type { PGliteViewWorkerClient } from "./pglite-view-worker-client.ts";
 import { superviseWorker } from "./pglite-worker-supervisor.ts";
+import { isLedgerUnusable, LedgerUnusableError } from "./ledger-unusable.ts";
 
 type Subscription = { view: string; params: object; onValue(value: unknown): void; stopped: boolean };
 
@@ -51,7 +52,7 @@ function fakeGeneration(index: number, options: { holdClose?: boolean; holdSubsc
     subscriptions,
     closed: () => closed,
     becomeReady: () => resolveReady(),
-    failToStart: () => { dead = true; rejectReady(new Error("failed to start")); for (const l of errorListeners) l(new Error("failed to start")); },
+    failToStart: (error: Error = new Error("failed to start")) => { dead = true; rejectReady(error); for (const l of errorListeners) l(error); },
     die: () => {
       dead = true;
       for (const l of errorListeners) l(new Error(`generation ${index} exited`));
@@ -140,6 +141,22 @@ test("a restarted worker that fails to start ends the restarts", async () => {
   await settle();
   assert.equal(generations.length, 2);
   assert.equal(failures.length, 1);
+});
+
+test("an unusable ledger keeps its code through the supervisor, at startup and after a restart", async () => {
+  for (const restartFirst of [false, true]) {
+    const { supervised, generations, failures } = harness({ autoReady: false });
+    if (restartFirst) {
+      generations[0]!.becomeReady();
+      await settle();
+      generations[0]!.die();
+      await settle();
+    }
+    generations.at(-1)!.failToStart(new LedgerUnusableError("The local ledger did not open"));
+    await settle();
+    await assert.rejects(supervised.ready, (error) => isLedgerUnusable(error));
+    assert.ok(failures.length === 1 && isLedgerUnusable(failures[0]), "error listeners see the code, so main can ask the person");
+  }
 });
 
 test("more than three crashes in a minute give up", async () => {
