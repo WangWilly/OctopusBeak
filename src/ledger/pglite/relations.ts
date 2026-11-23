@@ -862,13 +862,11 @@ async function admitLoanCounterpartyEvidence(
     || admitted.identityEpochKey !== capture.epoch_key)
     throw new Error("Counterparty evidence source scope does not match its capture.");
   const captureId = bytes(capture.capture_id, "Evidence capture");
-  const sourceRecord = await first<Row>(transaction,
-    `SELECT source_record.source_record_id
-       FROM source_captures capture
-       JOIN LATERAL (${captureSourceRecordIdsSql("capture.capture_id")}) member ON TRUE
-       JOIN source_records source_record ON source_record.source_record_id = member.source_record_id
-      WHERE capture.capture_id = ? AND source_record.occurrence_key = ?`,
+  const sourceRecords = await query<Row>(transaction,
+    `${captureSourceRecordIdsSql("$1::bytea", "$2::text")} LIMIT 2`,
     [captureId, admitted.sourceRecordKey]);
+  if (sourceRecords.length > 1) throw new Error("Counterparty evidence source record is ambiguous in its capture.");
+  const sourceRecord = sourceRecords[0];
   if (!sourceRecord) throw new Error("Counterparty evidence source record was not found.");
   const sourceRecordId = bytes(sourceRecord.source_record_id, "Evidence source record");
   const account = await first<Row>(transaction,

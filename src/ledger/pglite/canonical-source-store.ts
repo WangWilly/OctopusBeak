@@ -1393,7 +1393,8 @@ async function withdrawOmittedSourceAssertions(
   }>(
     transaction,
     // A capture holds one scope, so the records a prior scope saw are its
-    // capture's records, owned or reused (ADR 0152).
+    // capture's records, owned or reused (ADR 0152). Matching the prior
+    // scope's account keeps the expansion to this account's captures.
     `SELECT DISTINCT assertion.assertion_id, assertion.transaction_id, source_record.occurrence_key
        FROM capture_scopes prior_scope
        JOIN source_captures prior_capture
@@ -1410,6 +1411,7 @@ async function withdrawOmittedSourceAssertions(
       WHERE assertion.origin = 'source'
         AND assertion.field_name = 'transaction_revision'
         AND source_scope.account_id = ?
+        AND prior_scope.account_id = source_scope.account_id
         AND prior_capture.authority_route = ?
         AND prior_scope.scope_start = ?
         AND prior_scope.scope_end = ?
