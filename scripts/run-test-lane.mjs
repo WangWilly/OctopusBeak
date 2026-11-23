@@ -29,6 +29,7 @@ export const BROWSER_CHECK_FILES = Object.freeze([
 /** These are explicit performance lanes, not ordinary functional tests. */
 export const HARD_PERFORMANCE_FILES = Object.freeze([
   "src/ledger/pglite/overview-lifecycle-performance.check.ts",
+  "src/ledger/pglite/resync-growth-performance.check.ts",
 ]);
 
 /** Electron/CDP checks need an isolated process because Electron's macOS
