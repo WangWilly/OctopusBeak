@@ -1,6 +1,6 @@
 # Cross-process canonical writer lease
 
-Status: accepted
+Status: superseded by [ADR 0147](./0147-one-process-owns-the-ledger-and-an-unclean-close-checks-every-index.md)
 
 Queue-mediated canonical writers and provider store opens now acquire a short-lived, path-keyed SQLite sidecar lease before their operation and release it after that operation settles. A provider run still gathers evidence and resolves relations outside its financial commit turn; its run handle may outlive many turns. This extends the in-process writer queue in [ADR 0025](./0025-canonical-financial-commit-execution.md) because Automation can run multiple providers in separate processes against one canonical ledger. SQLite's main-database write lock remains the final authority for direct synchronous writers and non-cooperating processes, and the schema lifecycle lease in [ADR 0017](./0017-canonical-schema-lifecycle.md) retains its separate physical-schema purpose.
 

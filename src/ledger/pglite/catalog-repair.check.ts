@@ -1,54 +1,40 @@
 import assert from "node:assert/strict";
-import { open, mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { PGlite } from "@electric-sql/pglite";
 import { amcheck } from "@electric-sql/pglite/contrib/amcheck";
-import { repairCorruptCatalogIndexes } from "./catalog-repair.ts";
-
-const PAGE = 8192;
-/** A B-tree page ends with its special area: btpo_prev, btpo_next, level, flags, cycle id. */
-const BTPO_PREV = PAGE - 16;
+import { repairCorruptIndexes } from "./catalog-repair.ts";
+import { breakIndexLeftLink, seedLedgerIndex } from "./catalog-repair.fixtures.ts";
 
 async function extensionInstalled(db: PGlite): Promise<boolean> {
   const { rows } = await db.query("SELECT 1 FROM pg_extension WHERE extname = 'amcheck'");
   return rows.length > 0;
 }
 
-/** Point one page's left link at the wrong sibling, as in the incident that broke live views. */
 async function breakDependIndexLeftLink(dataDir: string): Promise<void> {
   const db = await PGlite.create(dataDir);
   for (let index = 0; index < 400; index += 1) {
     await db.exec(`CREATE VIEW filler_${index} AS SELECT ${index} AS value`);
   }
-  const { rows: [{ path }] } = await db.query<{ path: string }>(
-    "SELECT pg_relation_filepath('pg_catalog.pg_depend_depender_index') AS path",
-  );
   await db.close();
+  await breakIndexLeftLink(dataDir, "pg_catalog.pg_depend_depender_index");
+}
 
-  const file = await open(join(dataDir, path), "r+");
+async function withDataDir(run: (dataDir: string) => Promise<void>): Promise<void> {
+  const dataDir = await mkdtemp(join(tmpdir(), "octopus-beak-index-repair-"));
   try {
-    const { size } = await file.stat();
-    const page = Buffer.alloc(PAGE);
-    for (let block = 1; block < size / PAGE; block += 1) {
-      await file.read(page, 0, PAGE, block * PAGE);
-      const left = page.readUInt32LE(BTPO_PREV);
-      if (left === 0) continue;
-      page.writeUInt32LE(left + 7, BTPO_PREV);
-      await file.write(page, 0, PAGE, block * PAGE);
-      return;
-    }
+    await run(dataDir);
   } finally {
-    await file.close();
+    await rm(dataDir, { recursive: true, force: true });
   }
-  throw new Error("pg_depend_depender_index has no page with a left sibling");
 }
 
 test("an intact catalog is left alone and amcheck is not kept installed", async () => {
   const db = await PGlite.create({ extensions: { amcheck } });
   try {
-    assert.deepEqual(await repairCorruptCatalogIndexes(db), { status: "intact" });
+    assert.deepEqual(await repairCorruptIndexes(db), { status: "intact" });
     assert.equal(await extensionInstalled(db), false);
   } finally {
     await db.close();
@@ -72,14 +58,14 @@ test("a catalog index with a broken sibling link is rebuilt so catalog writes wo
         { code: "XX002", message: /right sibling's left-link doesn't match/u },
       );
 
-      const repair = await repairCorruptCatalogIndexes(db);
+      const repair = await repairCorruptIndexes(db);
 
       assert.equal(repair.status, "repaired");
       assert.ok(repair.status === "repaired" && repair.corrupt.includes("pg_depend_depender_index"));
       for (let index = 0; index < 400; index += 1) {
         await db.exec(`CREATE VIEW repaired_${index} AS SELECT ${index} AS value`);
       }
-      assert.deepEqual(await repairCorruptCatalogIndexes(db), { status: "intact" });
+      assert.deepEqual(await repairCorruptIndexes(db), { status: "intact" });
       assert.equal(await extensionInstalled(db), false);
     } finally {
       await db.close();
@@ -87,4 +73,38 @@ test("a catalog index with a broken sibling link is rebuilt so catalog writes wo
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }
+});
+
+test("a corrupt ledger index is rebuilt", async () => {
+  await withDataDir(async (dataDir) => {
+    await seedLedgerIndex(dataDir, { duplicate: false });
+    const db = await PGlite.create(dataDir, { extensions: { amcheck } });
+    try {
+      await db.exec("SET ignore_checksum_failure = on");
+
+      assert.deepEqual(await repairCorruptIndexes(db), { status: "repaired", corrupt: ["ledger_rows_sequence"] });
+      assert.deepEqual(await repairCorruptIndexes(db), { status: "intact" });
+      await assert.rejects(db.exec("INSERT INTO ledger_rows VALUES ('sequence-1')"), { code: "23505" });
+    } finally {
+      await db.close();
+    }
+  });
+});
+
+test("a unique ledger index over a duplicated row cannot be rebuilt and says so", async () => {
+  await withDataDir(async (dataDir) => {
+    await seedLedgerIndex(dataDir, { duplicate: true });
+    const db = await PGlite.create(dataDir, { extensions: { amcheck } });
+    try {
+      await db.exec("SET ignore_checksum_failure = on");
+
+      const repair = await repairCorruptIndexes(db);
+
+      assert.equal(repair.status, "repair-failed");
+      assert.ok(repair.status === "repair-failed" && repair.corrupt.includes("ledger_rows_sequence"));
+      assert.equal((repair.error as { code?: string }).code, "23505");
+    } finally {
+      await db.close();
+    }
+  });
 });

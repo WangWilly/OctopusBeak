@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parentPort, workerData, type MessagePort } from "node:worker_threads";
@@ -9,7 +9,7 @@ import { createViewPortServer, type ViewSource } from "../src/lib/data-views/ser
 import {
   createPgliteOperationalProvider,
 } from "../src/ledger/pglite/operational.ts";
-import { repairCorruptCatalogIndexes, type CatalogIndexRepair } from "../src/ledger/pglite/catalog-repair.ts";
+import { repairCorruptIndexes, type IndexRepair } from "../src/ledger/pglite/catalog-repair.ts";
 import { installFinancialStore } from "../src/ledger/pglite/store-layout.ts";
 import type { PGliteStore } from "../src/ledger/pglite/transaction.ts";
 import { startPgliteWalCheckpoints } from "../src/ledger/pglite/wal-checkpoint.ts";
@@ -40,14 +40,43 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function logCatalogRepair(repair: CatalogIndexRepair): void {
-  if (repair.status === "repaired") {
-    console.error("pglite-catalog-reindexed", repair.corrupt.join(", "));
-  } else if (repair.status === "repair-failed") {
-    console.error("pglite-catalog-reindex-failed", repair.corrupt.join(", "), messageOf(repair.error));
-  } else if (repair.status === "check-failed") {
-    console.error("pglite-catalog-check-failed", messageOf(repair.error));
+/** Written beside the data directory once the database closed cleanly; removed when it opens. */
+export function cleanShutdownMarkerPath(dataDir: string): string {
+  return `${dataDir}.clean-shutdown`;
+}
+
+/**
+ * Whether the last close of `dataDir` was clean, consuming the record of it
+ * so that a crash from here on leaves none. A data directory never closed
+ * since this record existed counts as unclean, so it is checked once.
+ */
+async function consumeCleanShutdown(dataDir: string): Promise<boolean> {
+  try {
+    await rm(cleanShutdownMarkerPath(dataDir));
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
   }
+}
+
+/**
+ * Checks the indexes of a store that did not close cleanly. A store whose
+ * corruption is unknown or could not be repaired does not open: commits would
+ * look up identities through the broken index and admit duplicates.
+ */
+async function assertIndexesUsable(db: PGlite): Promise<void> {
+  const repair: IndexRepair = await repairCorruptIndexes(db);
+  if (repair.status === "intact") return;
+  if (repair.status === "repaired") {
+    console.error("pglite-indexes-reindexed", repair.corrupt.join(", "));
+    return;
+  }
+  const detail = repair.status === "repair-failed"
+    ? `corrupt indexes ${repair.corrupt.join(", ")} could not be rebuilt: ${messageOf(repair.error)}`
+    : `its indexes could not be checked: ${messageOf(repair.error)}`;
+  console.error("pglite-index-check-refused", detail);
+  throw new Error(`The local ledger did not open because ${detail}`);
 }
 
 export async function startPGliteViewWorker(
@@ -60,8 +89,9 @@ export async function startPGliteViewWorker(
   let db: PGliteWithLive | undefined;
   let database: PGliteStore;
   try {
+    const closedCleanly = ownsDataDir || await consumeCleanShutdown(ownedDataDir);
     db = await PGlite.create(ownedDataDir, { extensions: { live, amcheck } }) as PGliteWithLive;
-    logCatalogRepair(await repairCorruptCatalogIndexes(db as unknown as PGlite));
+    if (!closedCleanly) await assertIndexesUsable(db as unknown as PGlite);
     database = await installFinancialStore(db as unknown as import("@electric-sql/pglite").PGlite);
   } catch (error) {
     await db?.close().catch(() => undefined);
@@ -106,6 +136,7 @@ export async function startPGliteViewWorker(
             try {
               await walCheckpoints.stop();
               await database.close();
+              if (!ownsDataDir) await writeFile(cleanShutdownMarkerPath(ownedDataDir), "");
             } finally {
               if (ownsDataDir) await rm(ownedDataDir, { recursive: true, force: true });
             }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
@@ -12,7 +12,8 @@ import {
 } from "./pglite-view-worker-client.ts";
 import { PGliteFinancialError } from "../src/lib/pglite-rpc/pglite-financial-rpc-client.ts";
 import { PGliteOperationalError } from "../src/lib/pglite-rpc/pglite-operational-rpc.ts";
-import { startPGliteViewWorker } from "./pglite-view-worker.ts";
+import { cleanShutdownMarkerPath, startPGliteViewWorker } from "./pglite-view-worker.ts";
+import { seedLedgerIndex } from "../src/ledger/pglite/catalog-repair.fixtures.ts";
 import type { PGliteLedgerHost } from "./pglite-ledger-host.ts";
 import type { FinancialPageActionRequest } from "../src/lib/financial/page-actions.ts";
 import { createViewPortClient, createViewPortServer } from "../src/lib/data-views/server/view-port.ts";
@@ -218,5 +219,53 @@ test("a financial view's error after its first value reaches the port as a faile
     await server.close();
     channel.port1.close();
     channel.port2.close();
+  }
+});
+
+const noViews = { subscribe: async () => async () => {} };
+
+test("a clean close is recorded beside the data directory and consumed by the next open", async () => {
+  const root = await mkdtemp(join(tmpdir(), "octopus-beak-clean-shutdown-"));
+  const dataDir = join(root, "pglite");
+  const marker = cleanShutdownMarkerPath(dataDir);
+  try {
+    const first = await startPGliteViewWorker(new MessageChannel().port1, () => noViews, { readSettings: () => ({}), dataDir });
+    assert.equal(existsSync(marker), false);
+    await first.close();
+    assert.equal(existsSync(marker), true, "a clean close leaves the record");
+
+    const second = await startPGliteViewWorker(new MessageChannel().port1, () => noViews, { readSettings: () => ({}), dataDir });
+    assert.equal(existsSync(marker), false, "an open store has no record, so a crash leaves none");
+    await second.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a store that did not close cleanly and whose corrupt index cannot be rebuilt does not open", async () => {
+  const root = await mkdtemp(join(tmpdir(), "octopus-beak-index-refusal-"));
+  const dataDir = join(root, "pglite");
+  try {
+    await seedLedgerIndex(dataDir, { duplicate: true });
+    await assert.rejects(
+      startPGliteViewWorker(new MessageChannel().port1, () => noViews, { readSettings: () => ({}), dataDir }),
+      /The local ledger did not open because corrupt indexes ledger_rows_sequence could not be rebuilt/u,
+    );
+    assert.equal(existsSync(cleanShutdownMarkerPath(dataDir)), false, "the next open checks again");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a store that closed cleanly opens without checking its indexes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "octopus-beak-index-skip-"));
+  const dataDir = join(root, "pglite");
+  try {
+    await seedLedgerIndex(dataDir, { duplicate: true });
+    await writeFile(cleanShutdownMarkerPath(dataDir), "");
+    const runtime = await startPGliteViewWorker(new MessageChannel().port1, () => noViews, { readSettings: () => ({}), dataDir });
+    await runtime.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
