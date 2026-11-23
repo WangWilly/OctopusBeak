@@ -864,6 +864,10 @@
         settingsFocus = "financial-data-deletion";
         navigateToRoute("settings");
       }}
+      onOpenSignInDataSettings={() => {
+        settingsFocus = "sign-in-data";
+        navigateToRoute("settings");
+      }}
     />
     <RouteLoadNotice state={automation} retry={() => void loadRoute("automation", { force: true })} />
   {:else}

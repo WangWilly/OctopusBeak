@@ -131,7 +131,11 @@ export type AutomationPersistenceProvider = Readonly<{
   /** Present on the App's provider; typed workflows fail closed without it. */
   pgliteWorkflow?: PGliteWorkflowRpc;
   /** Present on the App's provider: which sources the store refuses until a Canonical Reset. */
-  canonicalReset?: Readonly<{ requiredNamespaces(): Promise<readonly string[]> }>;
+  canonicalReset?: Readonly<{
+    requiredNamespaces(): Promise<readonly string[]>;
+    /** Namespaces holding a credit-card account, which a new Card identity secret would split. */
+    cardAccountNamespaces(): Promise<readonly string[]>;
+  }>;
 }>;
 
 /** Fields an update may change. Status moves only through the transition functions. */

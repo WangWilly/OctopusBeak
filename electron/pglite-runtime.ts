@@ -25,7 +25,11 @@ export type PGliteOperationalProvider = PGliteOperationalDomains & {
   financial: PGliteFinancialPort;
   /** Child workflows must use the authenticated parent endpoint. */
   pgliteWorkflow: PGliteWorkflowRpc;
-  canonicalReset: Readonly<{ requiredNamespaces(): Promise<readonly string[]> }>;
+  canonicalReset: Readonly<{
+    requiredNamespaces(): Promise<readonly string[]>;
+    /** Namespaces holding a credit-card account, which a new Card identity secret would split. */
+    cardAccountNamespaces(): Promise<readonly string[]>;
+  }>;
 };
 
 export type PGliteOperationalRuntime = Readonly<{
@@ -93,6 +97,7 @@ export function createPGliteOperationalRuntime(
     pgliteWorkflow: Object.freeze({ endpoint: childRpc.endpoint, token: childRpc.token }),
     canonicalReset: Object.freeze({
       requiredNamespaces: () => worker.financial.request("financial.canonical.resetRequired", []),
+      cardAccountNamespaces: () => worker.financial.request("financial.canonical.cardAccountNamespaces", []),
     }),
   });
   return Object.freeze({

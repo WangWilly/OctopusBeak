@@ -164,6 +164,11 @@ function unreadableCredentialState(): AutomationCredentialStateDto {
   };
 }
 
+export type SignInDataStatus = Readonly<{
+  credentialsReadable: boolean;
+  clearRequiresFinancialDataDeletion: boolean;
+}>;
+
 export function externalPrerequisiteById(prerequisiteId: string) {
   for (const task of AUTOMATION_TASKS) {
     const prerequisite = task.externalPrerequisites?.find(
@@ -311,7 +316,7 @@ export function createAutomationDesktopService<Owner>(deps: AutomationDesktopSer
               ? await credentials.refresh()
               : await credentials.read();
           } catch (error) {
-            if (block === "details") throw new Error("無法讀取登入資料");
+            // Every block degrades: the page says once that the details cannot be read and how to recover (ADR 0149).
             log.warn("automation-credential-state-read-failed", {
               code: "credential-state-unavailable",
               stage: "block",
@@ -424,6 +429,21 @@ export function createAutomationDesktopService<Owner>(deps: AutomationDesktopSer
     },
     fatalRuntimeSnapshot(): void {
       reportAutomationRuntimeFatal("renderer-resync");
+    },
+    /**
+     * Whether the stored Sign-in Details can be read, and whether clearing
+     * them now would also need a Canonical Reset: unreadable details take
+     * the Card identity secret with them, and card accounts derived from it
+     * then wait for one (ADR 0149).
+     */
+    async signInDataStatus(): Promise<SignInDataStatus> {
+      try {
+        deps.credentials.read();
+        return { credentialsReadable: true, clearRequiresFinancialDataDeletion: false };
+      } catch {
+        const holders = await provider.canonicalReset?.cardAccountNamespaces() ?? [];
+        return { credentialsReadable: false, clearRequiresFinancialDataDeletion: holders.length > 0 };
+      }
     },
     clearSignInData: () => clearAllSignInData(
       deps.collection,

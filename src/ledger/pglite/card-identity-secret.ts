@@ -43,6 +43,11 @@ function standing(recorded: string | undefined, holdsCards: boolean, current: Ca
   return "split";
 }
 
+/** Integration namespaces holding a credit-card account, which a new Card identity secret would split. */
+export async function cardAccountNamespaces(reader: Reader): Promise<readonly string[]> {
+  return [...await namespacesHoldingCards(reader)].sort();
+}
+
 async function namespacesHoldingCards(reader: Reader): Promise<ReadonlySet<string>> {
   const rows = await reader.query<{ integration_namespace: string }>(
     `SELECT DISTINCT connection.integration_namespace

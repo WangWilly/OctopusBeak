@@ -95,6 +95,7 @@ assert.deepEqual([...invokedBy.values()].sort(), [
   "settings:previewUsagePing",
   "settings:save",
   "settings:shouldAskUsageStatistics",
+  "settings:signInDataStatus",
   "spending:candidate-page",
   "spending:candidate-page-cancel",
   "spending:pairing-prewarm",

@@ -116,6 +116,8 @@
   type DataActionStatus = "idle" | "confirming" | "pending" | "done" | "error";
   let financialDeleteStatus: DataActionStatus = "idle";
   let signInClearStatus: DataActionStatus = "idle";
+  /** Unknown until read; a failed read shows nothing extra rather than a guess. */
+  let signInStatus: Awaited<ReturnType<typeof window.octopusBeak.settings.signInDataStatus>> | null = null;
   let collectStatus: "idle" | "pending" | "started" | "error" = "idle";
   let manualDeleteStatus: DataActionStatus = "idle";
   $: dataActionPending = financialDeleteStatus === "pending" || signInClearStatus === "pending" || manualDeleteStatus === "pending";
@@ -153,6 +155,7 @@
 
   onMount(() => {
     displayScaleAvailable = supportsDisplayScale(window.octopusBeak);
+    void readSignInStatus();
     shortcutModifier = isMacPlatform(navigator) ? "⌘" : "Ctrl";
     const clock = setInterval(() => (now = new Date()), 60_000);
     // Every scroll re-reads every section, so a section still in view is never
@@ -278,6 +281,9 @@
     if (target === "financial-data-deletion") {
       showSection("settings-data");
       document.getElementById("delete-financial-data")?.focus({ preventScroll: true });
+    } else if (target === "sign-in-data") {
+      showSection("settings-data");
+      document.getElementById("clear-sign-in-data")?.focus({ preventScroll: true });
     } else {
       showSection("settings-updates");
     }
@@ -407,6 +413,19 @@
     }
   }
 
+  async function readSignInStatus() {
+    try {
+      signInStatus = await window.octopusBeak.settings.signInDataStatus();
+    } catch {
+      signInStatus = null;
+    }
+  }
+
+  async function confirmClearSignInData() {
+    signInClearStatus = "confirming";
+    await readSignInStatus();
+  }
+
   async function clearSignInData() {
     signInClearStatus = "pending";
     try {
@@ -415,6 +434,7 @@
     } catch {
       signInClearStatus = "error";
     }
+    await readSignInStatus();
   }
 
   function changeDisplayScale(value: number) {
@@ -941,6 +961,9 @@
             <div class="setting-label-group">
               <span class="setting-label">{$t.settings.clearSignInData}</span>
               <small class="setting-hint">{$t.settings.clearSignInDataHint}</small>
+              {#if signInStatus && !signInStatus.credentialsReadable && signInClearStatus !== "done"}
+                <small id="sign-in-data-unreadable" class="setting-hint warning-hint" role="status">{$t.settings.signInDataUnreadable}</small>
+              {/if}
             </div>
             <div class="onboarding-setting-actions">
               {#if signInClearStatus === "done"}
@@ -955,7 +978,7 @@
                   type="button"
                   disabled={dataActionPending}
                   aria-busy={signInClearStatus === "pending"}
-                  onclick={() => (signInClearStatus = "confirming")}
+                  onclick={() => void confirmClearSignInData()}
                 >{signInClearStatus === "pending" ? $t.settings.clearingSignInData : $t.settings.clearSignInData}</button>
               {/if}
             </div>
@@ -963,6 +986,9 @@
           {#if signInClearStatus === "confirming"}
             <div class="restart-confirm" role="group" aria-labelledby="sign-in-clear-confirm">
               <p id="sign-in-clear-confirm">{$t.settings.clearSignInDataConfirm}</p>
+              {#if signInStatus?.clearRequiresFinancialDataDeletion}
+                <p id="sign-in-clear-reset-warning" class="confirm-warning">{$t.settings.clearSignInDataResetWarning}</p>
+              {/if}
               <div class="onboarding-setting-actions">
                 <button class="button" type="button" onclick={() => (signInClearStatus = "idle")}>{$t.common.cancel}</button>
                 <button id="confirm-clear-sign-in-data" class="button danger" type="button" disabled={dataActionPending} onclick={clearSignInData}>{$t.settings.clearSignInDataAction}</button>
@@ -1408,6 +1434,9 @@
     font-size: 13px;
     line-height: 1.5;
   }
+
+  .restart-confirm .confirm-warning,
+  .warning-hint { color: var(--warn); }
 
   .settings-error {
     display: flex;

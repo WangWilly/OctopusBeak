@@ -134,7 +134,7 @@ test("the credential state cache is read once at construction, before any block 
   assert.equal(credentialReads(), 1);
 });
 
-test("an unreadable credential state fails the details block and degrades every other block", async () => {
+test("an unreadable credential state degrades every block, details included", async () => {
   const { service } = harness({
     credentials: {
       ...credentialStoreForCheck(join(directory, "credentials.json")),
@@ -143,7 +143,10 @@ test("an unreadable credential state fails the details block and degrades every 
       },
     },
   });
-  await assert.rejects(service.loadBlock("details"), { message: "無法讀取登入資料" });
+  const details = await service.loadBlock("details") as unknown as {
+    data: { automation: { credentialStates: Record<string, string> } };
+  };
+  assert.ok(Object.values(details.data.automation.credentialStates).every((state) => state === "read_failed"));
 
   const list = await service.loadBlock("list") as unknown as {
     data: { automation: { credentialStates: Record<string, string> } };
@@ -279,6 +282,30 @@ test("clearing sign-in data cancels registrations, erases under the user data di
   assert.deepEqual(calls, [["registration.cancelAll"]]);
   assert.deepEqual(erased, [directory]);
   assert.equal(credentialReads(), before + 1, "the credential cache is refreshed after erasing");
+});
+
+test("the sign-in data status says when clearing unreadable details would need a Canonical Reset", async () => {
+  const readable = credentialStoreForCheck(join(directory, "credentials.json"));
+  const unreadable = { ...readable, read: () => { throw new Error("Error while decrypting the ciphertext"); } };
+  const withCardAccounts = (namespaces: readonly string[]) => ({
+    ...emptyProvider,
+    canonicalReset: { requiredNamespaces: async () => [], cardAccountNamespaces: async () => namespaces },
+  }) as unknown as AutomationDesktopServiceDeps<string>["provider"];
+
+  assert.deepEqual(
+    await harness({ credentials: readable, provider: withCardAccounts(["esun"]) }).service.signInDataStatus(),
+    { credentialsReadable: true, clearRequiresFinancialDataDeletion: false },
+    "readable details keep the Card identity secret through a clear",
+  );
+  assert.deepEqual(
+    await harness({ credentials: unreadable, provider: withCardAccounts(["esun"]) }).service.signInDataStatus(),
+    { credentialsReadable: false, clearRequiresFinancialDataDeletion: true },
+  );
+  assert.deepEqual(
+    await harness({ credentials: unreadable, provider: withCardAccounts([]) }).service.signInDataStatus(),
+    { credentialsReadable: false, clearRequiresFinancialDataDeletion: false },
+    "with no card account there is nothing to split",
+  );
 });
 
 test("a sync the person starts reports its sources once its batch settles, and exchange rates alone report nothing", async () => {

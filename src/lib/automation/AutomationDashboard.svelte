@@ -4,6 +4,7 @@
   import RunHistoryDialog from "$lib/automation/RunHistoryDialog.svelte";
   import ErrorReportDialog from "$lib/automation/ErrorReportDialog.svelte";
   import StructureReportDialog from "$lib/automation/StructureReportDialog.svelte";
+  import CredentialsUnreadableNotice from "$lib/automation/CredentialsUnreadableNotice.svelte";
   import { sourceLogo } from "$lib/institutions/institutions.ts";
   import { onDestroy, onMount, tick } from "svelte";
   import { slide } from "svelte/transition";
@@ -124,6 +125,7 @@ import type {
   export let signInSettingsGroupId: string | null = null;
   export let onSignInSettingsOpened: () => void = () => {};
   export let onOpenFinancialDataSettings: () => void = () => {};
+  export let onOpenSignInDataSettings: () => void = () => {};
   export let onOnboardingWorkflowStarting: (
     taskId: string,
     credentialGroupId: string | null,
@@ -936,6 +938,9 @@ import type {
     {@const listTaskStages = [{ id: "sync", title: $t.automation.syncStage, tasks: listAutomation.tasks }]}
     {@const listParallelTaskIds = new Set(listAutomation.parallelRunnableTaskIds)}
     {@const multiStage = listTaskStages.length > 1}
+    {#if Object.values(listAutomation.credentialStates ?? {}).includes("read_failed")}
+      <CredentialsUnreadableNotice onOpenSettings={onOpenSignInDataSettings} />
+    {/if}
     <section class="card workflow-card" class:single-stage={!multiStage} aria-label={$t.automation.taskQueue}>
       {#each listTaskStages as stage, stageIndex}
         <section class="stage-section">

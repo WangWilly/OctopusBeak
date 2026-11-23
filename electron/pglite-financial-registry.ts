@@ -48,6 +48,7 @@ import { dateInTimeZone } from "../src/lib/shared-ledger/twd-valuation.ts";
 import { DEFAULT_SYSTEM_TIMEZONE } from "../src/lib/time/timezone.ts";
 import type { PGliteCanonicalCommitOptions } from "../src/ledger/pglite/canonical-source-store.ts";
 import type { CardIdentitySecret } from "../src/lib/shared-identity/card-identity-secret.ts";
+import { cardAccountNamespaces } from "../src/ledger/pglite/card-identity-secret.ts";
 import {
   readAssetsPage,
   readLiabilitiesPage,
@@ -152,6 +153,7 @@ export function createPGliteFinancialRegistry(
     "financial.canonical.reset": () => resetPGliteCanonicalStore(store),
     "financial.canonical.resetRequired": () =>
       canonicalResetRequiredNamespaces(store, options.cardIdentitySecret?.()),
+    "financial.canonical.cardAccountNamespaces": () => cardAccountNamespaces(store),
   });
 }
 

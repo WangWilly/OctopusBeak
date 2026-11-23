@@ -136,7 +136,7 @@ export type AutomationActionResult =
   | { ok: true; closed: boolean };
 
 /** The part of Settings a notification or another page opens. */
-export type SettingsFocus = "financial-data-deletion" | "app-updates";
+export type SettingsFocus = "financial-data-deletion" | "sign-in-data" | "app-updates";
 
 /** Where the App opens when the person clicks one of its notifications. */
 export type NotificationTarget =
@@ -243,6 +243,8 @@ export type OctopusBeakApi = {
     deleteFinancialData(): Promise<void>;
     /** Sign-in Erasure: every source's sign-in details and sessions. */
     clearSignInData(): Promise<void>;
+    /** Whether the stored Sign-in Details can be read, and whether clearing them would need a Canonical Reset (ADR 0149). */
+    signInDataStatus(): Promise<Readonly<{ credentialsReadable: boolean; clearRequiresFinancialDataDeletion: boolean }>>;
     /** Starts every enabled source, as scheduled collection would. */
     collectAllSources(): Promise<AutomationRunManyResult>;
   };
