@@ -1606,7 +1606,7 @@ async function persistAccountIdentifier(
   validateCanonicalSourceAccountNumber(identifier);
   await txQuery(
     transaction,
-    // Only the first sighting of an identifier is kept: account identity
+    // Only the first admitted sighting of an identifier is kept: account identity
     // continuity (ADR 0049) asks only whether one exists, and a row per
     // capture would grow with every sync (ADR 0152).
     `INSERT INTO financial_account_identifier_observations(
