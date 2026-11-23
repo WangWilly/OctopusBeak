@@ -34,6 +34,7 @@
     "desktop:strip-types-probe": "ELECTRON_RUN_AS_NODE=1 electron --experimental-strip-types electron/strip-types-probe.ts",
     "check:actions-pinned": "node scripts/check-actions-pinned.mjs",
     "check:package-lock": "node scripts/check-package-lock.mjs",
+    "check:pglite-resync-growth": "node --no-warnings --experimental-strip-types src/ledger/pglite/resync-growth-performance.ts",
     "check:pglite-spending-performance": "node --no-warnings --experimental-strip-types src/ledger/pglite/spending-performance.ts",
     "check:pglite-pairing-ui-performance": "node --no-warnings --experimental-strip-types scripts/check-pglite-pairing-ui-performance.mjs",
     "check:pglite-electron-ipc-performance": "node --no-warnings --experimental-strip-types scripts/check-pglite-electron-ipc-performance.mjs",

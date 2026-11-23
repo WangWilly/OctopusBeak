@@ -6,6 +6,8 @@ Accepted amendment: [ADR 0055](./0055-revisable-payload-fields-continue-admitted
 
 Accepted amendment: [ADR 0144](./0144-a-store-removes-derived-kinds-a-refresh-wrote-again-unchanged.md) adds a one-time hard delete of derived Kind assertions a refresh wrote again unchanged, keeping the first of each run so the Kind at every commit stays the same.
 
+Accepted amendment: [ADR 0152](./0152-an-unchanged-re-sync-reuses-stored-source-records.md) lets a later Capture reuse an unchanged stored Source Record through its manifest instead of storing another copy.
+
 Status: accepted
 
 OctopusBeak admits canonical financial data only through total, versioned integration contracts; keeps identity source-scoped and immutable; and preserves append-only Source, Derived, and User Assertion lineage without conflict states or manual financial correction. This sacrifices cross-source reconciliation, permissive ingestion, raw replay, and repair-in-place so current and historical projections never depend on guessed identity, time, status, or precedence.
