@@ -853,6 +853,51 @@ test("complete deposit ranges withdraw omitted prior source assertions without d
   }
 });
 
+test("withdrawal by omission counts a record a prior capture reused through its manifest (ADR 0152)", async () => {
+  const empty = (captureId: string): PGliteCanonicalDepositCommitRequest => {
+    const seed = depositRequest(captureId);
+    return {
+      ...seed,
+      capture: { ...seed.capture, pages: seed.capture.pages.map((page) => ({ ...page, rowCount: 0 })), records: [] },
+    };
+  };
+  const withdrawnBy = async (withManifest: boolean): Promise<string[]> => {
+    const store = new PGliteStore(await createTestPGlite("ledger"));
+    try {
+      // The record is owned by a capture whose window differs from the later ones,
+      // so only the reusing capture's manifest ties it to their window.
+      const owner = depositRequest("manifest-owner");
+      await commitPGliteCanonicalDepositCapture(store, {
+        ...owner,
+        capture: { ...owner.capture, scope: { ...owner.capture.scope, startDate: "2026-09-21" } },
+      }, { clock: () => 400 });
+      await commitPGliteCanonicalDepositCapture(store, empty("manifest-reuser"), { clock: () => 401 });
+      if (withManifest) {
+        await store.query(
+          `INSERT INTO capture_source_record_manifests(capture_id, source_record_ids, record_count, commit_id)
+           SELECT reuser.capture_id, decode(repeat('00', 16), 'hex') || owned.source_record_id, 2, reuser.commit_id
+             FROM source_captures reuser, source_records owned
+             JOIN source_captures owner ON owner.capture_id = owned.capture_id
+            WHERE reuser.capture_key = $1 AND owner.capture_key = $2`,
+          ["manifest-reuser", "manifest-owner"],
+        );
+      }
+      await commitPGliteCanonicalDepositCapture(store, empty("manifest-omitter"), { clock: () => 402 });
+      return (await store.query<{ capture_key: string }>(
+        `SELECT capture.capture_key
+           FROM assertion_transitions transition
+           JOIN source_captures capture ON capture.capture_id = transition.capture_id
+          WHERE transition.event_kind = 'withdrawn'
+          ORDER BY capture.capture_key`,
+      )).rows.map((row) => row.capture_key);
+    } finally {
+      await store.close();
+    }
+  };
+  assert.deepEqual(await withdrawnBy(false), [], "without a manifest no capture with the same window saw the record");
+  assert.deepEqual(await withdrawnBy(true), ["manifest-omitter"], "the reusing capture saw the record, so omitting it withdraws it");
+});
+
 test("overview preserves investment holdings, transactions, margin lineage, and group selectors", async () => {
   const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);

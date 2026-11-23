@@ -47,6 +47,10 @@ test("a Canonical Reset empties financial state, keeps rates and run history, an
     const fresh = await rowCounts(store);
     const provider = createPgliteOperationalProvider(store);
     await commitCathay(store);
+    await store.query(
+      `INSERT INTO capture_source_record_manifests(capture_id, source_record_ids, record_count, commit_id)
+       SELECT capture_id, source_record_id, 1, commit_id FROM source_records LIMIT 1`,
+    );
     await provider.exchangeRates.upsertExchangeRates([
       { rateDate: "2026-10-09", currency: "USD", twdPerUnit: 32.1, source: "synthetic", fetchedAt: "2026-10-09T00:00:00.000Z" },
     ]);
@@ -67,6 +71,7 @@ test("a Canonical Reset empties financial state, keeps rates and run history, an
     });
     const before = await rowCounts(store);
     assert.ok(before.financial_accounts! > 0 && before.preview_accounts! > 0, "the store held financial and preview data");
+    assert.equal(before.capture_source_record_manifests, 1, "the store held a capture manifest");
     const versionBefore = await knowledgeVersion(store);
 
     await resetPGliteCanonicalStore(store);

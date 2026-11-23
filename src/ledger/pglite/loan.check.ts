@@ -404,6 +404,67 @@ test("PGlite relation command admits scoped repayment evidence and deduplicates 
   }
 });
 
+test("counterparty evidence finds a record its capture reused through the manifest (ADR 0152)", async () => {
+  const store = new PGliteStore(await createTestPGlite("ledger"));
+  try {
+    const capture = loanRequest("loan-evidence-owner").capture;
+    await commitPGliteCanonicalLoanCapture(store, { capture }, { clock: () => 100 });
+    // No writer reuses records yet, so the reusing capture and its manifest are written by hand.
+    await store.query(
+      `INSERT INTO source_captures(
+         capture_id, capture_key, source_connection_id, identity_epoch_id, authority_route,
+         source_subject_id, stream, record_kind, source_account_key, observed_at,
+         scope_start, scope_end, completeness, completeness_basis, completeness_rule_version, commit_id
+       )
+       SELECT decode(repeat('5a', 16), 'hex'), 'loan-evidence-reuser', source_connection_id, identity_epoch_id,
+              authority_route, source_subject_id, stream, record_kind, source_account_key, observed_at,
+              scope_start, scope_end, completeness, completeness_basis, completeness_rule_version, commit_id
+         FROM source_captures WHERE capture_key = $1`,
+      [capture.captureId],
+    );
+    const request = {
+      sourceConnectionKey: capture.identity.sourceConnectionKey,
+      observedAt: capture.observedAt,
+      counterpartyEvidence: [{
+        captureId: "loan-evidence-reuser",
+        sourceRecordKey: capture.records[0]!.sourceRecordKey,
+        sourceConnectionKey: capture.identity.sourceConnectionKey,
+        identityEpochKey: capture.identity.identityEpochKey,
+        accountKey: capture.identity.accountKey,
+        accountValue: "123456789012",
+        role: "beneficiary" as const,
+        purpose: "loan_repayment",
+        evidenceKind: "repayment-mandate" as const,
+        contractVersion: "loan/canonical/v2.fubon",
+      }],
+    };
+    await assert.rejects(
+      resolvePGliteCanonicalLoanRepaymentRelations(store, request, { clock: () => 101 }),
+      /source record was not found/u,
+      "a capture that neither owns nor reused the record has no evidence for it",
+    );
+    await store.query(
+      `INSERT INTO capture_source_record_manifests(capture_id, source_record_ids, record_count, commit_id)
+       SELECT reuser.capture_id, owned.source_record_id, 1, reuser.commit_id
+         FROM source_captures reuser, source_records owned
+         JOIN source_captures owner ON owner.capture_id = owned.capture_id
+        WHERE reuser.capture_key = 'loan-evidence-reuser' AND owner.capture_key = $1`,
+      [capture.captureId],
+    );
+    await resolvePGliteCanonicalLoanRepaymentRelations(store, request, { clock: () => 102 });
+    const evidence = await store.query<{ owner: string; cited_by: string }>(
+      `SELECT owner.capture_key AS owner, citing.capture_key AS cited_by
+         FROM transaction_counterparty_account_evidence evidence
+         JOIN source_records record ON record.source_record_id = evidence.source_record_id
+         JOIN source_captures owner ON owner.capture_id = record.capture_id
+         JOIN source_captures citing ON citing.capture_id = evidence.capture_id`,
+    );
+    assert.deepEqual(evidence.rows, [{ owner: "loan-evidence-owner", cited_by: "loan-evidence-reuser" }]);
+  } finally {
+    await store.close();
+  }
+});
+
 test("PGlite loan settlement groups keep member history and roll back cancelled replacement", async () => {
   const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);

@@ -19,6 +19,7 @@ import {
 import { refreshPGliteCurrentProjectionInTransaction } from "./projection.ts";
 import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
 import { insertPGliteCanonicalCommit } from "./canonical-commit.ts";
+import { captureSourceRecordIdsSql } from "./capture-manifest.ts";
 import { CASH_FLOW_TRANSFER_WINDOW_DAYS, dayGap } from "../canonical/cash-flow-transfer-rules.ts";
 import { COUNTED_ACCOUNT_SQL, readPGliteCoveredAccountIds } from "./direct-source-precedence.ts";
 import { readMaicoinStatementLog } from "./maicoin-statement-log.ts";
@@ -861,10 +862,11 @@ async function admitLoanCounterpartyEvidence(
     || admitted.identityEpochKey !== capture.epoch_key)
     throw new Error("Counterparty evidence source scope does not match its capture.");
   const captureId = bytes(capture.capture_id, "Evidence capture");
-  const sourceRecord = await first<Row>(transaction,
-    `SELECT source_record_id FROM source_records
-      WHERE capture_id = ? AND occurrence_key = ?`,
+  const sourceRecords = await query<Row>(transaction,
+    `${captureSourceRecordIdsSql("$1::bytea", "$2::text")} LIMIT 2`,
     [captureId, admitted.sourceRecordKey]);
+  if (sourceRecords.length > 1) throw new Error("Counterparty evidence source record is ambiguous in its capture.");
+  const sourceRecord = sourceRecords[0];
   if (!sourceRecord) throw new Error("Counterparty evidence source record was not found.");
   const sourceRecordId = bytes(sourceRecord.source_record_id, "Evidence source record");
   const account = await first<Row>(transaction,
