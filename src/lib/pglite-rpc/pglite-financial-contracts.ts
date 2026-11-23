@@ -80,15 +80,18 @@ export type PGliteFinancialLane = "interactive" | "background" | "latest-wins";
 
 /**
  * Whether a workflow may call an operation over the child socket (ADR 0148).
- * A "commit" is a canonical write, which must also pass the run's commit
- * admission. The child socket refuses an operation without this flag.
+ * The child socket refuses an operation without this flag.
+ * - "commit": a canonical write of new evidence; refused unless the run's
+ *   execution is current and its Collection scope is unchanged.
+ * - "resolve": a canonical write derived only from rows already admitted,
+ *   such as relation resolution; refused only when the run is not current.
  */
-export type WorkflowAccess = "call" | "commit";
+export type WorkflowAccess = "call" | "commit" | "resolve";
 
-/** A commit is gated inside its scheduled task, which a latest-wins read never runs, so a commit cannot be latest-wins. */
+/** A gated write is checked inside its scheduled task, which a latest-wins read never runs, so it cannot be latest-wins. */
 type FinancialOperationFlags =
   | Readonly<{ lane: PGliteFinancialLane; workflow?: "call" }>
-  | Readonly<{ lane: Exclude<PGliteFinancialLane, "latest-wins">; workflow: "commit" }>;
+  | Readonly<{ lane: Exclude<PGliteFinancialLane, "latest-wins">; workflow: "commit" | "resolve" }>;
 
 type FinancialOperationContract<Args extends readonly unknown[], Result> = FinancialOperationFlags & Readonly<{
   accepts(args: readonly unknown[]): boolean;
@@ -299,11 +302,11 @@ export const PGLITE_FINANCIAL_CONTRACTS = Object.freeze({
   "financial.loanRelations.resolve": operation<[request: PGliteCanonicalLoanRelationResolutionRequest], PGliteCanonicalLoanRelationResolutionResult>(
     (args) => args.length === 1 && plainRecord(args[0])
       && typeof (args[0] as Record<string, unknown>).sourceConnectionKey === "string",
-    { lane: "background", workflow: "commit" },
+    { lane: "background", workflow: "resolve" },
   ),
   "financial.investmentRelations.resolve": operation<[request: PGliteCanonicalInvestmentRelationResolutionRequest], PGliteCanonicalInvestmentRelationResolutionResult>(
     (args) => args.length === 0 || (args.length === 1 && plainRecord(args[0])),
-    { lane: "background", workflow: "commit" },
+    { lane: "background", workflow: "resolve" },
   ),
   "financial.loanRelations.current": operation<[options?: { sourceConnectionKey?: string; integrationNamespace?: string }], readonly Readonly<Record<string, unknown>>[]>(
     (args) => args.length === 0 || (args.length === 1 && plainRecord(args[0])),

@@ -223,6 +223,38 @@ test("a correlated canonical write must pass the commit assertion while reads sk
   }
 });
 
+test("relation resolution survives a changed scope but not a run that is no longer current", async () => {
+  const served: string[] = [];
+  const registry = {
+    "financial.loanRelations.resolve": async () => {
+      served.push("loan");
+      return { outcome: "unchanged" };
+    },
+    "financial.deposit.commit": async () => {
+      served.push("deposit");
+      return {};
+    },
+  } as unknown as PGliteFinancialRegistry;
+  let admission: "scope-changed" | "run-not-current" = "scope-changed";
+  const [clientPort, serverPort] = memoryPair();
+  const server = createPGliteFinancialRpcServer(serverPort, createPGliteFinancialLocalPort(registry), {
+    isCommitAdmissible: () => admission,
+  });
+  const client = createPGliteFinancialRpcClient(clientPort, undefined, { workflowId: "fubon-loan-statements", taskRunId: "run-1" });
+  const refused = (error: unknown) => error instanceof PGliteFinancialError && error.category === "refused";
+  try {
+    const resolve = () => client.request("financial.loanRelations.resolve", [{ sourceConnectionKey: "source" }] as never);
+    assert.deepEqual(await resolve(), { outcome: "unchanged" }, "a changed scope still resolves admitted rows");
+    await assert.rejects(client.request("financial.deposit.commit", [{ capture: {} }] as never), refused);
+    admission = "run-not-current";
+    await assert.rejects(resolve(), refused);
+    assert.deepEqual(served, ["loan"]);
+  } finally {
+    client.close();
+    await server.close();
+  }
+});
+
 test("a gated server refuses a canonical write that names no run, without asking the gate", async () => {
   const served: string[] = [];
   const registry = {

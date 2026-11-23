@@ -289,6 +289,7 @@ test("a refusal names its cause, and a disallowed operation names itself", async
     const ports = memoryPair();
     servers.push(createPGliteFinancialRpcServer(ports[1], createPGliteFinancialLocalPort({
       "financial.deposit.commit": async () => ({}),
+      "financial.loanRelations.resolve": async () => ({ outcome: "unchanged" }),
     } as unknown as PGliteFinancialRegistry), {
       isCommitAdmissible: gate,
       serves: (operation) => operation !== "financial.canonical.reset",
@@ -318,16 +319,22 @@ test("a refusal names its cause, and a disallowed operation names itself", async
       );
     }
     await assert.rejects(
+      financialFor("run-ended").request("financial.loanRelations.resolve", [{ sourceConnectionKey: "source" }] as never),
+      (error: unknown) => error instanceof PGliteFinancialError && error.category === "refused",
+    );
+    await assert.rejects(
       financialFor("run-live").request("financial.canonical.reset", []),
       (error: unknown) => error instanceof PGliteFinancialError && error.code === "not-allowed",
     );
     const records = (await readFile(path, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as Record<string, string>);
-    assert.deepEqual(records.map(({ taskRunId, source, errorCode, operation }) => ({ taskRunId, source, errorCode, operation })), [
-      { taskRunId: "run-ended", source: "financial-rpc", errorCode: "run-not-current", operation: "financial.deposit.commit" },
-      { taskRunId: "run-ended", source: "operational-rpc", errorCode: "run-not-current", operation: "preview.write" },
-      { taskRunId: "run-edited", source: "financial-rpc", errorCode: "collection-scope-changed", operation: "financial.deposit.commit" },
-      { taskRunId: "run-edited", source: "operational-rpc", errorCode: "collection-scope-changed", operation: "preview.write" },
-      { taskRunId: "run-live", source: "financial-rpc", errorCode: "operation-not-allowed", operation: "financial.canonical.reset" },
+    assert.deepEqual(records.map(({ taskRunId, source, errorCode, operation, stage }) => ({ taskRunId, source, errorCode, operation, stage })), [
+      { taskRunId: "run-ended", source: "financial-rpc", errorCode: "run-not-current", operation: "financial.deposit.commit", stage: "commit" },
+      { taskRunId: "run-ended", source: "operational-rpc", errorCode: "run-not-current", operation: "preview.write", stage: undefined },
+      { taskRunId: "run-edited", source: "financial-rpc", errorCode: "collection-scope-changed", operation: "financial.deposit.commit", stage: "commit" },
+      { taskRunId: "run-edited", source: "operational-rpc", errorCode: "collection-scope-changed", operation: "preview.write", stage: undefined },
+      // Relation resolution is not the commit stage; its operation names it.
+      { taskRunId: "run-ended", source: "financial-rpc", errorCode: "run-not-current", operation: "financial.loanRelations.resolve", stage: undefined },
+      { taskRunId: "run-live", source: "financial-rpc", errorCode: "operation-not-allowed", operation: "financial.canonical.reset", stage: undefined },
     ]);
   } finally {
     for (const client of clients) client.close();

@@ -244,9 +244,12 @@ export function createPGliteFinancialRpcServer(
       ? joinLatestRead(operation, args, controller.signal)
       : scheduler.schedule(contract.lane, async () => {
         if (controller.signal.aborted) throw new Error("PGlite financial operation was cancelled before execution.");
-        if (isCommitAdmissible && contract.workflow === "commit") {
+        if (isCommitAdmissible && (contract.workflow === "commit" || contract.workflow === "resolve")) {
           const admission = workflowWriteAdmission(isCommitAdmissible, diagnosticContext);
-          if (admission !== "admitted") throw new RefusedWorkflowWrite(admission);
+          // A resolution derives rows only from evidence admitted earlier, so a changed scope does not stop it.
+          if (admission !== "admitted" && (contract.workflow === "commit" || admission === "run-not-current")) {
+            throw new RefusedWorkflowWrite(admission);
+          }
         }
         return financial.request(operation, args as never, { signal: controller.signal });
       });
@@ -264,12 +267,11 @@ export function createPGliteFinancialRpcServer(
             workflowId: diagnosticContext.workflowId,
             taskRunId: diagnosticContext.taskRunId,
             source: "financial-rpc",
-            errorCode: error instanceof RefusedWorkflowWrite
-              ? refusalDiagnosticCode(error.admission)
-              : error instanceof PGliteFinancialError && error.category === "refused"
-                ? "collection-scope-changed"
-                : "workflow-failed",
-            stage: operation === "financial.source.admit" ? "validation" : "commit",
+            errorCode: error instanceof RefusedWorkflowWrite ? refusalDiagnosticCode(error.admission) : "workflow-failed",
+            // Relation resolution has no stage in the workflow stage vocabulary; its operation names it.
+            ...(contract.workflow === "resolve" ? {} : {
+              stage: operation === "financial.source.admit" ? "validation" as const : "commit" as const,
+            }),
             operation,
             reason: failureReason(error),
             safeError: diagnosticError,

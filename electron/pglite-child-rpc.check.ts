@@ -316,12 +316,15 @@ test("the workflow surface is exactly what workflows call", () => {
       "financial.deposit.commit",
       "financial.einvoice.commit",
       "financial.investment.commit",
-      "financial.investmentRelations.resolve",
       "financial.loan.commit",
-      "financial.loanRelations.resolve",
       "financial.source.commit",
     ],
-    "every canonical write is gated, relation resolution included",
+    "every canonical write of new evidence is gated on the run's scope",
+  );
+  assert.deepEqual(
+    [...WORKFLOW_FINANCIAL_OPERATIONS].filter((operation) => PGLITE_FINANCIAL_CONTRACTS[operation].workflow === "resolve").sort(),
+    ["financial.investmentRelations.resolve", "financial.loanRelations.resolve"],
+    "relation resolution is gated on the run being current",
   );
   assert.deepEqual(
     [...WORKFLOW_OPERATIONAL_OPERATIONS].filter((operation) => PGLITE_OPERATIONAL_CONTRACTS[operation].workflow === "write").sort(),

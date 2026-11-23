@@ -27,7 +27,11 @@ The socket also served the whole financial and operational registries. A workflo
 
 Otherwise the execution's launched scope decides, as ADR 0058 says.
 
-Every canonical write is gated, including relation resolution. `financial.loanRelations.resolve` and `financial.investmentRelations.resolve` write a `canonical_commits` row and relation, event and settlement-group rows, so they are commits too. A workflow run resolves relations after an item commits, and treats a failure there as a warning on the committed item. A refused resolution therefore leaves the item committed with a relation warning, and the run's next commit is refused and stops the run. A canonical refusal keeps the `refused` category.
+Every canonical write is gated, but relation resolution is gated less strictly. `financial.loanRelations.resolve` and `financial.investmentRelations.resolve` write a `canonical_commits` row and relation, event and settlement-group rows. They derive those rows only from items the store has already admitted, so they cannot put new data under a changed source.
+
+A workflow run resolves an item's relations right after the item commits, and treats a failure there as a warning that nothing outside the run reads. If a changed scope refused resolution, the run's last item could commit without its repayment or funding relations. The run would end `completed`, and if the person turned the source off, no later run would resolve them.
+
+So a resolver is refused only when the run is not current. A changed scope lets it run, and a stale thread stays blocked. A canonical refusal keeps the `refused` category. A resolver's diagnostic has no stage, because the workflow stage vocabulary has no relation-resolution stage; its operation name identifies it.
 
 Run-scoped operational writes are gated the same way. They are `preview.write`, `maicoin.startRun`, `maicoin.appendSnapshots` and `maicoin.appendStatementRows`. Exchange rates are global, not one source's data, but `exchangeRates.upsertExchangeRates` is gated too. The exchange-rate task has no credential group, so its scope never changes and the gate only stops a run that is no longer current. The next scheduled run writes the same rates again. A refused operational write fails with a new `refused` operational code.
 
@@ -35,7 +39,7 @@ Two operational calls stay ungated. `maicoin.finishRun` closes the sync-run row 
 
 **A refusal records its cause.** The financial and operational RPC servers record a refusal's diagnostic as `collection-scope-changed` only when the scope changed. Every other refusal is recorded as `run-not-current`. A run-not-current refusal never reaches a person-facing outcome. Nothing reaches the run's owner for an unknown run or a request without identity. For a run with no current execution, the worker's supervisor has already settled and drops the worker's host calls, so the run does not record the refused Commit attempt. An operation the socket does not serve records `operation-not-allowed` with the operation's name.
 
-**A commit cannot be latest-wins.** The gate runs inside the scheduled task, which a coalesced latest-wins read never runs. The contract flags' type therefore allows `workflow: "commit"` only on the interactive and background lanes.
+**A gated write cannot be latest-wins.** The gate runs inside the scheduled task, which a coalesced latest-wins read never runs. The contract flags' type therefore allows `workflow: "commit"` and `workflow: "resolve"` only on the interactive and background lanes.
 
 No live run legitimately commits without a current execution:
 
@@ -47,12 +51,13 @@ No live run legitimately commits without a current execution:
 
 So the change has no exception for recovery.
 
-**A contract declares whether a workflow may call it.** A financial contract's `workflow` flag is `"call"` or `"commit"`. `"commit"` replaces `canonicalCommit: true` and also subjects the operation to write admission. An operational contract's flag is `"call"` or `"write"`, and `"write"` is gated the same way. `WORKFLOW_FINANCIAL_OPERATIONS` and `WORKFLOW_OPERATIONAL_OPERATIONS` are derived from the marks, as `RENDERER_FINANCIAL_OPERATIONS` is. The child socket builds its two servers with these sets. It refuses every other operation with a new `not-allowed` code, before the operation reaches the worker. The worker's own servers and the renderer keep the whole registry.
+**A contract declares whether a workflow may call it.** A financial contract's `workflow` flag is `"call"`, `"commit"` or `"resolve"`. `"commit"` replaces `canonicalCommit: true` and also subjects the operation to write admission. `"resolve"` requires only a current run. An operational contract's flag is `"call"` or `"write"`, and `"write"` is gated the same way. `WORKFLOW_FINANCIAL_OPERATIONS` and `WORKFLOW_OPERATIONAL_OPERATIONS` are derived from the marks, as `RENDERER_FINANCIAL_OPERATIONS` is. The child socket builds its two servers with these sets. It refuses every other operation with a new `not-allowed` code, before the operation reaches the worker. The worker's own servers and the renderer keep the whole registry.
 
 The workflow operations are the ones `childRpcCapabilities` and the PGlite workflow client call:
 
 - Financial calls: `financial.overview.current`, `financial.source.admit`, `financial.tdccFundAccounts.list`, `financial.accountIdentity.continuity`.
-- Financial commits: `financial.source.commit`, `financial.deposit.commit`, `financial.balance.capture`, `financial.einvoice.commit`, `financial.creditCard.commit`, `financial.creditCard.balance`, `financial.loan.commit`, `financial.investment.commit`, `financial.loanRelations.resolve`, `financial.investmentRelations.resolve`.
+- Financial commits: `financial.source.commit`, `financial.deposit.commit`, `financial.balance.capture`, `financial.einvoice.commit`, `financial.creditCard.commit`, `financial.creditCard.balance`, `financial.loan.commit`, `financial.investment.commit`.
+- Financial resolutions (refused only when the run is not current): `financial.loanRelations.resolve`, `financial.investmentRelations.resolve`.
 - Operational calls: `exchangeRates.readExchangeRates`, `maicoin.finishRun`.
 - Operational writes: `exchangeRates.upsertExchangeRates`, `maicoin.startRun`, `maicoin.appendSnapshots`, `maicoin.appendStatementRows`, `preview.write`.
 
