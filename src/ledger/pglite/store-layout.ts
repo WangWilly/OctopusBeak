@@ -1,5 +1,6 @@
 import type { PGlite } from "@electric-sql/pglite";
 import { applyPgliteBaseline } from "./baseline.ts";
+import { applyPgliteCaptureManifestSchema } from "./capture-manifest.ts";
 import { applyPgliteCardIdentitySecretSchema } from "./card-identity-secret.ts";
 import { applyPgliteCashFlowTransferSchema } from "./cash-flow-transfer.ts";
 import { applyPgliteKindDuplicateCleanup } from "./kind-duplicate-cleanup.ts";
@@ -15,14 +16,15 @@ import { PGliteStore } from "./transaction.ts";
 
 /**
  * Install everything a financial store holds, in order, and return the store.
- * Every store the app opens has the canonical ledger, operational, Maicoin,
- * preview, Manual Asset and Cash-flow transfer tables, so a page reads all
- * of them (ADR 0102).
+ * Every store the app opens has the canonical ledger with its capture
+ * manifests (ADR 0152), and the operational, Maicoin, preview, Manual Asset
+ * and Cash-flow transfer tables, so a page reads all of them (ADR 0102).
  * Each step verifies its manifest and is safe to repeat on an existing store.
  */
 export async function installFinancialStore(db: PGlite): Promise<PGliteStore> {
   await applyPgliteBaseline(db);
   const store = new PGliteStore(db);
+  await applyPgliteCaptureManifestSchema(store);
   await applyPgliteOperationalBaseline(store);
   await applyPgliteMaicoinOperationalSchema(store);
   await applyPglitePreviewFinancialDataSchema(store);

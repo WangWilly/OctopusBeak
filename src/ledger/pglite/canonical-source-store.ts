@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
+import { captureSourceRecordIdsSql } from "./capture-manifest.ts";
 import { insertPGliteCanonicalCommit } from "./canonical-commit.ts";
 import type {
   PGliteCanonicalProjectionHook,
@@ -1391,18 +1392,21 @@ async function withdrawOmittedSourceAssertions(
     occurrence_key: string | null;
   }>(
     transaction,
+    // A capture holds one scope, so the records a prior scope saw are its
+    // capture's records, owned or reused (ADR 0152).
     `SELECT DISTINCT assertion.assertion_id, assertion.transaction_id, source_record.occurrence_key
-       FROM assertions assertion
-       JOIN assertion_provenance provenance
-         ON provenance.assertion_id = assertion.assertion_id
-       JOIN source_records source_record
-         ON source_record.source_record_id = provenance.source_record_id
-       JOIN source_record_scopes source_scope
-         ON source_scope.source_record_id = source_record.source_record_id
-       JOIN capture_scopes prior_scope
-         ON prior_scope.scope_id = source_scope.scope_id
+       FROM capture_scopes prior_scope
        JOIN source_captures prior_capture
          ON prior_capture.capture_id = prior_scope.capture_id
+       JOIN LATERAL (${captureSourceRecordIdsSql("prior_scope.capture_id")}) member ON TRUE
+       JOIN source_records source_record
+         ON source_record.source_record_id = member.source_record_id
+       JOIN source_record_scopes source_scope
+         ON source_scope.source_record_id = source_record.source_record_id
+       JOIN assertion_provenance provenance
+         ON provenance.source_record_id = source_record.source_record_id
+       JOIN assertions assertion
+         ON assertion.assertion_id = provenance.assertion_id
       WHERE assertion.origin = 'source'
         AND assertion.field_name = 'transaction_revision'
         AND source_scope.account_id = ?

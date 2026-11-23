@@ -46,7 +46,7 @@ Copies already stored stay as they are. A compaction of existing duplicates will
 
 - ADR 0008's "each Source Record belongs to exactly one Capture" becomes "each Source Record is owned by exactly one Capture, and later Captures may reuse it through their manifest".
 - The change lands in steps, each with its own checks:
-  1. a manifest with a membership helper;
+  1. a manifest with a membership helper (done: `capture_source_record_manifests` and `captureSourceRecordIdsSql`);
   2. billed members by transaction;
   3. reuse in the generic store;
   4. credit-card domain rows written only on change, after the check gains a mode that drives the credit-card command;

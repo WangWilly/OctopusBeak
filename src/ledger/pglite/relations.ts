@@ -19,6 +19,7 @@ import {
 import { refreshPGliteCurrentProjectionInTransaction } from "./projection.ts";
 import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
 import { insertPGliteCanonicalCommit } from "./canonical-commit.ts";
+import { captureSourceRecordIdsSql } from "./capture-manifest.ts";
 import { CASH_FLOW_TRANSFER_WINDOW_DAYS, dayGap } from "../canonical/cash-flow-transfer-rules.ts";
 import { COUNTED_ACCOUNT_SQL, readPGliteCoveredAccountIds } from "./direct-source-precedence.ts";
 import { readMaicoinStatementLog } from "./maicoin-statement-log.ts";
@@ -862,8 +863,11 @@ async function admitLoanCounterpartyEvidence(
     throw new Error("Counterparty evidence source scope does not match its capture.");
   const captureId = bytes(capture.capture_id, "Evidence capture");
   const sourceRecord = await first<Row>(transaction,
-    `SELECT source_record_id FROM source_records
-      WHERE capture_id = ? AND occurrence_key = ?`,
+    `SELECT source_record.source_record_id
+       FROM source_captures capture
+       JOIN LATERAL (${captureSourceRecordIdsSql("capture.capture_id")}) member ON TRUE
+       JOIN source_records source_record ON source_record.source_record_id = member.source_record_id
+      WHERE capture.capture_id = ? AND source_record.occurrence_key = ?`,
     [captureId, admitted.sourceRecordKey]);
   if (!sourceRecord) throw new Error("Counterparty evidence source record was not found.");
   const sourceRecordId = bytes(sourceRecord.source_record_id, "Evidence source record");

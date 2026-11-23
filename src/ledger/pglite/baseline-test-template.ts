@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { PGlite } from "@electric-sql/pglite";
 import { applyPgliteBaseline } from "./baseline.ts";
+import { applyPgliteCaptureManifestSchema } from "./capture-manifest.ts";
 import { applyPgliteOperationalBaseline } from "./operational.ts";
 import { installFinancialStore } from "./store-layout.ts";
 import { PGliteStore } from "./transaction.ts";
@@ -32,7 +33,11 @@ async function installTemplate(baseline: TestBaseline): Promise<Blob> {
     if (baseline === "full") {
       await installFinancialStore(seed);
     } else {
-      if (baseline !== "operational") await applyPgliteBaseline(seed);
+      // The ledger's commit path reads capture manifests, so every ledger shape carries them.
+      if (baseline !== "operational") {
+        await applyPgliteBaseline(seed);
+        await applyPgliteCaptureManifestSchema(new PGliteStore(seed));
+      }
       if (baseline !== "ledger") await applyPgliteOperationalBaseline(new PGliteStore(seed));
     }
     return await seed.dumpDataDir("none");

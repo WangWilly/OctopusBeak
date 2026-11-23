@@ -12,6 +12,7 @@ import {
   type TestBaseline,
 } from "./baseline-test-template.ts";
 import { assertPgliteOperationalBaseline } from "./operational.ts";
+import { CAPTURE_MANIFEST_TABLES } from "./capture-manifest.ts";
 import { CASH_FLOW_TRANSFER_TABLES } from "./cash-flow-transfer.ts";
 import { MANUAL_ASSET_TABLES } from "./manual-assets.ts";
 import { PREVIEW_FINANCIAL_DATA_TABLES } from "./preview-financial-data.ts";
@@ -42,6 +43,10 @@ async function assertShape(database: PGlite, baseline: TestBaseline): Promise<vo
   )).rows.map((row) => row.table_name));
   for (const table of [...PREVIEW_FINANCIAL_DATA_TABLES, ...MANUAL_ASSET_TABLES, ...CASH_FLOW_TRANSFER_TABLES]) {
     assert.equal(tables.has(table), baseline === "full", `${baseline} ${baseline === "full" ? "must" : "must not"} carry ${table}`);
+  }
+  for (const table of CAPTURE_MANIFEST_TABLES) {
+    const ledger = baseline !== "operational";
+    assert.equal(tables.has(table), ledger, `${baseline} ${ledger ? "must" : "must not"} carry ${table}`);
   }
 }
 
