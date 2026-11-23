@@ -13,6 +13,7 @@ import { repairCorruptIndexes, type IndexRepair } from "../src/ledger/pglite/cat
 import { isLedgerUnusable, LEDGER_UNUSABLE_CODE, LedgerUnusableError } from "./ledger-unusable.ts";
 import { installFinancialStore } from "../src/ledger/pglite/store-layout.ts";
 import type { PGliteStore } from "../src/ledger/pglite/transaction.ts";
+import { startPgliteVacuums } from "../src/ledger/pglite/vacuum.ts";
 import { startPgliteWalCheckpoints } from "../src/ledger/pglite/wal-checkpoint.ts";
 import { createPGliteOperationalRpcServer } from "../src/lib/pglite-rpc/pglite-operational-rpc.ts";
 import { createLocalDateClock } from "./pglite-financial-live-dependencies.ts";
@@ -119,6 +120,14 @@ export async function startPGliteViewWorker(
       error instanceof Error ? error.message : String(error),
     ),
   });
+  const vacuums = startPgliteVacuums(database, {
+    run: (task) => host.scheduler.schedule("background", task),
+    onError: (error, table) => console.error(
+      "pglite-vacuum-failed",
+      ...(table === undefined ? [] : [table]),
+      error instanceof Error ? error.message : String(error),
+    ),
+  });
   const source = createViewSource(host);
   const financialServer = createPGliteFinancialRpcServer(port, createPGliteFinancialLocalPort(host.registry), { scheduler: host.scheduler });
   const server = createViewPortServer(port, source);
@@ -142,6 +151,7 @@ export async function startPGliteViewWorker(
             await operationalServer.close();
           } finally {
             try {
+              await vacuums.stop();
               await walCheckpoints.stop();
               await database.close();
               if (!ownsDataDir) await writeFile(cleanShutdownMarkerPath(ownedDataDir), "");

@@ -264,21 +264,78 @@ function inList(values: readonly Uint8Array[]): string {
   return values.length === 0 ? "NULL" : values.map(() => "?").join(",");
 }
 
+/** A projection table's rows for one refresh, and the query that selects what they should be. */
+type ProjectedRows = Readonly<{
+  table: string;
+  /** The primary key; `source` yields each key at most once. */
+  keys: readonly string[];
+  /** A row whose values here differ from `source` is rewritten. */
+  values: readonly string[];
+  /** Written with a rewritten or new row, never compared: the commit that last changed it. */
+  stamps?: readonly string[];
+  /** The SQL condition on `target` that picks the rows this refresh owns. */
+  scope: string;
+  scopeParams: readonly unknown[];
+  /** A query yielding every key, value and stamp column by name, for the rows in scope. */
+  source: string;
+  sourceParams: readonly unknown[];
+}>;
+
+/**
+ * Makes the rows in scope equal what `source` selects, and writes only the
+ * difference: a row whose values are unchanged keeps its stamps. PGlite runs no
+ * autovacuum, and deleting and inserting an unchanged row leaves a dead tuple,
+ * so rewriting a whole capture on every re-sync grew these tables without bound
+ * (ADR 0153).
+ *
+ * One statement does it. Its parts see the same snapshot and touch disjoint
+ * keys: keys `source` no longer yields are deleted, keys whose values differ
+ * are updated in place, and new keys are inserted.
+ */
+async function writeProjectedRows(transaction: PGliteTransaction, rows: ProjectedRows): Promise<void> {
+  const stamps = rows.stamps ?? [];
+  const written = [...rows.values, ...stamps];
+  const sameKey = rows.keys.map((column) => `target.${column} = source.${column}`).join(" AND ");
+  const columns = [...rows.keys, ...written];
+  await query(
+    transaction,
+    `WITH source AS MATERIALIZED (${rows.source}),
+     removed AS (
+       DELETE FROM ${rows.table} target
+        WHERE (${rows.scope})
+          AND NOT EXISTS (SELECT 1 FROM source WHERE ${sameKey})
+       RETURNING 1
+     ), changed AS (
+       UPDATE ${rows.table} target
+          SET ${written.map((column) => `${column} = source.${column}`).join(", ")}
+         FROM source
+        WHERE ${sameKey}
+          AND ROW(${rows.values.map((column) => `target.${column}`).join(", ")})
+              IS DISTINCT FROM ROW(${rows.values.map((column) => `source.${column}`).join(", ")})
+       RETURNING 1
+     )
+     INSERT INTO ${rows.table}(${columns.join(", ")})
+     SELECT ${columns.map((column) => `source.${column}`).join(", ")}
+       FROM source
+      WHERE NOT EXISTS (SELECT 1 FROM ${rows.table} target WHERE ${sameKey})`,
+    [...rows.sourceParams, ...rows.scopeParams],
+  );
+}
+
 async function refreshCurrentTransactions(
   transaction: PGliteTransaction,
   context: PGliteCanonicalProjectionContext,
   affected: readonly Uint8Array[],
 ): Promise<void> {
   if (affected.length === 0) return;
-  await query(
-    transaction,
-    `DELETE FROM current_transactions
-      WHERE transaction_id IN (${inList(affected)})`,
-    affected,
-  );
-  await query(
-    transaction,
-    `WITH ranked AS (
+  await writeProjectedRows(transaction, {
+    table: "current_transactions",
+    keys: ["transaction_id"],
+    values: ["revision_id", "revision_commit_id"],
+    stamps: ["commit_id", "projection_commit_id"],
+    scope: `target.transaction_id IN (${inList(affected)})`,
+    scopeParams: affected,
+    source: `WITH ranked AS (
        SELECT revision.transaction_id, revision.revision_id,
               revision.commit_id AS revision_commit_id,
               revision.source_record_id,
@@ -319,13 +376,11 @@ async function refreshCurrentTransactions(
                ), 'observed') NOT IN ('withdrawn', 'superseded')
           )
      )
-     INSERT INTO current_transactions(
-       transaction_id, revision_id, commit_id, projection_commit_id, revision_commit_id
-     )
-     SELECT transaction_id, revision_id, ?, ?, revision_commit_id
+     SELECT transaction_id, revision_id, ?::bytea AS commit_id,
+            ?::bytea AS projection_commit_id, revision_commit_id
        FROM selected`,
-    [context.cutoffSequence, ...affected, context.cutoffSequence, context.cutoffSequence, context.commitId, context.commitId],
-  );
+    sourceParams: [context.cutoffSequence, ...affected, context.cutoffSequence, context.cutoffSequence, context.commitId, context.commitId],
+  });
 }
 
 async function refreshCurrentFields(
@@ -334,15 +389,14 @@ async function refreshCurrentFields(
   affected: readonly Uint8Array[],
 ): Promise<void> {
   if (affected.length === 0) return;
-  await query(
-    transaction,
-    `DELETE FROM current_transaction_fields
-      WHERE transaction_id IN (${inList(affected)})`,
-    affected,
-  );
-  await query(
-    transaction,
-    `WITH candidates AS (
+  await writeProjectedRows(transaction, {
+    table: "current_transaction_fields",
+    keys: ["transaction_id", "field_name"],
+    values: ["value_text", "origin", "derived_assertion_id", "user_assertion_id"],
+    stamps: ["projection_commit_id"],
+    scope: `target.transaction_id IN (${inList(affected)})`,
+    scopeParams: affected,
+    source: `WITH candidates AS (
        SELECT assertion.transaction_id, assertion.field_name, assertion.value_text,
               assertion.origin, assertion.assertion_id,
               ROW_NUMBER() OVER (
@@ -374,18 +428,14 @@ async function refreshCurrentFields(
              LIMIT 1
           ), 'observed') NOT IN ('withdrawn', 'superseded')
      )
-     INSERT INTO current_transaction_fields(
-       transaction_id, field_name, value_text, origin,
-       derived_assertion_id, user_assertion_id, projection_commit_id
-     )
      SELECT transaction_id, field_name, value_text, origin,
-            CASE WHEN origin = 'derived' THEN assertion_id ELSE NULL END,
-            CASE WHEN origin = 'user' THEN assertion_id ELSE NULL END,
-            ?
+            CASE WHEN origin = 'derived' THEN assertion_id ELSE NULL END AS derived_assertion_id,
+            CASE WHEN origin = 'user' THEN assertion_id ELSE NULL END AS user_assertion_id,
+            ?::bytea AS projection_commit_id
        FROM candidates
       WHERE rank = 1`,
-    [ ...affected, context.cutoffSequence, context.cutoffSequence, context.commitId],
-  );
+    sourceParams: [...affected, context.cutoffSequence, context.cutoffSequence, context.commitId],
+  });
 }
 
 /**
@@ -402,26 +452,28 @@ export async function refreshPGliteTransactionFields(
   await refreshCurrentFields(transaction, { commitId: commit.id, cutoffSequence: commit.sequence }, affected);
   const active = await first<Row>(transaction, "SELECT generation_id FROM active_projection_generation WHERE singleton_id = 1");
   if (!active) return;
-  const generationId = Number(active.generation_id);
-  await query(
-    transaction,
-    `DELETE FROM projection_generation_transaction_fields
-      WHERE generation_id = ?
-        AND transaction_id IN (${inList(affected)})`,
-    [generationId, ...affected],
-  );
-  await query(
-    transaction,
-    `INSERT INTO projection_generation_transaction_fields(
-       generation_id, transaction_id, field_name, value_text, origin,
-       derived_assertion_id, user_assertion_id, projection_commit_id
-     )
-     SELECT ?, field.transaction_id, field.field_name, field.value_text, field.origin,
-            field.derived_assertion_id, field.user_assertion_id, field.projection_commit_id
-       FROM current_transaction_fields field
-      WHERE field.transaction_id IN (${inList(affected)})`,
-    [generationId, ...affected],
-  );
+  await syncGenerationTransactionFields(transaction, Number(active.generation_id), affected);
+}
+
+/** Copies the current display names and notes of `affected` into the generation. */
+async function syncGenerationTransactionFields(
+  transaction: PGliteTransaction,
+  generationId: number,
+  affected: readonly Uint8Array[],
+): Promise<void> {
+  await writeProjectedRows(transaction, {
+    table: "projection_generation_transaction_fields",
+    keys: ["generation_id", "transaction_id", "field_name"],
+    values: ["value_text", "origin", "derived_assertion_id", "user_assertion_id", "projection_commit_id"],
+    scope: `target.generation_id = ? AND target.transaction_id IN (${inList(affected)})`,
+    scopeParams: [generationId, ...affected],
+    source: `SELECT ?::bigint AS generation_id, field.transaction_id, field.field_name, field.value_text,
+                    field.origin, field.derived_assertion_id, field.user_assertion_id,
+                    field.projection_commit_id
+               FROM current_transaction_fields field
+              WHERE field.transaction_id IN (${inList(affected)})`,
+    sourceParams: [generationId, ...affected],
+  });
 }
 
 /**
@@ -438,16 +490,20 @@ export async function refreshGenerationTransactionCategorizations(
   projectionCommitId: Uint8Array,
 ): Promise<void> {
   if (affected.length === 0) return;
-  await query(
-    transaction,
-    `DELETE FROM projection_generation_transaction_categorizations
-      WHERE generation_id = ?
-        AND transaction_id IN (${inList(affected)})`,
-    [generationId, ...affected],
-  );
-  await query(
-    transaction,
-    `WITH active_user AS (
+  await writeProjectedRows(transaction, {
+    table: "projection_generation_transaction_categorizations",
+    keys: ["generation_id", "transaction_id", "assertion_id", "component_ordinal"],
+    values: [
+      "revision_id", "mode", "category_code", "taxonomy_id", "taxonomy_version", "allocation_set_id",
+      "amount_coefficient", "amount_scale", "amount_currency",
+      "booked_coefficient", "booked_scale", "booked_currency",
+      "conversion_evidence_kind", "conversion_evidence_id", "conversion_from_currency",
+      "conversion_to_currency", "conversion_evidence_json", "conversion_id",
+    ],
+    stamps: ["projection_commit_id"],
+    scope: `target.generation_id = ? AND target.transaction_id IN (${inList(affected)})`,
+    scopeParams: [generationId, ...affected],
+    source: `WITH active_user AS (
        SELECT assertion.assertion_id, assertion.transaction_id,
               ROW_NUMBER() OVER (
                 PARTITION BY assertion.transaction_id
@@ -476,18 +532,14 @@ export async function refreshGenerationTransactionCategorizations(
          JOIN transaction_revisions revision ON revision.revision_id = generation_row.revision_id
         WHERE active_user.rank = 1
      )
-     INSERT INTO projection_generation_transaction_categorizations(
-       generation_id, transaction_id, revision_id, assertion_id, mode, category_code,
-       taxonomy_id, taxonomy_version, allocation_set_id, component_ordinal,
-       amount_coefficient, amount_scale, amount_currency,
-       booked_coefficient, booked_scale, booked_currency,
-       conversion_evidence_kind, conversion_evidence_id, conversion_from_currency,
-       conversion_to_currency, conversion_evidence_json, conversion_id, projection_commit_id
-     )
-     SELECT ?::bigint, selected.transaction_id, selected.revision_id, value.assertion_id, 'single', value.category_code,
-            value.taxonomy_id, value.taxonomy_version, NULL, 0,
-            NULL, NULL, NULL, NULL, NULL, NULL,
-            NULL, NULL, NULL, NULL, NULL, NULL, ?::bytea
+     SELECT ?::bigint AS generation_id, selected.transaction_id, selected.revision_id, value.assertion_id,
+            'single' AS mode, value.category_code, value.taxonomy_id, value.taxonomy_version,
+            NULL AS allocation_set_id, 0 AS component_ordinal,
+            NULL AS amount_coefficient, NULL AS amount_scale, NULL AS amount_currency,
+            NULL AS booked_coefficient, NULL AS booked_scale, NULL AS booked_currency,
+            NULL AS conversion_evidence_kind, NULL AS conversion_evidence_id, NULL AS conversion_from_currency,
+            NULL AS conversion_to_currency, NULL AS conversion_evidence_json, NULL AS conversion_id,
+            ?::bytea AS projection_commit_id
        FROM selected
        JOIN transaction_categorization_values value ON value.assertion_id = selected.assertion_id
       WHERE value.mode = 'single'
@@ -506,8 +558,8 @@ export async function refreshGenerationTransactionCategorizations(
         AND allocation.booked_currency = selected.currency
         AND allocation.booked_coefficient::numeric * power(10::numeric, -allocation.booked_scale)
           = selected.amount_coefficient::numeric * power(10::numeric, -selected.amount_scale)`,
-    [...affected, generationId, generationId, projectionCommitId, generationId, projectionCommitId],
-  );
+    sourceParams: [...affected, generationId, generationId, projectionCommitId, generationId, projectionCommitId],
+  });
 }
 
 async function syncGenerationTransactions(
@@ -517,54 +569,51 @@ async function syncGenerationTransactions(
   projectionCommitId: Uint8Array,
 ): Promise<void> {
   if (affected.length === 0) return;
+  // A selection or categorization row references its generation transaction,
+  // so the rows of a transaction leaving the projection go first.
   for (const table of [
     "projection_generation_transaction_categorizations",
-    "projection_generation_transaction_fields",
     "projection_generation_transaction_selection",
-    "projection_generation_transactions",
   ]) {
     await query(
       transaction,
-      `DELETE FROM ${table}
-        WHERE generation_id = ?
-          AND transaction_id IN (${inList(affected)})`,
+      `DELETE FROM ${table} target
+        WHERE target.generation_id = ?
+          AND target.transaction_id IN (${inList(affected)})
+          AND NOT EXISTS (
+            SELECT 1 FROM current_transactions current_row
+             WHERE current_row.transaction_id = target.transaction_id
+          )`,
       [generationId, ...affected],
     );
   }
-  await query(
-    transaction,
-    `INSERT INTO projection_generation_transactions(
-       generation_id, transaction_id, revision_id, projection_commit_id, revision_commit_id
-     )
-     SELECT ?, current_row.transaction_id, current_row.revision_id,
-            current_row.projection_commit_id, current_row.revision_commit_id
-       FROM current_transactions current_row
-      WHERE current_row.transaction_id IN (${inList(affected)})`,
-    [generationId, ...affected],
-  );
-  await query(
-    transaction,
-    `INSERT INTO projection_generation_transaction_selection(
-       generation_id, transaction_id, revision_id, selection_commit_id, selection_kind
-     )
-     SELECT ?, current_row.transaction_id, current_row.revision_id,
-            current_row.projection_commit_id, 'source_lifecycle'
-       FROM current_transactions current_row
-      WHERE current_row.transaction_id IN (${inList(affected)})`,
-    [generationId, ...affected],
-  );
-  await query(
-    transaction,
-    `INSERT INTO projection_generation_transaction_fields(
-       generation_id, transaction_id, field_name, value_text, origin,
-       derived_assertion_id, user_assertion_id, projection_commit_id
-     )
-     SELECT ?, field.transaction_id, field.field_name, field.value_text, field.origin,
-            field.derived_assertion_id, field.user_assertion_id, field.projection_commit_id
-       FROM current_transaction_fields field
-      WHERE field.transaction_id IN (${inList(affected)})`,
-    [generationId, ...affected],
-  );
+  const scope = `target.generation_id = ? AND target.transaction_id IN (${inList(affected)})`;
+  await writeProjectedRows(transaction, {
+    table: "projection_generation_transactions",
+    keys: ["generation_id", "transaction_id"],
+    values: ["revision_id", "projection_commit_id", "revision_commit_id"],
+    scope,
+    scopeParams: [generationId, ...affected],
+    source: `SELECT ?::bigint AS generation_id, current_row.transaction_id, current_row.revision_id,
+                    current_row.projection_commit_id, current_row.revision_commit_id
+               FROM current_transactions current_row
+              WHERE current_row.transaction_id IN (${inList(affected)})`,
+    sourceParams: [generationId, ...affected],
+  });
+  await writeProjectedRows(transaction, {
+    table: "projection_generation_transaction_selection",
+    keys: ["generation_id", "transaction_id"],
+    values: ["revision_id", "selection_commit_id", "selection_kind"],
+    scope,
+    scopeParams: [generationId, ...affected],
+    source: `SELECT ?::bigint AS generation_id, current_row.transaction_id, current_row.revision_id,
+                    current_row.projection_commit_id AS selection_commit_id,
+                    'source_lifecycle' AS selection_kind
+               FROM current_transactions current_row
+              WHERE current_row.transaction_id IN (${inList(affected)})`,
+    sourceParams: [generationId, ...affected],
+  });
+  await syncGenerationTransactionFields(transaction, generationId, affected);
   await refreshGenerationTransactionCategorizations(transaction, generationId, affected, projectionCommitId);
 }
 
@@ -1046,16 +1095,6 @@ async function refreshCurrentEnrichment(
   };
   if (pending.length > 0) await projectionCommit();
 
-  if (refreshAll) {
-    await query(transaction, "DELETE FROM current_transaction_enrichment");
-  } else if (affected.length > 0) {
-    await query(
-      transaction,
-      `DELETE FROM current_transaction_enrichment
-        WHERE transaction_id IN (${inList(affected)})`,
-      affected,
-    );
-  }
   await writeDerivedOutputs(transaction, projectionContext.commitId, "kind", pending.map(({ row, kind, previous }) => ({
     row,
     previous,
@@ -1068,12 +1107,6 @@ async function refreshCurrentEnrichment(
   if (categories.length > 0) {
     const categoryContext = await projectionCommit();
     await writeDerivedOutputs(transaction, categoryContext.commitId, "category", categories);
-    await query(
-      transaction,
-      `DELETE FROM current_transaction_enrichment
-        WHERE field_name = 'category' ${refreshAll ? "" : `AND transaction_id IN (${inList(affected)})`}`,
-      refreshAll ? [] : affected,
-    );
     await selectCurrentEnrichment(transaction, categoryContext, refreshAll, affected, "category");
   }
   return projectionContext;
@@ -1321,8 +1354,7 @@ async function kindCategoryWrites(
 
 /**
  * Selects each transaction's current enrichment from its eligible assertions:
- * a source one first, then the latest. `field` limits it to one field whose
- * rows the caller has deleted.
+ * a source one first, then the latest. `field` limits it to one field.
  */
 async function selectCurrentEnrichment(
   transaction: PGliteTransaction,
@@ -1332,9 +1364,21 @@ async function selectCurrentEnrichment(
   field?: "category",
 ): Promise<void> {
   const cutoff = context.cutoffSequence;
-  await query(
-    transaction,
-    `WITH eligible AS (
+  const scope = [
+    ...(field === undefined ? [] : ["target.field_name = ?"]),
+    ...(refreshAll ? [] : [`target.transaction_id IN (${inList(affected)})`]),
+  ];
+  await writeProjectedRows(transaction, {
+    table: "current_transaction_enrichment",
+    keys: ["transaction_id", "field_name"],
+    values: [
+      "assertion_id", "value_text", "origin", "producer_id", "producer_version", "route_id",
+      "taxonomy_id", "taxonomy_version", "taxonomy_dimension", "taxonomy_code",
+    ],
+    stamps: ["projection_commit_id"],
+    scope: scope.length === 0 ? "TRUE" : scope.join(" AND "),
+    scopeParams: [...(field === undefined ? [] : [field]), ...(refreshAll ? [] : affected)],
+    source: `WITH eligible AS (
        SELECT assertion.transaction_id, assertion.field_name, assertion.assertion_id,
               assertion.value_text, assertion.origin, assertion.producer_id,
               route.producer_version, output.route_id,
@@ -1371,17 +1415,13 @@ async function selectCurrentEnrichment(
              LIMIT 1
           ), 'observed') NOT IN ('withdrawn', 'superseded')
       )
-      INSERT INTO current_transaction_enrichment(
-        transaction_id, field_name, assertion_id, value_text, origin,
-        producer_id, producer_version, route_id, taxonomy_id, taxonomy_version,
-        taxonomy_dimension, taxonomy_code, projection_commit_id
-      )
       SELECT transaction_id, field_name, assertion_id, value_text, origin,
              producer_id, producer_version, route_id, taxonomy_id, taxonomy_version,
-             taxonomy_dimension, COALESCE(taxonomy_code, value_text), ?
+             taxonomy_dimension, COALESCE(taxonomy_code, value_text) AS taxonomy_code,
+             ?::bytea AS projection_commit_id
         FROM eligible
        WHERE rank = 1`,
-    [
+    sourceParams: [
       ...(field === undefined ? [] : [field]),
       cutoff,
       ...(refreshAll ? [] : affected),
@@ -1390,7 +1430,7 @@ async function selectCurrentEnrichment(
       cutoff,
       context.commitId,
     ],
-  );
+  });
 }
 
 /** The append-only tables the projection joins; their statistics decide its plans. */
