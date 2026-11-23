@@ -107,8 +107,12 @@ test("clearing unreadable sign-in details replaces them and records the new secr
   const credentials = createAutomationCredentialStore(path, codec);
   assert.throws(() => credentials.read());
 
+  // A legacy .env whose credential lines waited for readable credentials.
+  writeFileSync(join(root, ".env"), "# keep\nLIBRETTO_CLOUD_FUBON_PASSWORD=legacy-pw\nUNKNOWN=value\n");
+
   eraseSignInDetails({ credentials, userDataDirectory: root });
 
+  assert.equal(readFileSync(join(root, ".env"), "utf8"), "# keep\nUNKNOWN=value\n", "a cleared credential cannot migrate back");
   const secret = credentials.read()[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY]!;
   assert.match(secret, /^[A-Za-z0-9_-]{43}$/u);
   assert.deepEqual(readCardIdentityVerifier(verifierPath), { verifier: cardIdentitySecretVerifier(secret), created: true });

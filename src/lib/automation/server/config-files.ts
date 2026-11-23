@@ -362,6 +362,14 @@ function withoutAutomationLines(envText: string, keys: ReadonlySet<string>) {
     .join("\n")}\n`;
 }
 
+/** Drops every credential line from a legacy .env, so a cleared credential cannot migrate back. */
+export function removeAutomationCredentialsFromEnvFile(envPath: string): void {
+  if (!existsSync(envPath)) return;
+  const envText = readFileSync(envPath, "utf8");
+  const kept = withoutAutomationLines(envText, automationSecretKeys);
+  if (kept !== envText) writeFileSync(envPath, kept, { encoding: "utf8", mode: 0o600 });
+}
+
 export function migrateAutomationEnvFile({
   envPath,
   settings,

@@ -1,7 +1,11 @@
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { CARD_IDENTITY_VERIFIER_FILE, provisionCardIdentitySecret } from "./card-identity-verifier.ts";
-import type { AutomationCredentialStore, AutomationCredentialsFile } from "./config-files.ts";
+import {
+  removeAutomationCredentialsFromEnvFile,
+  type AutomationCredentialStore,
+  type AutomationCredentialsFile,
+} from "./config-files.ts";
 import { AUTOMATION_MANAGED_SECRET_KEYS } from "./tasks.ts";
 
 /**
@@ -35,6 +39,8 @@ export function eraseSignInDetails({
   const kept = AUTOMATION_MANAGED_SECRET_KEYS.flatMap((key) =>
     stored[key] ? [[key, stored[key]] as const] : []);
   credentials.write(Object.fromEntries(kept));
+  // Credential lines a legacy .env still holds would migrate back at the next start.
+  removeAutomationCredentialsFromEnvFile(join(userDataDirectory, ".env"));
   provisionCardIdentitySecret(credentials, join(userDataDirectory, CARD_IDENTITY_VERIFIER_FILE));
   for (const directory of ["browser-state", "browser-runtime"]) {
     rmSync(join(userDataDirectory, "data", "automation", directory), { recursive: true, force: true });
