@@ -7,6 +7,11 @@ import { isCommitAttemptReport } from "../automation/commit-attempt.ts";
 import type { PGliteMaicoinPersistencePort } from "../../ledger/pglite/maicoin-operational.ts";
 import { isPreviewProduct, type PGlitePreviewFinancialDataPort } from "../../ledger/pglite/preview-financial-data.ts";
 import {
+  refusalDiagnosticCode,
+  workflowWriteAdmission,
+  type WorkflowWriteAdmissionCheck,
+} from "../automation/server/collection-scope.ts";
+import {
   appendWorkflowFailureDiagnostic,
   workflowFailureDiagnosticRepoRoot,
   WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV,
@@ -50,7 +55,7 @@ export type PGliteOperationalRequest = {
 };
 
 /** "not-allowed" refuses an operation this connection does not serve, such as a non-workflow operation on the child socket. */
-export type PGliteOperationalErrorCode = "invalid-request" | "not-allowed" | "operation-failed" | "worker-closed";
+export type PGliteOperationalErrorCode = "invalid-request" | "not-allowed" | "refused" | "operation-failed" | "worker-closed";
 
 export type PGliteOperationalResponse =
   | {
@@ -73,6 +78,7 @@ function operationalErrorMessage(code: PGliteOperationalErrorCode): string {
   switch (code) {
     case "invalid-request": return "Invalid PGlite operational request.";
     case "not-allowed": return "This connection does not serve that PGlite operational operation.";
+    case "refused": return "PGlite operational write was refused because its run is no longer current or its scope changed.";
     case "worker-closed": return "PGlite operational worker is closed.";
     case "operation-failed": return "PGlite operational operation failed.";
   }
@@ -151,8 +157,12 @@ type OperationalContract = Readonly<{
   accepts(args: readonly unknown[]): boolean;
   /** Rebuild accepted arguments the port needs in another shape. */
   decode?(args: readonly unknown[]): readonly unknown[];
-  /** A workflow may call it over the child socket (ADR 0148); the socket refuses every other operation. */
-  workflow?: true;
+  /**
+   * A workflow may call it over the child socket (ADR 0148); the socket
+   * refuses every other operation. A "write" belongs to one run and must also
+   * pass the run's write admission.
+   */
+  workflow?: "call" | "write";
 }>;
 
 /** Every named operational method and the arguments the worker accepts for it. */
@@ -223,19 +233,19 @@ export const PGLITE_OPERATIONAL_CONTRACTS: Readonly<Record<PGliteOperationalOper
   "automation.allTaskPrerequisiteNotices": { accepts: (args) => args.length === 0 },
   "automation.resolveTaskPrerequisiteNotices": { accepts: (args) => args.length === 3 && args.every(stringValue) },
   "exchangeRates.readExchangeRates": {
-    workflow: true,
+    workflow: "call",
     accepts: (args) => args.length === 0
       || (args.length === 1 && Array.isArray(args[0]) && (args[0] as unknown[]).every(stringValue)),
   },
   "exchangeRates.upsertExchangeRates": {
-    workflow: true,
+    workflow: "write",
     accepts: (args) => args.length === 1 && Array.isArray(args[0]) && (args[0] as unknown[]).every((row) =>
       stringFields(row, ["rateDate", "currency", "source", "fetchedAt"])
       && finiteNumber((row as Record<string, unknown>).twdPerUnit),
     ),
   },
   "maicoin.startRun": {
-    workflow: true,
+    workflow: "write",
     accepts: (args) => args.length === 1
       && stringFields(args[0], ["syncRunId", "startedAt", "subAccount"])
       && Array.isArray((args[0] as Record<string, unknown>).walletTypes)
@@ -244,24 +254,24 @@ export const PGLITE_OPERATIONAL_CONTRACTS: Readonly<Record<PGliteOperationalOper
       && plainRecord((args[0] as Record<string, unknown>).record),
   },
   "maicoin.appendSnapshots": {
-    workflow: true,
+    workflow: "write",
     accepts: (args) => args.length === 1 && Array.isArray(args[0]) && (args[0] as unknown[]).length <= 100
       && (args[0] as unknown[]).every((row) => stringFields(row,
         ["snapshotId", "syncRunId", "capturedAt", "subAccount", "walletType", "currency", "rawAccountJson"])),
   },
   "maicoin.appendStatementRows": {
-    workflow: true,
+    workflow: "write",
     accepts: (args) => args.length === 1 && Array.isArray(args[0]) && (args[0] as unknown[]).length <= 100
       && (args[0] as unknown[]).every((row) => stringFields(row,
         ["statementId", "syncRunId", "capturedAt", "endpoint", "rowType", "externalId", "rawPayloadJson"])),
   },
   "maicoin.finishRun": {
-    workflow: true,
+    workflow: "call",
     accepts: (args) => args.length === 1 && stringFields(args[0], ["syncRunId", "finishedAt"])
       && plainRecord((args[0] as Record<string, unknown>).record),
   },
   "preview.write": {
-    workflow: true,
+    workflow: "write",
     accepts: (args) => args.length === 1 && hasOnlyFields(args[0], ["sourceId", "institution", "product", "collection"])
       && stringFields(args[0], ["sourceId", "institution", "product"])
       && plainRecord((args[0] as Record<string, unknown>).collection),
@@ -287,7 +297,7 @@ export const PGLITE_OPERATIONAL_OPERATIONS = Object.freeze(
 
 /** The operational operations a workflow may call over the child socket (ADR 0148). */
 export const WORKFLOW_OPERATIONAL_OPERATIONS: ReadonlySet<PGliteOperationalOperation> = new Set(
-  PGLITE_OPERATIONAL_OPERATIONS.filter((operation) => PGLITE_OPERATIONAL_CONTRACTS[operation].workflow === true),
+  PGLITE_OPERATIONAL_OPERATIONS.filter((operation) => PGLITE_OPERATIONAL_CONTRACTS[operation].workflow !== undefined),
 );
 
 export function isPGliteOperationalOperation(value: unknown): value is PGliteOperationalOperation {
@@ -318,44 +328,58 @@ export type PGliteOperationalRpcServer = {
  * state, preview and MaiCoin writes must not wait behind background reads
  * (ADR 0118).
  */
+export type PGliteOperationalRpcServerOptions = Readonly<{
+  /** The operations this connection serves; any other is refused as `not-allowed`. Defaults to all. */
+  serves?: (operation: PGliteOperationalOperation) => boolean;
+  /** Gates every `workflow: "write"` operation. Without it, writes are not gated. */
+  isWriteAdmissible?: WorkflowWriteAdmissionCheck;
+}>;
+
 export function createPGliteOperationalRpcServer(
   port: WorkerPort,
   provider: PGliteOperationalDomains,
-  /** The operations this connection serves; any other is refused as `not-allowed`. Defaults to all. */
-  serves: (operation: PGliteOperationalOperation) => boolean = () => true,
+  { serves = () => true, isWriteAdmissible }: PGliteOperationalRpcServerOptions = {},
 ): PGliteOperationalRpcServer {
+  const diagnose = (diagnosticContext: WorkflowFailureCorrelation | undefined, operation: string, errorCode: string, error?: unknown) =>
+    diagnosticContext
+      ? appendWorkflowFailureDiagnostic(process.env[WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV], {
+        workflowId: diagnosticContext.workflowId,
+        taskRunId: diagnosticContext.taskRunId,
+        source: "operational-rpc",
+        errorCode,
+        operation,
+        error,
+      }, { repoRoot: workflowFailureDiagnosticRepoRoot() })
+      : Promise.resolve();
   const server = createWorkerCallServer({
     port,
     request: { kind: "pglite-operational-request", version: PGLITE_OPERATIONAL_RPC_VERSION },
     refusal: operationFailure,
     start: ({ id, operation, args, diagnosticContext }) => {
       if (!isPGliteOperationalOperation(operation)) return undefined;
-      if (!serves(operation)) return Promise.resolve(operationFailure(id, "not-allowed"));
-      if (!PGLITE_OPERATIONAL_CONTRACTS[operation].accepts(args)) return undefined;
-      return Promise.resolve()
-        .then(() => invokeOperation(provider, operation, args))
-        .then(
-          (result): PGliteOperationalResponse => ({
-            kind: "pglite-operational-response",
-            version: PGLITE_OPERATIONAL_RPC_VERSION,
-            id,
-            ok: true,
-            value: result,
-          }),
-          async (error: unknown) => {
-            if (diagnosticContext) {
-              await appendWorkflowFailureDiagnostic(process.env[WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV], {
-                workflowId: diagnosticContext.workflowId,
-                taskRunId: diagnosticContext.taskRunId,
-                source: "operational-rpc",
-                errorCode: "workflow-failed",
-                operation,
-                error,
-              }, { repoRoot: workflowFailureDiagnosticRepoRoot() });
+      if (!serves(operation)) {
+        return diagnose(diagnosticContext, operation, "operation-not-allowed")
+          .then(() => operationFailure(id, "not-allowed"));
+      }
+      const contract = PGLITE_OPERATIONAL_CONTRACTS[operation];
+      if (!contract.accepts(args)) return undefined;
+      return (async (): Promise<PGliteOperationalResponse> => {
+        try {
+          // A throwing check is an ordinary failure, not a refusal.
+          if (isWriteAdmissible && contract.workflow === "write") {
+            const admission = workflowWriteAdmission(isWriteAdmissible, diagnosticContext);
+            if (admission !== "admitted") {
+              await diagnose(diagnosticContext, operation, refusalDiagnosticCode(admission));
+              return operationFailure(id, "refused");
             }
-            return operationFailure(id, "operation-failed");
-          },
-        );
+          }
+          const value = await invokeOperation(provider, operation, args);
+          return { kind: "pglite-operational-response", version: PGLITE_OPERATIONAL_RPC_VERSION, id, ok: true, value };
+        } catch (error) {
+          await diagnose(diagnosticContext, operation, "workflow-failed", error);
+          return operationFailure(id, "operation-failed");
+        }
+      })();
     },
   });
   return { close: server.close };
@@ -381,7 +405,7 @@ export function createPGliteOperationalRpcClient(
     ready,
     response: { kind: "pglite-operational-response", version: PGLITE_OPERATIONAL_RPC_VERSION },
     failure: (value) => new PGliteOperationalError(
-      value.code === "invalid-request" || value.code === "not-allowed" || value.code === "worker-closed"
+      value.code === "invalid-request" || value.code === "not-allowed" || value.code === "refused" || value.code === "worker-closed"
         ? value.code
         : "operation-failed",
     ),

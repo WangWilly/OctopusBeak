@@ -85,10 +85,10 @@ export type PGliteFinancialLane = "interactive" | "background" | "latest-wins";
  */
 export type WorkflowAccess = "call" | "commit";
 
-type FinancialOperationFlags = Readonly<{
-  lane: PGliteFinancialLane;
-  workflow?: WorkflowAccess;
-}>;
+/** A commit is gated inside its scheduled task, which a latest-wins read never runs, so a commit cannot be latest-wins. */
+type FinancialOperationFlags =
+  | Readonly<{ lane: PGliteFinancialLane; workflow?: "call" }>
+  | Readonly<{ lane: Exclude<PGliteFinancialLane, "latest-wins">; workflow: "commit" }>;
 
 type FinancialOperationContract<Args extends readonly unknown[], Result> = FinancialOperationFlags & Readonly<{
   accepts(args: readonly unknown[]): boolean;
@@ -299,11 +299,11 @@ export const PGLITE_FINANCIAL_CONTRACTS = Object.freeze({
   "financial.loanRelations.resolve": operation<[request: PGliteCanonicalLoanRelationResolutionRequest], PGliteCanonicalLoanRelationResolutionResult>(
     (args) => args.length === 1 && plainRecord(args[0])
       && typeof (args[0] as Record<string, unknown>).sourceConnectionKey === "string",
-    { lane: "background", workflow: "call" },
+    { lane: "background", workflow: "commit" },
   ),
   "financial.investmentRelations.resolve": operation<[request: PGliteCanonicalInvestmentRelationResolutionRequest], PGliteCanonicalInvestmentRelationResolutionResult>(
     (args) => args.length === 0 || (args.length === 1 && plainRecord(args[0])),
-    { lane: "background", workflow: "call" },
+    { lane: "background", workflow: "commit" },
   ),
   "financial.loanRelations.current": operation<[options?: { sourceConnectionKey?: string; integrationNamespace?: string }], readonly Readonly<Record<string, unknown>>[]>(
     (args) => args.length === 0 || (args.length === 1 && plainRecord(args[0])),

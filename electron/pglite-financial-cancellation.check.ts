@@ -161,7 +161,7 @@ test("an account identity continuity read crosses the workflow port only in its 
     },
   } as unknown as PGliteFinancialRegistry;
   const [clientPort, serverPort] = memoryPair();
-  const server = createPGliteFinancialRpcServer(serverPort, createPGliteFinancialLocalPort(registry), { isCommitAdmissible: () => true });
+  const server = createPGliteFinancialRpcServer(serverPort, createPGliteFinancialLocalPort(registry), { isCommitAdmissible: () => "admitted" });
   const client = createPGliteFinancialRpcClient(clientPort);
   try {
     const { identifier: _identifier, ...withoutIdentifier } = request;
@@ -237,7 +237,7 @@ test("a gated server refuses a canonical write that names no run, without asking
   const server = createPGliteFinancialRpcServer(serverPort, createPGliteFinancialLocalPort(registry), {
     isCommitAdmissible: () => {
       asked += 1;
-      return true;
+      return "admitted";
     },
   });
   const client = createPGliteFinancialRpcClient(clientPort);

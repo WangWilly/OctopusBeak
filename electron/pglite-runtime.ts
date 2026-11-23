@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
-import { collectionScopeAdmitsCommit } from "../src/lib/automation/server/collection-scope.ts";
+import { collectionScopeAdmission } from "../src/lib/automation/server/collection-scope.ts";
 import {
   automationConfigEnv,
   type AutomationCredentialStore,
@@ -72,7 +72,7 @@ export function createPGliteOperationalRuntime(
       operational: worker.operationalProvider,
       financial: worker.financial,
     },
-    isCommitAdmissible: ({ taskRunId }) => collectionScopeAdmitsCommit(
+    isCommitAdmissible: ({ taskRunId }) => collectionScopeAdmission(
       options.activeRun(taskRunId),
       () => automationConfigEnv({
         baseEnv: process.env,

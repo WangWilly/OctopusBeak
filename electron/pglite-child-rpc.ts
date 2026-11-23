@@ -206,11 +206,10 @@ export function createPGliteChildRpcServer({
           version: PGLITE_CHILD_RPC_VERSION,
           ok: true,
         } satisfies AuthResponse);
-        operationalServer = createPGliteOperationalRpcServer(
-          port,
-          provider.operational,
-          (operation) => WORKFLOW_OPERATIONAL_OPERATIONS.has(operation),
-        );
+        operationalServer = createPGliteOperationalRpcServer(port, provider.operational, {
+          serves: (operation) => WORKFLOW_OPERATIONAL_OPERATIONS.has(operation),
+          isWriteAdmissible: isCommitAdmissible,
+        });
         financialServer = createPGliteFinancialRpcServer(port, provider.financial, {
           isCommitAdmissible,
           serves: (operation) => WORKFLOW_FINANCIAL_OPERATIONS.has(operation),

@@ -16,7 +16,7 @@ import { createPGliteFinancialLocalPort } from "../../../../electron/pglite-fina
 import type { AppWorkflowWorkerHandle } from "./execution-host.ts";
 import type { AppWorkflowWorkerInboundFrame, AppWorkflowWorkerStart } from "./app-workflow-worker-protocol.ts";
 import {
-  collectionScopeAdmitsCommit,
+  collectionScopeAdmission,
   collectionScopeFingerprint,
   launchedCollectionScope,
 } from "./collection-scope.ts";
@@ -89,24 +89,24 @@ test("commit admission goes through the runtime's active run to its current exec
   const launch: Record<string, string> = { ...launchSettings, ...launchCredentials };
   const changed = { ...launch, [key("STATEMENT_TYPES")]: "deposit" };
   let current = launch;
-  const admits = (taskRunId: string) => collectionScopeAdmitsCommit(runtime.activeRun(taskRunId), () => current);
-  const observed: Record<string, boolean> = {};
+  const admits = (taskRunId: string) => collectionScopeAdmission(runtime.activeRun(taskRunId), () => current);
+  const observed: Record<string, string> = {};
   try {
     const { runId, settled } = await startForCheck(runtime, "exchange-rates");
     await settled;
     assert.deepEqual(observed, {
-      beforeExecution: false,
-      unchanged: true,
-      changed: false,
-      reverted: false,
-      afterEnd: false,
-      secondExecution: true,
-      secondChanged: false,
+      beforeExecution: "run-not-current",
+      unchanged: "admitted",
+      changed: "scope-changed",
+      reverted: "scope-changed",
+      afterEnd: "run-not-current",
+      secondExecution: "admitted",
+      secondChanged: "scope-changed",
     });
     assert.equal(runtime.activeRun(runId), null, "a finished run is no longer active");
-    assert.equal(admits(runId), false, "a finished run cannot commit");
+    assert.equal(admits(runId), "run-not-current", "a finished run cannot commit");
     assert.equal(runtime.activeRun("no-such-run"), null);
-    assert.equal(admits("no-such-run"), false, "an unknown run cannot commit");
+    assert.equal(admits("no-such-run"), "run-not-current", "an unknown run cannot commit");
   } finally {
     await store.close();
   }
@@ -192,7 +192,7 @@ class CommittingFakeWorker extends EventEmitter implements AppWorkflowWorkerHand
       ports[1],
       createPGliteFinancialLocalPort(this.registry),
       {
-        isCommitAdmissible: ({ taskRunId }) => collectionScopeAdmitsCommit(
+        isCommitAdmissible: ({ taskRunId }) => collectionScopeAdmission(
           taskRunId === this.run.taskRunId ? this.run : null,
           () => automationConfigEnv({ baseEnv: process.env, settings: settingsStoreForCheck().read(), credentials: credentialStoreForCheck().read() }),
         ),

@@ -13,11 +13,15 @@ import {
 import { createPGliteViewWorkerClient } from "./pglite-view-worker-client.ts";
 import { PGliteFinancialError } from "../src/lib/pglite-rpc/pglite-financial-rpc-client.ts";
 import {
+  PGLITE_OPERATIONAL_CONTRACTS,
   PGLITE_OPERATIONAL_OPERATIONS,
   PGliteOperationalError,
   WORKFLOW_OPERATIONAL_OPERATIONS,
 } from "../src/lib/pglite-rpc/pglite-operational-rpc.ts";
-import { WORKFLOW_FINANCIAL_OPERATIONS } from "../src/lib/pglite-rpc/pglite-financial-contracts.ts";
+import {
+  PGLITE_FINANCIAL_CONTRACTS,
+  WORKFLOW_FINANCIAL_OPERATIONS,
+} from "../src/lib/pglite-rpc/pglite-financial-contracts.ts";
 import * as PGLITE_WORKFLOW_COMMANDS from "../src/ledger/pglite/workflow-commands.ts";
 
 function providerForWorker(client: ReturnType<typeof createPGliteViewWorkerClient>): PGliteChildProvider {
@@ -185,7 +189,7 @@ test("the child socket refuses every operation not marked for workflows", async 
       },
     },
   } as unknown as PGliteChildProvider;
-  const server = createPGliteChildRpcServer({ provider, isCommitAdmissible: () => true });
+  const server = createPGliteChildRpcServer({ provider, isCommitAdmissible: () => "admitted" });
   const child = createPGliteChildRpcClient({ endpoint: server.endpoint, token: server.token });
   try {
     await server.ready;
@@ -228,6 +232,55 @@ test("the child socket refuses every operation not marked for workflows", async 
   }
 });
 
+test("the child socket refuses a run-scoped operational write from a run that is not current", async () => {
+  const reached: string[] = [];
+  const record = (name: string) => async () => {
+    reached.push(name);
+    return name === "preview.write" ? { accounts: 0 } : [];
+  };
+  const provider = {
+    operational: {
+      preview: { write: record("preview.write") },
+      maicoin: { startRun: record("maicoin.startRun"), finishRun: record("maicoin.finishRun") },
+      exchangeRates: { readExchangeRates: record("exchangeRates.readExchangeRates"), upsertExchangeRates: record("exchangeRates.upsertExchangeRates") },
+    },
+    financial: { request: async () => null },
+  } as unknown as PGliteChildProvider;
+  const server = createPGliteChildRpcServer({ provider, isCommitAdmissible: () => "run-not-current" });
+  const correlated = createPGliteChildRpcClient({
+    endpoint: server.endpoint,
+    token: server.token,
+    diagnosticContext: { workflowId: "maicoin", taskRunId: "ended-run" },
+  });
+  const anonymous = createPGliteChildRpcClient({ endpoint: server.endpoint, token: server.token });
+  try {
+    await server.ready;
+    await correlated.ready;
+    await anonymous.ready;
+    for (const child of [correlated, anonymous]) {
+      for (const [operation, args] of [
+        ["preview.write", [{ sourceId: "s", institution: "i", product: "p", collection: {} }]],
+        ["maicoin.startRun", [{ syncRunId: "r", startedAt: "2026-09-22T00:00:00.000Z", subAccount: "main", walletTypes: ["spot"], statementLimit: 1, record: {} }]],
+        ["exchangeRates.upsertExchangeRates", [[]]],
+      ] as const) {
+        await assert.rejects(
+          child.request(operation, args),
+          (error: unknown) => error instanceof PGliteOperationalError && error.code === "refused",
+          `${operation} must be refused`,
+        );
+      }
+    }
+    assert.deepEqual(reached, [], "a refused write never reaches the worker");
+    await correlated.request("exchangeRates.readExchangeRates", []);
+    await correlated.request("maicoin.finishRun", [{ syncRunId: "r", finishedAt: "2026-09-22T00:00:01.000Z", record: {} }]);
+    assert.deepEqual(reached, ["exchangeRates.readExchangeRates", "maicoin.finishRun"], "reads and closing a run's own row are not gated");
+  } finally {
+    correlated.close();
+    anonymous.close();
+    await server.close();
+  }
+});
+
 test("the workflow surface is exactly what workflows call", () => {
   assert.deepEqual([...WORKFLOW_FINANCIAL_OPERATIONS].sort(), [
     "financial.accountIdentity.continuity",
@@ -254,6 +307,32 @@ test("the workflow surface is exactly what workflows call", () => {
     "maicoin.startRun",
     "preview.write",
   ]);
+  assert.deepEqual(
+    [...WORKFLOW_FINANCIAL_OPERATIONS].filter((operation) => PGLITE_FINANCIAL_CONTRACTS[operation].workflow === "commit").sort(),
+    [
+      "financial.balance.capture",
+      "financial.creditCard.balance",
+      "financial.creditCard.commit",
+      "financial.deposit.commit",
+      "financial.einvoice.commit",
+      "financial.investment.commit",
+      "financial.investmentRelations.resolve",
+      "financial.loan.commit",
+      "financial.loanRelations.resolve",
+      "financial.source.commit",
+    ],
+    "every canonical write is gated, relation resolution included",
+  );
+  assert.deepEqual(
+    [...WORKFLOW_OPERATIONAL_OPERATIONS].filter((operation) => PGLITE_OPERATIONAL_CONTRACTS[operation].workflow === "write").sort(),
+    [
+      "exchangeRates.upsertExchangeRates",
+      "maicoin.appendSnapshots",
+      "maicoin.appendStatementRows",
+      "maicoin.startRun",
+      "preview.write",
+    ],
+  );
   for (const kind of Object.values(PGLITE_WORKFLOW_COMMANDS)) {
     assert.ok(WORKFLOW_FINANCIAL_OPERATIONS.has(kind), `workflow command ${kind} must be open to workflows`);
   }

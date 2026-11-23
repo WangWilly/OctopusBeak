@@ -18,7 +18,7 @@ The socket also served the whole financial and operational registries. A workflo
 
 ## Decision
 
-**Commit admission denies by default.** A canonical write through the child socket is refused with the `refused` category, before it reaches the database, when:
+**Write admission denies by default.** The check now returns one of three answers: `admitted`, `scope-changed`, or `run-not-current`. A gated write through the child socket is refused, before it reaches the store, unless the answer is `admitted`. The answer is `run-not-current` when:
 
 - the request names no run,
 - no active run has its `taskRunId`,
@@ -26,6 +26,16 @@ The socket also served the whole financial and operational registries. A workflo
 - the current execution was launched without a Collection scope version.
 
 Otherwise the execution's launched scope decides, as ADR 0058 says.
+
+Every canonical write is gated, including relation resolution. `financial.loanRelations.resolve` and `financial.investmentRelations.resolve` write a `canonical_commits` row and relation, event and settlement-group rows, so they are commits too. A workflow run resolves relations after an item commits, and treats a failure there as a warning on the committed item. A refused resolution therefore leaves the item committed with a relation warning, and the run's next commit is refused and stops the run. A canonical refusal keeps the `refused` category.
+
+Run-scoped operational writes are gated the same way. They are `preview.write`, `maicoin.startRun`, `maicoin.appendSnapshots` and `maicoin.appendStatementRows`. Exchange rates are global, not one source's data, but `exchangeRates.upsertExchangeRates` is gated too. The exchange-rate task has no credential group, so its scope never changes and the gate only stops a run that is no longer current. The next scheduled run writes the same rates again. A refused operational write fails with a new `refused` operational code.
+
+Two operational calls stay ungated. `maicoin.finishRun` closes the sync-run row the workflow opened. Leaving it ungated lets a refused MaiCoin run still mark that row as failed instead of leaving it open. Reads, such as `exchangeRates.readExchangeRates`, write nothing.
+
+**A refusal records its cause.** The financial and operational RPC servers record a refusal's diagnostic as `collection-scope-changed` only when the scope changed. Every other refusal is recorded as `run-not-current`. A run-not-current refusal never reaches a person-facing outcome. Nothing reaches the run's owner for an unknown run or a request without identity. For a run with no current execution, the worker's supervisor has already settled and drops the worker's host calls, so the run does not record the refused Commit attempt. An operation the socket does not serve records `operation-not-allowed` with the operation's name.
+
+**A commit cannot be latest-wins.** The gate runs inside the scheduled task, which a coalesced latest-wins read never runs. The contract flags' type therefore allows `workflow: "commit"` only on the interactive and background lanes.
 
 No live run legitimately commits without a current execution:
 
@@ -37,13 +47,14 @@ No live run legitimately commits without a current execution:
 
 So the change has no exception for recovery.
 
-**A contract declares whether a workflow may call it.** A financial contract's `workflow` flag is `"call"` or `"commit"`. `"commit"` replaces `canonicalCommit: true` and also subjects the operation to commit admission. An operational contract carries `workflow: true`. `WORKFLOW_FINANCIAL_OPERATIONS` and `WORKFLOW_OPERATIONAL_OPERATIONS` are derived from the marks, as `RENDERER_FINANCIAL_OPERATIONS` is. The child socket builds its two servers with these sets. It refuses every other operation with a new `not-allowed` code, before the operation reaches the worker. The worker's own servers and the renderer keep the whole registry.
+**A contract declares whether a workflow may call it.** A financial contract's `workflow` flag is `"call"` or `"commit"`. `"commit"` replaces `canonicalCommit: true` and also subjects the operation to write admission. An operational contract's flag is `"call"` or `"write"`, and `"write"` is gated the same way. `WORKFLOW_FINANCIAL_OPERATIONS` and `WORKFLOW_OPERATIONAL_OPERATIONS` are derived from the marks, as `RENDERER_FINANCIAL_OPERATIONS` is. The child socket builds its two servers with these sets. It refuses every other operation with a new `not-allowed` code, before the operation reaches the worker. The worker's own servers and the renderer keep the whole registry.
 
 The workflow operations are the ones `childRpcCapabilities` and the PGlite workflow client call:
 
-- Financial calls: `financial.overview.current`, `financial.source.admit`, `financial.loanRelations.resolve`, `financial.investmentRelations.resolve`, `financial.tdccFundAccounts.list`, `financial.accountIdentity.continuity`.
-- Financial commits: `financial.source.commit`, `financial.deposit.commit`, `financial.balance.capture`, `financial.einvoice.commit`, `financial.creditCard.commit`, `financial.creditCard.balance`, `financial.loan.commit`, `financial.investment.commit`.
-- Operational: `exchangeRates.readExchangeRates`, `exchangeRates.upsertExchangeRates`, `maicoin.startRun`, `maicoin.appendSnapshots`, `maicoin.appendStatementRows`, `maicoin.finishRun`, `preview.write`.
+- Financial calls: `financial.overview.current`, `financial.source.admit`, `financial.tdccFundAccounts.list`, `financial.accountIdentity.continuity`.
+- Financial commits: `financial.source.commit`, `financial.deposit.commit`, `financial.balance.capture`, `financial.einvoice.commit`, `financial.creditCard.commit`, `financial.creditCard.balance`, `financial.loan.commit`, `financial.investment.commit`, `financial.loanRelations.resolve`, `financial.investmentRelations.resolve`.
+- Operational calls: `exchangeRates.readExchangeRates`, `maicoin.finishRun`.
+- Operational writes: `exchangeRates.upsertExchangeRates`, `maicoin.startRun`, `maicoin.appendSnapshots`, `maicoin.appendStatementRows`, `preview.write`.
 
 ## Considered options
 
@@ -54,6 +65,9 @@ The workflow operations are the ones `childRpcCapabilities` and the PGlite workf
 
 ## Consequences
 
-- A workflow thread whose run ended, or was superseded, cannot commit, even if it still holds the socket.
+- A workflow thread whose run ended, or was superseded, cannot write canonical data, relations, preview data, MaiCoin rows or exchange rates, even if it still holds the socket. It can still mark its own MaiCoin sync-run row as finished.
+- `financial.source.admit` stays ungated. It validates evidence and writes nothing canonical.
+- A refused preview or MaiCoin write fails its product or run as an ordinary operational failure. It is not reported as `collection-scope-changed`, because only the canonical commit path carries a refusal to the run's outcome.
+- The connection is not bound to one execution. The gate relies on the supervisor ending an execution's worker before the next execution of the same run begins. Binding the execution id to the connection is left as a follow-up.
 - A new workflow operation must be marked on its contract, or the child socket refuses it. A check asserts the exact workflow surface and that every PGlite workflow command is on it.
 - A workflow can no longer reset the ledger, apply a Manual asset command or a page action, read the renderer's pages, delete preview data, or write run lifecycle rows.
