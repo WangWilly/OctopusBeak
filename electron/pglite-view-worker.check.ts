@@ -12,6 +12,7 @@ import {
 } from "./pglite-view-worker-client.ts";
 import { PGliteFinancialError } from "../src/lib/pglite-rpc/pglite-financial-rpc-client.ts";
 import { PGliteOperationalError } from "../src/lib/pglite-rpc/pglite-operational-rpc.ts";
+import { isLedgerUnusable } from "./ledger-unusable.ts";
 import { cleanShutdownMarkerPath, startPGliteViewWorker } from "./pglite-view-worker.ts";
 import { seedLedgerIndex } from "../src/ledger/pglite/catalog-repair.fixtures.ts";
 import type { PGliteLedgerHost } from "./pglite-ledger-host.ts";
@@ -265,6 +266,26 @@ test("a store that closed cleanly opens without checking its indexes", async () 
     await writeFile(cleanShutdownMarkerPath(dataDir), "");
     const runtime = await startPGliteViewWorker(new MessageChannel().port1, () => noViews, { readSettings: () => ({}), dataDir });
     await runtime.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a store whose corrupt index cannot be rebuilt reaches the client as an unusable ledger", async () => {
+  const root = await mkdtemp(join(tmpdir(), "octopus-beak-unusable-ledger-"));
+  const dataDir = join(root, "pglite");
+  try {
+    await seedLedgerIndex(dataDir, { duplicate: true });
+    const worker = new Worker(new URL("./pglite-view-worker.ts", import.meta.url), {
+      execArgv: ["--experimental-strip-types"],
+      workerData: { dataDir, settingsPath: join(root, "settings.json") },
+    });
+    const client = createPGliteViewWorkerClient(worker);
+    try {
+      await assert.rejects(client.ready, (error) => isLedgerUnusable(error));
+    } finally {
+      await client.close().catch(() => undefined);
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }

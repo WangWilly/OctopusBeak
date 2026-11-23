@@ -1,4 +1,5 @@
 import type { Worker } from "node:worker_threads";
+import { LEDGER_UNUSABLE_CODE, LedgerUnusableError } from "./ledger-unusable.ts";
 import {
   createViewPortClient,
   type ViewPortClient,
@@ -86,11 +87,12 @@ export function createPGliteViewWorkerClient(worker: WorkerPort): PGliteViewWork
         stopped = true;
         resolveStopped();
         const messageText = (message as { message?: unknown }).message;
-        const failure = new Error(
-          typeof messageText === "string"
-            ? `PGlite view worker failed to start: ${messageText}`
-            : "PGlite view worker failed to start.",
-        );
+        const text = typeof messageText === "string"
+          ? `PGlite view worker failed to start: ${messageText}`
+          : "PGlite view worker failed to start.";
+        const failure = (message as { code?: unknown }).code === LEDGER_UNUSABLE_CODE
+          ? new LedgerUnusableError(text)
+          : new Error(text);
         detachReady();
         rejectReady(failure);
         void views.close();

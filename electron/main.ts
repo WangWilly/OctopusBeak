@@ -47,6 +47,8 @@ import type { ErrorReportInput } from "../src/lib/automation/error-report-contra
 import { createBeforeQuitHandler, quitOnTerminationSignals } from "./automation-shutdown.ts";
 import { applyOctopusBeakAppIdentity } from "./app-identity.ts";
 import { openSafeStorageCredentialStore } from "./credential-codec.ts";
+import { recoverUnusableLedger } from "./ledger-recovery.ts";
+import { isLedgerUnusable } from "./ledger-unusable.ts";
 import { CARD_IDENTITY_VERIFIER_FILE } from "../src/lib/automation/server/card-identity-verifier.ts";
 import { createExchangeRateScheduler, createScheduledCollectionScheduler } from "./daily-scheduler.ts";
 import { requestNotificationTarget, takeNotificationTarget } from "./notification-target.ts";
@@ -140,6 +142,8 @@ let automationDesktopService: AutomationDesktopService<BrowserWindow | null> | n
 let pgliteOperationalRuntime: PGliteOperationalRuntime | null = null;
 let automationRuntime: AutomationRuntime | null = null;
 let automationRuntimeFatalHandled = false;
+/** The ledger refused to open and the person is choosing what to do; nothing else ends the App meanwhile. */
+let ledgerRecoveryPending = false;
 
 function handleAutomationRuntimeFatal(details: {
   code: string;
@@ -149,7 +153,7 @@ function handleAutomationRuntimeFatal(details: {
   taskId?: string;
   runId?: string | null;
 }) {
-  if (automationRuntimeFatalHandled) return;
+  if (automationRuntimeFatalHandled || ledgerRecoveryPending) return;
   automationRuntimeFatalHandled = true;
   console.error("automation-runtime-fatal", details);
   automationRuntime?.abortAll();
@@ -407,8 +411,9 @@ async function start() {
   const automationSettings = createAutomationSettingsStore(path.join(userData, AUTOMATION_SETTINGS_FILE));
   migrateAutomationEnvFile({ envPath: path.join(userData, ".env"), settings: automationSettings, credentials });
   migrateStatementSelectionIds(automationSettings.path);
+  const ledgerDataDir = path.join(userData, "data", "pglite");
   const operationalRuntime = createPGliteOperationalRuntime({
-    dataDir: path.join(userData, "data", "pglite"),
+    dataDir: ledgerDataDir,
     cardIdentityVerifierPath,
     activeRun: (taskRunId) => automationRuntime?.activeRun(taskRunId) ?? null,
     credentials,
@@ -426,7 +431,9 @@ async function start() {
   // schema/recovery failure cannot be hidden by a partially hydrated UI.
   const automationRuntimeReady = new Promise<void>((resolve, reject) => {
     setImmediate(() => {
-      runtime.recover()
+      // A ledger that refuses to open fails here, before recovery reads it.
+      operationalRuntime.worker.ready
+        .then(() => runtime.recover())
         .then(async () => {
           if (cdpFixture) {
             await seedCdpRuntimeFixture(runtime, operationalRuntime.provider, {
@@ -440,6 +447,25 @@ async function start() {
     });
   });
   void automationRuntimeReady.catch((error) => {
+    if (isLedgerUnusable(error)) {
+      // Registered before any other reader of this promise, so the flag is set before they report it as fatal.
+      ledgerRecoveryPending = true;
+      console.error("pglite-ledger-unusable", error instanceof Error ? error.message : String(error));
+      void recoverUnusableLedger(ledgerDataDir, {
+        locale: app.getLocale().startsWith("zh") ? "zh-TW" : "en",
+        ask: async (options) => {
+          const owner = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+          return (await (owner ? dialog.showMessageBox(owner, options) : dialog.showMessageBox(options))).response;
+        },
+        relaunch: () => app.relaunch(),
+        exit: (code) => {
+          if (mainWindow && !mainWindow.isDestroyed()) mainWindow.destroy();
+          app.exit(code);
+        },
+        now: () => new Date(),
+      }).then((choice) => console.error("pglite-ledger-recovery", choice));
+      return;
+    }
     handleAutomationRuntimeFatal(automationRuntimeFatalDetails("startup-reconcile", error));
   });
   const exchangeRates = createExchangeRateScheduler({

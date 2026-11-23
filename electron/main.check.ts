@@ -7,7 +7,7 @@ assert.doesNotMatch(source, /prepareLibrettoRunCdpPatch|libretto-run-cdp-patch-f
 assert.match(source, /createPGliteOperationalRuntime\(/u);
 assert.match(
   source,
-  /const cardIdentityVerifierPath = path\.join\(userData, CARD_IDENTITY_VERIFIER_FILE\);[\s\S]*?openSafeStorageCredentialStore\(\s*path\.join\(userData, AUTOMATION_CREDENTIALS_FILE\),\s*cardIdentityVerifierPath,\s*\)[\s\S]*?createPGliteOperationalRuntime\(\{\s*dataDir: path\.join\(userData, "data", "pglite"\),\s*cardIdentityVerifierPath,/u,
+  /const cardIdentityVerifierPath = path\.join\(userData, CARD_IDENTITY_VERIFIER_FILE\);[\s\S]*?openSafeStorageCredentialStore\(\s*path\.join\(userData, AUTOMATION_CREDENTIALS_FILE\),\s*cardIdentityVerifierPath,\s*\)[\s\S]*?const ledgerDataDir = path\.join\(userData, "data", "pglite"\);\s*const operationalRuntime = createPGliteOperationalRuntime\(\{\s*dataDir: ledgerDataDir,\s*cardIdentityVerifierPath,/u,
   "startup records the Card identity secret's verifier where the ledger worker reads it",
 );
 assert.match(
@@ -31,6 +31,21 @@ assert.match(
   /const runtime = createAutomationRuntime\(operationalRuntime\.provider, \{\s*credentials,\s*settings: automationSettings,\s*userDataDirectory: userData,\s*\}\)/,
 );
 assert.match(source, /runtime\.recover\(\)[\s\S]*?\.then\(\(\) => resolve\(\)\)/);
+assert.match(
+  source,
+  /operationalRuntime\.worker\.ready\s*\.then\(\(\) => runtime\.recover\(\)\)/u,
+  "a ledger that refuses to open fails startup before recovery reads it",
+);
+assert.match(
+  source,
+  /void automationRuntimeReady\.catch\(\(error\) => \{\s*if \(isLedgerUnusable\(error\)\) \{[\s\S]*?ledgerRecoveryPending = true;[\s\S]*?recoverUnusableLedger\(ledgerDataDir,/u,
+  "an unusable ledger asks the person what to do instead of ending the App",
+);
+assert.match(
+  source,
+  /if \(automationRuntimeFatalHandled \|\| ledgerRecoveryPending\) return;/u,
+  "no other fatal report ends the App while the person is choosing",
+);
 assert.match(source, /automationRuntime\?\.abortAll\(\)/u);
 assert.match(source, /if \(automationRuntime\?\.hasActive\(\)\) await automationRuntime\.shutdown\(\)/u);
 assert.match(
