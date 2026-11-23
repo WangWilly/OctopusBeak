@@ -160,6 +160,11 @@ function handleAutomationRuntimeFatal(details: {
 }
 
 applyOctopusBeakAppIdentity(app);
+// The PGlite store and credentials.json in userData have no cross-process
+// lock of their own, so a second process on the same userData hands over to
+// the first and quits before it opens either.
+const ownsUserData = app.requestSingleInstanceLock();
+if (!ownsUserData) app.quit();
 process.env.OCTOPUSBEAK_SPEECH_MODEL_DIR = path.join(
   projectRoot(),
   "src",
@@ -664,7 +669,18 @@ async function start() {
 }
 
 protocol.registerSchemesAsPrivileged([APP_SCHEME_PRIVILEGES]);
-app.whenReady().then(start).catch(showStartupError);
+if (ownsUserData) app.whenReady().then(start).catch(showStartupError);
+
+app.on("second-instance", () => {
+  if (appQuitting || automationRuntimeFatalHandled || !currentRendererUrl || !currentPreloadPath) return;
+  void createWindow(currentRendererUrl, currentPreloadPath)
+    .then((window) => {
+      if (window.isMinimized()) window.restore();
+      window.show();
+      window.focus();
+    })
+    .catch(showStartupError);
+});
 
 app.on("activate", () => {
   if (automationRuntimeFatalHandled) return;
