@@ -10,7 +10,7 @@ import {
   refusalDiagnosticCode,
   workflowWriteAdmission,
   type WorkflowWriteAdmissionCheck,
-} from "../automation/server/collection-scope.ts";
+} from "./workflow-admission.ts";
 import {
   appendWorkflowFailureDiagnostic,
   workflowFailureDiagnosticRepoRoot,

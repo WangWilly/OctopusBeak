@@ -18,7 +18,7 @@ import {
   PGliteOperationalError,
   type PGliteOperationalDomains,
 } from "../src/lib/pglite-rpc/pglite-operational-rpc.ts";
-import type { WorkflowWriteAdmission } from "../src/lib/automation/server/collection-scope.ts";
+import type { WorkflowWriteAdmission } from "../src/lib/pglite-rpc/workflow-admission.ts";
 import {
   captureSafeWorkflowFailureError,
   workflowFailureDiagnosticRepoRoot,

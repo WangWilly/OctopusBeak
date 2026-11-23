@@ -15,7 +15,7 @@ import {
   workflowWriteAdmission,
   type WorkflowWriteAdmission,
   type WorkflowWriteAdmissionCheck,
-} from "../src/lib/automation/server/collection-scope.ts";
+} from "../src/lib/pglite-rpc/workflow-admission.ts";
 import {
   isPGliteFinancialOperation,
   PGLITE_FINANCIAL_CONTRACTS,
