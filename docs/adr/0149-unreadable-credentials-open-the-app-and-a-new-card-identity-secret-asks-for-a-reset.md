@@ -32,9 +32,9 @@ Amends [ADR 0062](./0062-credit-card-query-inventory-and-user-triggered-reset.md
 
 - An install that upgrades with its secret in place records it at its first card commit. A split that happened before this change is not detected.
 - Restoring an older `credentials.json` whose secret differs from a namespace's record asks that namespace for a Canonical Reset, once the App provisions it at the next start.
-- Clearing Sign-in Details while they cannot be decoded asks every namespace with card accounts for a Canonical Reset. Nothing warns the person beforehand yet.
+- Clearing Sign-in Details while they cannot be decoded asks every namespace with card accounts for a Canonical Reset. Settings says so in the clear confirmation when the ledger holds a credit-card account (`settings:signInDataStatus`).
 - The verifier file changes only at startup and at Sign-in Erasure. A `credentials.json` replaced by hand while the App runs is compared against the old verifier until the next start.
 - Sign-in Erasure also removes credential lines from a legacy `.env`, so they cannot migrate back.
 - Whether this install created the secret lives only in the verifier file. If that file is lost after an Erasure and before the first card commit, the next start records the secret as found, and a namespace with card accounts and no record adopts it.
 - A card commit that reads the verifier file as unknown admits and records nothing. On an install that created its secret, the namespace then reads as split at its next commit.
-- The Automation page shows "Read failed" on each credential, but nothing on it yet points the person to Settings.
+- While the details cannot be read, every Automation block degrades to "Read failed", the details block included, and the page shows one notice that opens Settings at Clear all sign-in data.

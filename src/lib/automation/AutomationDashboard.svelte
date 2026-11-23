@@ -4,6 +4,8 @@
   import RunHistoryDialog from "$lib/automation/RunHistoryDialog.svelte";
   import ErrorReportDialog from "$lib/automation/ErrorReportDialog.svelte";
   import StructureReportDialog from "$lib/automation/StructureReportDialog.svelte";
+  import CredentialsUnreadableNotice from "$lib/automation/CredentialsUnreadableNotice.svelte";
+  import { credentialsUnreadable } from "$lib/automation/credentials-unreadable.ts";
   import { sourceLogo } from "$lib/institutions/institutions.ts";
   import { onDestroy, onMount, tick } from "svelte";
   import { slide } from "svelte/transition";
@@ -124,6 +126,7 @@ import type {
   export let signInSettingsGroupId: string | null = null;
   export let onSignInSettingsOpened: () => void = () => {};
   export let onOpenFinancialDataSettings: () => void = () => {};
+  export let onOpenSignInDataSettings: () => void = () => {};
   export let onOnboardingWorkflowStarting: (
     taskId: string,
     credentialGroupId: string | null,
@@ -737,7 +740,12 @@ import type {
       await showCredentialSource(submission.groupId, "statements");
       return;
     }
-    if ((await submission.settled) === "failed") runActions.setError($t.automation.saveCredentialsFailed);
+    if ((await submission.settled) === "failed") {
+      // Saving over details that cannot be read fails every time; say how to recover instead of "Try again".
+      runActions.setError(credentialsUnreadable(live.credentialStates)
+        ? $t.automation.credentialsUnreadableBody
+        : $t.automation.saveCredentialsFailed);
+    }
   }
 
 
@@ -936,6 +944,9 @@ import type {
     {@const listTaskStages = [{ id: "sync", title: $t.automation.syncStage, tasks: listAutomation.tasks }]}
     {@const listParallelTaskIds = new Set(listAutomation.parallelRunnableTaskIds)}
     {@const multiStage = listTaskStages.length > 1}
+    {#if credentialsUnreadable(listAutomation.credentialStates)}
+      <CredentialsUnreadableNotice onOpenSettings={onOpenSignInDataSettings} />
+    {/if}
     <section class="card workflow-card" class:single-stage={!multiStage} aria-label={$t.automation.taskQueue}>
       {#each listTaskStages as stage, stageIndex}
         <section class="stage-section">

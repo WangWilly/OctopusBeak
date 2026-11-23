@@ -12,7 +12,7 @@ import {
 } from "./automation-desktop-service.ts";
 import { createAutomationRuntimeState } from "./runtime-state.ts";
 import type { AutomationPersistenceProvider, AutomationTaskRun } from "./store.ts";
-import type { AutomationCredentialStore } from "./config-files.ts";
+import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY, type AutomationCredentialStore } from "./config-files.ts";
 import { credentialStoreForCheck, settingsStoreForCheck } from "./task-run-check-support.ts";
 
 const REGISTRATION_ID = "0f8fad5b-d9cb-469f-a165-70867728950e";
@@ -134,7 +134,7 @@ test("the credential state cache is read once at construction, before any block 
   assert.equal(credentialReads(), 1);
 });
 
-test("an unreadable credential state fails the details block and degrades every other block", async () => {
+test("an unreadable credential state degrades every block, details included", async () => {
   const { service } = harness({
     credentials: {
       ...credentialStoreForCheck(join(directory, "credentials.json")),
@@ -143,7 +143,10 @@ test("an unreadable credential state fails the details block and degrades every 
       },
     },
   });
-  await assert.rejects(service.loadBlock("details"), { message: "無法讀取登入資料" });
+  const details = await service.loadBlock("details") as unknown as {
+    data: { automation: { credentialStates: Record<string, string> } };
+  };
+  assert.ok(Object.values(details.data.automation.credentialStates).every((state) => state === "read_failed"));
 
   const list = await service.loadBlock("list") as unknown as {
     data: { automation: { credentialStates: Record<string, string> } };
@@ -279,6 +282,39 @@ test("clearing sign-in data cancels registrations, erases under the user data di
   assert.deepEqual(calls, [["registration.cancelAll"]]);
   assert.deepEqual(erased, [directory]);
   assert.equal(credentialReads(), before + 1, "the credential cache is refreshed after erasing");
+});
+
+test("the sign-in data status says when clearing would replace the Card identity secret over card accounts", async () => {
+  const path = join(directory, "sign-in-status-credentials.json");
+  const withSecret = credentialStoreForCheck(path);
+  withSecret.write({ [CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY]: "s".repeat(43) });
+  const withoutSecret = { ...withSecret, read: () => ({}) };
+  const undecodable = { ...withSecret, read: () => { throw new Error("Error while decrypting the ciphertext"); } };
+  const unreachable = { ...withSecret, read: () => { throw Object.assign(new Error("permission denied"), { code: "EACCES" }); } };
+  const cards = (namespaces: readonly string[] | Error) => ({
+    ...emptyProvider,
+    canonicalReset: {
+      requiredNamespaces: async () => [],
+      cardAccountNamespaces: async () => {
+        if (namespaces instanceof Error) throw namespaces;
+        return namespaces;
+      },
+    },
+  }) as unknown as AutomationDesktopServiceDeps<string>["provider"];
+  const status = (credentials: typeof withSecret, provider: ReturnType<typeof cards>) =>
+    harness({ credentials, provider }).service.signInDataStatus();
+
+  assert.deepEqual(await status(withSecret, cards(["esun"])), { credentials: "readable", clearRequiresFinancialDataDeletion: false },
+    "a readable secret survives the clear");
+  assert.deepEqual(await status(withoutSecret, cards(["esun"])), { credentials: "readable", clearRequiresFinancialDataDeletion: true },
+    "readable details without a secret get a new one at the clear");
+  assert.deepEqual(await status(undecodable, cards(["esun"])), { credentials: "undecodable", clearRequiresFinancialDataDeletion: true });
+  assert.deepEqual(await status(undecodable, cards([])), { credentials: "undecodable", clearRequiresFinancialDataDeletion: false },
+    "with no card account there is nothing to split");
+  assert.deepEqual(await status(undecodable, cards(new Error("worker closed"))), { credentials: "undecodable", clearRequiresFinancialDataDeletion: true },
+    "an unknown ledger warns rather than staying silent");
+  assert.deepEqual(await status(unreachable, cards(["esun"])), { credentials: "unreachable", clearRequiresFinancialDataDeletion: false },
+    "a clear that fails on an unreachable file replaces nothing");
 });
 
 test("a sync the person starts reports its sources once its batch settles, and exchange rates alone report nothing", async () => {

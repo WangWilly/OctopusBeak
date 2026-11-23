@@ -119,6 +119,7 @@ const INVOKE_CHANNELS = {
     deletePreviewData: "settings:deletePreviewData",
     deleteFinancialData: "settings:deleteFinancialData",
     clearSignInData: "settings:clearSignInData",
+    signInDataStatus: "settings:signInDataStatus",
     collectAllSources: "settings:collectAllSources",
   },
   // A channel named after a financial operation forwards to it unchanged

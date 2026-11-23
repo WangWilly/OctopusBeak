@@ -135,8 +135,15 @@ export type AutomationActionResult =
   | { ok: true }
   | { ok: true; closed: boolean };
 
+/** What Clear all sign-in data would find and cost (ADR 0149). */
+export type SignInDataStatus = Readonly<{
+  /** `undecodable`: the Keychain cannot decrypt them, or the file is damaged; clearing replaces it. `unreachable`: a filesystem error; clearing fails. */
+  credentials: "readable" | "undecodable" | "unreachable";
+  clearRequiresFinancialDataDeletion: boolean;
+}>;
+
 /** The part of Settings a notification or another page opens. */
-export type SettingsFocus = "financial-data-deletion" | "app-updates";
+export type SettingsFocus = "financial-data-deletion" | "sign-in-data" | "app-updates";
 
 /** Where the App opens when the person clicks one of its notifications. */
 export type NotificationTarget =
@@ -243,6 +250,8 @@ export type OctopusBeakApi = {
     deleteFinancialData(): Promise<void>;
     /** Sign-in Erasure: every source's sign-in details and sessions. */
     clearSignInData(): Promise<void>;
+    /** Whether the stored Sign-in Details can be read, and whether clearing them would need a Canonical Reset (ADR 0149). */
+    signInDataStatus(): Promise<SignInDataStatus>;
     /** Starts every enabled source, as scheduled collection would. */
     collectAllSources(): Promise<AutomationRunManyResult>;
   };

@@ -286,8 +286,8 @@ assert.match(
 );
 assert.match(
   saveCredentialsSource,
-  /if \(\(await submission\.settled\) === "failed"\) runActions\.setError\(\$t\.automation\.saveCredentialsFailed\)/,
-  "a failed save shows the page's own copy, not the raw error",
+  /if \(\(await submission\.settled\) === "failed"\) \{[\s\S]*?runActions\.setError\(credentialsUnreadable\(live\.credentialStates\)\s*\?\s*\$t\.automation\.credentialsUnreadableBody\s*:\s*\$t\.automation\.saveCredentialsFailed\)/,
+  "a failed save shows the page's own copy, not the raw error, and says how to recover when the details cannot be read",
 );
 
 assert.match(source, /\{#each sheetView\.railEnabledGroups as group \(group\.id\)\}/);

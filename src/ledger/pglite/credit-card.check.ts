@@ -17,7 +17,7 @@ import { encodeCreditCardQueryBucket } from "../canonical/credit-card-query-inve
 import { creditCardSpineEpochKey, supersededCreditCardSpineEpochKeys } from "../canonical/credit-card-identity-epochs.ts";
 import { ESUN_CREDIT_CARD_IDENTITY_EPOCHS } from "../canonical/esun-credit-card-human-attestation-contract.ts";
 import { canonicalResetRequiredNamespaces, resetPGliteCanonicalStore } from "./canonical-reset.ts";
-import { applyPgliteCardIdentitySecretSchema } from "./card-identity-secret.ts";
+import { applyPgliteCardIdentitySecretSchema, cardAccountNamespaces } from "./card-identity-secret.ts";
 import { cardIdentitySecretVerifier } from "../../lib/shared-identity/card-identity-secret.ts";
 
 const route = "esun/credit-card/human-attested-v4";
@@ -499,6 +499,7 @@ test("card accounts from an earlier Card identity secret refuse captures from a 
     const original = cardSecret("original-secret", true);
     const replacement = cardSecret("replacement-secret", true);
     assert.equal((await commitPGliteCanonicalCreditCardCapture(store, capture("first-secret"), original)).status, "committed");
+    assert.deepEqual(await cardAccountNamespaces(store), ["esun"]);
     assert.deepEqual(await canonicalResetRequiredNamespaces(store, original.cardIdentitySecret), []);
     assert.deepEqual(await canonicalResetRequiredNamespaces(store, replacement.cardIdentitySecret), ["esun"]);
 

@@ -343,6 +343,11 @@ export const PGLITE_FINANCIAL_CONTRACTS = Object.freeze({
     (args) => args.length === 0,
     { lane: "background" },
   ),
+  /** Integration namespaces holding a credit-card account, which a new Card identity secret would split (ADR 0149). */
+  "financial.canonical.cardAccountNamespaces": operation<[], readonly string[]>(
+    (args) => args.length === 0,
+    { lane: "background" },
+  ),
 });
 
 export type PGliteFinancialOperation = keyof typeof PGLITE_FINANCIAL_CONTRACTS;

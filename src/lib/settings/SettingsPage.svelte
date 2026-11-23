@@ -51,7 +51,8 @@
     downloadPercent,
     type AppUpdateUiContext,
   } from "$lib/shared-shell/app-update-context.ts";
-  import type { SettingsFocus } from "$lib/desktop/api.ts";
+  import type { SettingsFocus, SignInDataStatus } from "$lib/desktop/api.ts";
+  import { signInDataGuidance } from "$lib/automation/credentials-unreadable.ts";
   import { activeSectionAt } from "$lib/settings/section-spy.ts";
 
   export let onboardingStatus: "active" | "exited" | "completed" | null = null;
@@ -116,6 +117,10 @@
   type DataActionStatus = "idle" | "confirming" | "pending" | "done" | "error";
   let financialDeleteStatus: DataActionStatus = "idle";
   let signInClearStatus: DataActionStatus = "idle";
+  /** Unknown until read; a failed read shows nothing extra rather than a guess. */
+  let signInStatus: SignInDataStatus | null = null;
+  let signInStatusRead = 0;
+  $: signInGuidance = signInDataGuidance(signInStatus);
   let collectStatus: "idle" | "pending" | "started" | "error" = "idle";
   let manualDeleteStatus: DataActionStatus = "idle";
   $: dataActionPending = financialDeleteStatus === "pending" || signInClearStatus === "pending" || manualDeleteStatus === "pending";
@@ -153,6 +158,7 @@
 
   onMount(() => {
     displayScaleAvailable = supportsDisplayScale(window.octopusBeak);
+    void readSignInStatus();
     shortcutModifier = isMacPlatform(navigator) ? "⌘" : "Ctrl";
     const clock = setInterval(() => (now = new Date()), 60_000);
     // Every scroll re-reads every section, so a section still in view is never
@@ -278,6 +284,9 @@
     if (target === "financial-data-deletion") {
       showSection("settings-data");
       document.getElementById("delete-financial-data")?.focus({ preventScroll: true });
+    } else if (target === "sign-in-data") {
+      showSection("settings-data");
+      document.getElementById("clear-sign-in-data")?.focus({ preventScroll: true });
     } else {
       showSection("settings-updates");
     }
@@ -407,6 +416,22 @@
     }
   }
 
+  async function readSignInStatus() {
+    const read = ++signInStatusRead;
+    try {
+      const next = await window.octopusBeak.settings.signInDataStatus();
+      // A slower earlier read must not overwrite a later one, such as the read after a clear.
+      if (read === signInStatusRead) signInStatus = next;
+    } catch {
+      // A failed read keeps what an earlier read knew.
+    }
+  }
+
+  async function confirmClearSignInData() {
+    signInClearStatus = "confirming";
+    await readSignInStatus();
+  }
+
   async function clearSignInData() {
     signInClearStatus = "pending";
     try {
@@ -415,6 +440,7 @@
     } catch {
       signInClearStatus = "error";
     }
+    await readSignInStatus();
   }
 
   function changeDisplayScale(value: number) {
@@ -941,6 +967,9 @@
             <div class="setting-label-group">
               <span class="setting-label">{$t.settings.clearSignInData}</span>
               <small class="setting-hint">{$t.settings.clearSignInDataHint}</small>
+              {#if signInGuidance.unreadableHint && signInClearStatus !== "done"}
+                <small id="sign-in-data-unreadable" class="setting-hint warning-hint" role="status">{$t.settings.signInDataUnreadable}</small>
+              {/if}
             </div>
             <div class="onboarding-setting-actions">
               {#if signInClearStatus === "done"}
@@ -955,7 +984,7 @@
                   type="button"
                   disabled={dataActionPending}
                   aria-busy={signInClearStatus === "pending"}
-                  onclick={() => (signInClearStatus = "confirming")}
+                  onclick={() => void confirmClearSignInData()}
                 >{signInClearStatus === "pending" ? $t.settings.clearingSignInData : $t.settings.clearSignInData}</button>
               {/if}
             </div>
@@ -963,9 +992,19 @@
           {#if signInClearStatus === "confirming"}
             <div class="restart-confirm" role="group" aria-labelledby="sign-in-clear-confirm">
               <p id="sign-in-clear-confirm">{$t.settings.clearSignInDataConfirm}</p>
+              {#if signInGuidance.resetWarning}
+                <p id="sign-in-clear-reset-warning" class="confirm-warning">{$t.settings.clearSignInDataResetWarning}</p>
+              {/if}
               <div class="onboarding-setting-actions">
                 <button class="button" type="button" onclick={() => (signInClearStatus = "idle")}>{$t.common.cancel}</button>
-                <button id="confirm-clear-sign-in-data" class="button danger" type="button" disabled={dataActionPending} onclick={clearSignInData}>{$t.settings.clearSignInDataAction}</button>
+                <button
+                  id="confirm-clear-sign-in-data"
+                  class="button danger"
+                  type="button"
+                  aria-describedby={signInGuidance.resetWarning ? "sign-in-clear-confirm sign-in-clear-reset-warning" : "sign-in-clear-confirm"}
+                  disabled={dataActionPending}
+                  onclick={clearSignInData}
+                >{$t.settings.clearSignInDataAction}</button>
               </div>
             </div>
           {/if}
@@ -1408,6 +1447,9 @@
     font-size: 13px;
     line-height: 1.5;
   }
+
+  .restart-confirm .confirm-warning,
+  .warning-hint { color: var(--warn); }
 
   .settings-error {
     display: flex;

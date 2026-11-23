@@ -96,6 +96,7 @@ export const AUTOMATION_SERVICE_CHANNELS = {
   "automation:previewStructureReport": "previewStructureReport",
   "automation:openPreviewStructureReportIssue": "openPreviewStructureReportIssue",
   "settings:clearSignInData": "clearSignInData",
+  "settings:signInDataStatus": "signInDataStatus",
   "settings:collectAllSources": "collectAllSources",
 } as const satisfies { readonly [Channel in InvokeChannel]?: ChannelMethod<Channel> };
 

@@ -36,7 +36,12 @@ import {
 } from "./credential-file.ts";
 import { reportCollection, type CollectionResult } from "./collection-summary.ts";
 import { scheduledCollectionTaskIds } from "./scheduled-collection.ts";
-import type { eraseSignInDetails } from "./sign-in-erasure.ts";
+import {
+  erasureReplacesCardIdentitySecret,
+  readSignInDetailsStanding,
+  type eraseSignInDetails,
+} from "./sign-in-erasure.ts";
+import type { SignInDataStatus } from "../../desktop/api.ts";
 import type { AutomationPersistenceProvider, AutomationTaskHistoryRow } from "./store.ts";
 import {
   AUTOMATION_CREDENTIAL_GROUPS,
@@ -311,7 +316,7 @@ export function createAutomationDesktopService<Owner>(deps: AutomationDesktopSer
               ? await credentials.refresh()
               : await credentials.read();
           } catch (error) {
-            if (block === "details") throw new Error("無法讀取登入資料");
+            // Every block degrades: the page says once that the details cannot be read and how to recover (ADR 0149).
             log.warn("automation-credential-state-read-failed", {
               code: "credential-state-unavailable",
               stage: "block",
@@ -424,6 +429,26 @@ export function createAutomationDesktopService<Owner>(deps: AutomationDesktopSer
     },
     fatalRuntimeSnapshot(): void {
       reportAutomationRuntimeFatal("renderer-resync");
+    },
+    /**
+     * Whether the stored Sign-in Details can be read, and whether clearing
+     * them now would also need a Canonical Reset: unreadable details take
+     * the Card identity secret with them, and card accounts derived from it
+     * then wait for one (ADR 0149).
+     */
+    async signInDataStatus(): Promise<SignInDataStatus> {
+      const standing = readSignInDetailsStanding(deps.credentials);
+      if (!erasureReplacesCardIdentitySecret(standing)) {
+        return { credentials: standing.kind, clearRequiresFinancialDataDeletion: false };
+      }
+      let holdsCardAccounts: boolean;
+      try {
+        holdsCardAccounts = (await provider.canonicalReset?.cardAccountNamespaces() ?? []).length > 0;
+      } catch {
+        // Unknown: warn rather than let a clear split card accounts unannounced.
+        holdsCardAccounts = true;
+      }
+      return { credentials: standing.kind, clearRequiresFinancialDataDeletion: holdsCardAccounts };
     },
     clearSignInData: () => clearAllSignInData(
       deps.collection,
