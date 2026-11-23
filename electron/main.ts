@@ -2,7 +2,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { app, autoUpdater, BrowserWindow, dialog, Notification, protocol, shell } from "electron";
+import { app, autoUpdater, BrowserWindow, dialog, Notification, powerMonitor, protocol, shell } from "electron";
 import {
   createAutomationRuntime,
   type AutomationRuntime,
@@ -699,6 +699,9 @@ async function start() {
   // Recovery owns the persisted active-run boundary: no schedule claims a run
   // until it is reconciled, while the shell and IPC go ahead meanwhile.
   services.startWhenReady(automationRuntimeReady);
+  // Timers do not count time the Mac sleeps; read the clock again whenever it wakes.
+  powerMonitor.on("resume", () => services.wake());
+  powerMonitor.on("unlock-screen", () => services.wake());
   if (packagedBrowserFixture) {
     void automationRuntimeReady
       .then(async () => await runPackagedBrowserWorkerFixture(

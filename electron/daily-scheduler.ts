@@ -18,7 +18,23 @@ type DailySchedulerDependencies = ClockDependencies & {
   readSchedule(): DailySchedule;
   fire(occurrenceUtc: string, isCurrent: () => boolean): Awaitable<void>;
   onReschedule: "catch-up" | "skip-passed-occurrence";
+  /**
+   * A missed occurrence is not caught up when the next one is due within
+   * this long: the next one runs soon, and two runs close together would
+   * repeat every sign-in for nothing.
+   */
+  catchUpGraceMs?: number;
 };
+
+/**
+ * The longest a timer waits before the scheduler reads the clock again.
+ * Timers do not count time the Mac sleeps, so one long timer would fire hours
+ * late; a short one bounds the drift even when no wake event arrives.
+ */
+export const MAX_TIMER_MS = 60 * 60 * 1000;
+
+/** Scheduled collection skips a catch-up when its next run is this close. */
+export const COLLECTION_CATCH_UP_GRACE_MS = 3 * 60 * 60 * 1000;
 
 export type ExchangeRateSchedulerDependencies = ClockDependencies & {
   readSettings(): ExchangeRateSettings;
@@ -125,6 +141,7 @@ export function createScheduledCollectionScheduler(deps: ScheduledCollectionSche
       return { time: settings.scheduledCollectionTime, timeZone: settings.systemTimezone };
     },
     onReschedule: "skip-passed-occurrence",
+    catchUpGraceMs: COLLECTION_CATCH_UP_GRACE_MS,
     async fire(occurrenceUtc, isCurrent) {
       if (!isCurrent() || !deps.readSettings().scheduledCollectionEnabled) return;
       await deps.startCollection(occurrenceUtc);
@@ -168,17 +185,33 @@ function createDailyScheduler(deps: DailySchedulerDependencies) {
   const armNext = (selected?: ReturnType<typeof readSchedule>) => {
     try {
       const { now, schedule: { nextOccurrenceUtc } } = selected ?? readSchedule();
+      const due = Date.parse(nextOccurrenceUtc);
       const token = deps.setTimer(() => {
         if (!running || timer !== token) return;
         timer = undefined;
+        // An early wake-up only reads the clock again.
+        if (deps.now().getTime() < due) {
+          armNext();
+          return;
+        }
         const expectedGeneration = generation;
         armNext();
         consider(nextOccurrenceUtc, expectedGeneration);
-      }, Math.max(0, Date.parse(nextOccurrenceUtc) - now.getTime()));
+      }, Math.min(MAX_TIMER_MS, Math.max(0, due - now.getTime())));
       timer = token;
     } catch (error) {
       report(error);
     }
+  };
+
+  /** Runs the latest occurrence if it was missed, unless the next one is about to run anyway. */
+  const catchUp = ({ now, schedule }: ReturnType<typeof readSchedule>) => {
+    const untilNext = Date.parse(schedule.nextOccurrenceUtc) - now.getTime();
+    if (deps.catchUpGraceMs !== undefined && untilNext < deps.catchUpGraceMs) {
+      lastConsideredOccurrenceUtc = schedule.latestOccurrenceUtc;
+      return;
+    }
+    consider(schedule.latestOccurrenceUtc, generation);
   };
 
   const start = () => {
@@ -186,9 +219,7 @@ function createDailyScheduler(deps: DailySchedulerDependencies) {
     running = true;
     try {
       const selected = readSchedule();
-      const { latestOccurrenceUtc } = selected.schedule;
-      const expectedGeneration = generation;
-      consider(latestOccurrenceUtc, expectedGeneration);
+      catchUp(selected);
       armNext(selected);
     } catch (error) {
       report(error);
@@ -220,6 +251,23 @@ function createDailyScheduler(deps: DailySchedulerDependencies) {
       }
     },
     stop,
+    /**
+     * The Mac woke or the screen unlocked: read the clock again, run an
+     * occurrence that passed while it slept, as a start would, and arm the
+     * next one from the real time.
+     */
+    wake() {
+      if (!running) return;
+      try {
+        const selected = readSchedule();
+        catchUp(selected);
+        if (timer !== undefined) deps.clearTimer(timer);
+        timer = undefined;
+        armNext(selected);
+      } catch (error) {
+        report(error);
+      }
+    },
     /**
      * Stop until the returned resume, which restarts only a scheduler that was
      * running. An occurrence that came due while paused is skipped rather than

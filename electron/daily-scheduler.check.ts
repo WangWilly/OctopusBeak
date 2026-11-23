@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  COLLECTION_CATCH_UP_GRACE_MS,
   createScheduledCollectionScheduler,
   createExchangeRateScheduler,
   exchangeRateSchedule,
+  MAX_TIMER_MS,
 } from "./daily-scheduler.ts";
+
+/** A timer waits at most MAX_TIMER_MS, then reads the clock again. */
+const armedFor = (ms: number) => Math.min(ms, MAX_TIMER_MS);
 
 type SystemSettingsDto = Parameters<typeof exchangeRateSchedule>[1];
 
@@ -252,7 +257,7 @@ test("the next occurrence fires once and arms the following day", async () => {
   await settle();
   assert.deepEqual(h.starts, ["2026-07-15T22:00:00.000Z"]);
   assert.equal(h.timers.length, 2);
-  assert.equal(h.timers[1].ms, 86_400_000);
+  assert.equal(h.timers[1].ms, armedFor(86_400_000));
 });
 
 test("reschedule clears the old timer and uses changed settings", () => {
@@ -265,7 +270,7 @@ test("reschedule clears the old timer and uses changed settings", () => {
   h.scheduler.reschedule();
   assert.deepEqual(h.cleared, [oldTimer]);
   assert.equal(h.timers.length, 2);
-  assert.equal(h.timers[1].ms, Date.parse("2026-07-16T11:30:00.000Z") - Date.parse("2026-07-15T21:00:00Z"));
+  assert.equal(h.timers[1].ms, armedFor(Date.parse("2026-07-16T11:30:00.000Z") - Date.parse("2026-07-15T21:00:00Z")));
 });
 
 test("reschedule runs a genuinely changed latest occurrence exactly once", async () => {
@@ -372,7 +377,7 @@ test("a skipped local date is reported and the following date is armed", () => {
   h.setNow("2011-12-30T09:30:00Z");
   h.scheduler.start();
   assert.equal(h.errors.length, 1);
-  assert.equal(h.timers[0]?.ms, 84_600_000);
+  assert.equal(h.timers[0]?.ms, armedFor(84_600_000));
 });
 
 test("lookup and start errors are reported without crashing or double-starting", async () => {
@@ -460,11 +465,20 @@ function collectionHarness(initial: { enabled: boolean; now: string }) {
     timers,
     starts,
     errors,
+    /** Runs the armed timer, and the ones it arms in turn, until one reaches its occurrence. */
     advanceToNextTimer: () => {
-      const timer = timers.at(-1)!;
-      currentNow = new Date(currentNow.getTime() + timer.ms);
-      timer.callback();
+      let elapsed = 0;
+      while (elapsed < 24 * 60 * 60 * 1000) {
+        const timer = timers.at(-1)!;
+        const armed = timers.length;
+        currentNow = new Date(currentNow.getTime() + timer.ms);
+        elapsed += timer.ms;
+        timer.callback();
+        // A scheduler that armed nothing (stopped or paused), or a last wait shorter than the cap, ends the advance.
+        if (timers.length === armed || timer.ms < MAX_TIMER_MS) return;
+      }
     },
+    setNow: (value: string) => { currentNow = new Date(value); },
     update: (next: Partial<typeof settings>) => { settings = { ...settings, ...next }; },
   };
 }
@@ -483,7 +497,7 @@ test("scheduled collection starts once at the daily time on each following day",
     "2026-07-15T23:00:00.000Z",
     "2026-07-16T23:00:00.000Z",
   ]);
-  assert.equal(h.timers.at(-1)!.ms, 24 * 60 * 60 * 1000, "the next run is armed one day later");
+  assert.equal(h.timers.at(-1)!.ms, armedFor(24 * 60 * 60 * 1000), "the next run is armed one day later");
   assert.deepEqual(h.errors, []);
 });
 
@@ -520,12 +534,13 @@ test("turning scheduled collection on or moving its time does not run a time tha
 });
 
 test("a paused scheduled collection starts nothing until resumed, and resume leaves a stopped scheduler stopped", async () => {
-  const h = collectionHarness({ enabled: true, now: "2026-07-14T22:00:00Z" });
+  const h = collectionHarness({ enabled: true, now: "2026-07-14T18:00:00Z" });
   h.scheduler.start();
   await settle();
-  assert.deepEqual(h.starts, ["2026-07-13T23:00:00.000Z"], "launch catches up the previous 07:00");
+  assert.deepEqual(h.starts, ["2026-07-13T23:00:00.000Z"], "launch at 02:00 catches up the previous 07:00");
   const resume = h.scheduler.pause();
-  h.advanceToNextTimer();
+  h.timers.at(-1)!.callback();
+  h.setNow("2026-07-15T00:00:00Z");
   await settle();
   assert.equal(h.starts.length, 1, "the occurrence that came due while paused did not start");
   resume();
@@ -539,4 +554,65 @@ test("a paused scheduled collection starts nothing until resumed, and resume lea
   stopped.scheduler.pause()();
   await settle();
   assert.deepEqual(stopped.starts, [], "a scheduler that never started stays stopped");
+});
+
+test("a Mac asleep through the scheduled time runs it once on waking, not hours later", async () => {
+  const h = collectionHarness({ enabled: true, now: "2026-07-14T18:00:00Z" });
+  h.scheduler.start();
+  await settle();
+  const starts = h.starts.length;
+  const armed = h.timers.at(-1)!;
+  assert.equal(armed.ms, MAX_TIMER_MS, "no timer waits longer than the cap");
+
+  // Asleep from 02:00 until 10:30 local; 07:00 passed during the sleep.
+  h.setNow("2026-07-15T02:30:00Z");
+  h.scheduler.wake();
+  await settle();
+  assert.deepEqual(h.starts.slice(starts), ["2026-07-14T23:00:00.000Z"], "waking runs the missed 07:00 once");
+  assert.equal(h.timers.at(-1)!.ms, MAX_TIMER_MS, "the next 07:00 is armed from the real time");
+
+  armed.callback();
+  h.timers.at(-1)!.callback();
+  h.scheduler.wake();
+  await settle();
+  assert.equal(h.starts.length, starts + 1, "a late timer or a second wake does not run it again");
+});
+
+test("a late timer after a sleep without a wake event still runs the occurrence once", async () => {
+  const h = collectionHarness({ enabled: true, now: "2026-07-14T22:30:00Z" });
+  h.scheduler.start();
+  await settle();
+  const timer = h.timers.at(-1)!;
+  assert.equal(timer.ms, 30 * 60 * 1000);
+  h.setNow("2026-07-15T03:00:00Z");
+  timer.callback();
+  await settle();
+  assert.deepEqual(h.starts, ["2026-07-14T23:00:00.000Z"]);
+});
+
+test("waking before the scheduled time starts nothing and re-arms from the real time", async () => {
+  const h = collectionHarness({ enabled: true, now: "2026-07-14T18:00:00Z" });
+  h.scheduler.start();
+  await settle();
+  const starts = h.starts.length;
+  h.setNow("2026-07-14T22:20:00Z");
+  h.scheduler.wake();
+  await settle();
+  assert.equal(h.starts.length, starts);
+  assert.equal(h.timers.at(-1)!.ms, 40 * 60 * 1000);
+});
+
+test("a missed collection is not caught up when the next one is due within the grace period", async () => {
+  const soon = collectionHarness({ enabled: true, now: "2026-07-14T22:00:00Z" });
+  soon.scheduler.start();
+  await settle();
+  assert.deepEqual(soon.starts, [], "launching at 06:00 leaves yesterday's run to today's 07:00");
+  soon.advanceToNextTimer();
+  await settle();
+  assert.deepEqual(soon.starts, ["2026-07-14T23:00:00.000Z"], "07:00 runs once");
+
+  const early = collectionHarness({ enabled: true, now: "2026-07-14T19:59:00Z" });
+  early.scheduler.start();
+  await settle();
+  assert.deepEqual(early.starts, ["2026-07-13T23:00:00.000Z"], `more than ${COLLECTION_CATCH_UP_GRACE_MS / 3_600_000} hours ahead, the missed run catches up`);
 });

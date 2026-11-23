@@ -11,6 +11,7 @@ function harness(run: HostServiceDependencies["run"] = { schedules: true, usageP
       start: () => { running = true; log.push(`${name}.start`); },
       stop: () => { running = false; log.push(`${name}.stop`); },
       reschedule: () => { log.push(`${name}.reschedule`); },
+      wake: () => { log.push(`${name}.wake`); },
       pause: () => {
         const wasRunning = running;
         running = false;
@@ -157,4 +158,10 @@ test("pausing the schedules pauses both, and the returned resume resumes both", 
     "exchangeRates.resume (idle)",
     "collection.resume (idle)",
   ], "a fixture launch's schedules are paused and resumed too; each schedule keeps its own idle state");
+});
+
+test("waking the Mac wakes both schedules", () => {
+  const { services, log } = harness();
+  services.wake();
+  assert.deepEqual(log, ["exchangeRates.wake", "collection.wake"]);
 });
