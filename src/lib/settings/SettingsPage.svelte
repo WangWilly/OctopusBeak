@@ -418,14 +418,13 @@
 
   async function readSignInStatus() {
     const read = ++signInStatusRead;
-    let next: SignInDataStatus | null;
     try {
-      next = await window.octopusBeak.settings.signInDataStatus();
+      const next = await window.octopusBeak.settings.signInDataStatus();
+      // A slower earlier read must not overwrite a later one, such as the read after a clear.
+      if (read === signInStatusRead) signInStatus = next;
     } catch {
-      next = null;
+      // A failed read keeps what an earlier read knew.
     }
-    // A slower earlier read must not overwrite a later one, such as the read after a clear.
-    if (read === signInStatusRead) signInStatus = next;
   }
 
   async function confirmClearSignInData() {

@@ -14,6 +14,7 @@ import { AUTOMATION_MANAGED_SECRET_KEYS } from "./tasks.ts";
  * reached (a filesystem error) is not one that cannot be decoded: erasure
  * fails on it and keeps it, rather than replacing it.
  */
+// Its kind is the `credentials` of SignInDataStatus in desktop/api.ts.
 export type SignInDetailsStanding =
   | Readonly<{ kind: "readable"; stored: AutomationCredentialsFile }>
   | Readonly<{ kind: "undecodable" }>

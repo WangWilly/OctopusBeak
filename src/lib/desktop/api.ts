@@ -135,7 +135,6 @@ export type AutomationActionResult =
   | { ok: true }
   | { ok: true; closed: boolean };
 
-/** The part of Settings a notification or another page opens. */
 /** What Clear all sign-in data would find and cost (ADR 0149). */
 export type SignInDataStatus = Readonly<{
   /** `undecodable`: the Keychain cannot decrypt them, or the file is damaged; clearing replaces it. `unreachable`: a filesystem error; clearing fails. */
@@ -143,6 +142,7 @@ export type SignInDataStatus = Readonly<{
   clearRequiresFinancialDataDeletion: boolean;
 }>;
 
+/** The part of Settings a notification or another page opens. */
 export type SettingsFocus = "financial-data-deletion" | "sign-in-data" | "app-updates";
 
 /** Where the App opens when the person clicks one of its notifications. */

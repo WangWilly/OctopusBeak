@@ -40,8 +40,8 @@ import {
   erasureReplacesCardIdentitySecret,
   readSignInDetailsStanding,
   type eraseSignInDetails,
-  type SignInDetailsStanding,
 } from "./sign-in-erasure.ts";
+import type { SignInDataStatus } from "../../desktop/api.ts";
 import type { AutomationPersistenceProvider, AutomationTaskHistoryRow } from "./store.ts";
 import {
   AUTOMATION_CREDENTIAL_GROUPS,
@@ -168,11 +168,6 @@ function unreadableCredentialState(): AutomationCredentialStateDto {
     invalidFileReasons: {},
   };
 }
-
-export type SignInDataStatus = Readonly<{
-  credentials: SignInDetailsStanding["kind"];
-  clearRequiresFinancialDataDeletion: boolean;
-}>;
 
 export function externalPrerequisiteById(prerequisiteId: string) {
   for (const task of AUTOMATION_TASKS) {

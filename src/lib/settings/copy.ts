@@ -295,7 +295,7 @@ const zh: typeof en = {
     clearingSignInData: "清除中...",
     signInDataCleared: "已清除登入資料",
     clearSignInDataFailed: "無法清除登入資料，請再試一次。",
-    signInDataUnreadable: "已儲存的登入資料無法讀取，換到新的 Mac 或重設鑰匙圈後可能發生。請在這裡清除，再重新輸入各來源的登入資料。",
+    signInDataUnreadable: "已儲存的登入資料無法讀取，例如換到新的 Mac 或重設鑰匙圈之後。請在這裡清除，再重新輸入各來源的登入資料。",
     clearSignInDataResetWarning: "財務資料這次會保留，但清除時也會換掉用來辨識信用卡的金鑰。之後信用卡來源要先刪除收集的財務資料才能再同步，同一張卡才不會被收集兩次。",
     saving: "儲存中...",
     settingsSaved: "設定已儲存。",
