@@ -1606,10 +1606,19 @@ async function persistAccountIdentifier(
   validateCanonicalSourceAccountNumber(identifier);
   await txQuery(
     transaction,
+    // Only the first admitted sighting of an identifier is kept: account identity
+    // continuity (ADR 0049) asks only whether one exists, and a row per
+    // capture would grow with every sync (ADR 0152).
     `INSERT INTO financial_account_identifier_observations(
        observation_id, account_id, capture_id, source_record_id, commit_id,
        identifier_kind, identifier_value, evidence_version, source_field, observed_at
-     ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)
+     )
+     SELECT ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?
+      WHERE NOT EXISTS (
+        SELECT 1 FROM financial_account_identifier_observations seen
+         WHERE seen.account_id = ? AND seen.identifier_kind = ? AND seen.identifier_value = ?
+           AND seen.evidence_version = ? AND seen.source_field = ?
+      )
      ON CONFLICT(account_id, capture_id, identifier_kind, identifier_value) DO NOTHING`,
     [
       uuidBytes(),
@@ -1621,6 +1630,11 @@ async function persistAccountIdentifier(
       identifier.evidenceVersion,
       identifier.sourceField,
       request.capture.observedAt,
+      accountId,
+      identifier.kind,
+      identifier.value,
+      identifier.evidenceVersion,
+      identifier.sourceField,
     ],
   );
 }

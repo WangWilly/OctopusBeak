@@ -139,6 +139,8 @@ test("one admitted account carrying the identifier continues under its source ac
       { status: "continued", sourceAccountKey: admittedKey },
       "two observations of the same account are one match",
     );
+    const stored = await store.query<{ count: number }>("SELECT count(*)::int AS count FROM financial_account_identifier_observations");
+    assert.equal(stored.rows[0]!.count, 1, "a re-sync seeing the same identifier stores no second observation (ADR 0152)");
   });
 });
 
