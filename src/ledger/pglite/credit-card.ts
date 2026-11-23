@@ -328,13 +328,13 @@ async function listExpectedBilledMembers(
   return billedByGroup;
 }
 
-type LatestLifecycle = Readonly<{ billingStatus: string; instrumentKey: string; direction: string }>;
+type LatestLifecycle = Readonly<{ billingStatus: "billed" | "unbilled"; instrumentKey: string; direction: string }>;
 
 /**
  * Each transaction's latest lifecycle row: the one written by the latest
  * commit, by commit sequence. It is read by transaction rather than through a
- * Source Record copy, so it holds when a later capture reuses an older copy and
- * writes lifecycle rows only on change (ADR 0152). A transaction without a
+ * Source Record copy, so it holds when the latest copy has no lifecycle row of
+ * its own: a new copy whose lifecycle row was skipped as unchanged (ADR 0152). A transaction without a
  * lifecycle row is absent from the result.
  */
 async function listLatestLifecycle(
@@ -343,7 +343,7 @@ async function listLatestLifecycle(
 ): Promise<ReadonlyMap<string, LatestLifecycle>> {
   const ids = [...new Set(transactionIds)];
   if (ids.length === 0) return new Map();
-  const rows = await query<{ transaction_id: unknown; billing_status: string; instrument_key: string; direction: string }>(transaction, `
+  const rows = await query<{ transaction_id: unknown; billing_status: "billed" | "unbilled"; instrument_key: string; direction: string }>(transaction, `
     SELECT DISTINCT ON (lifecycle.transaction_id)
       lifecycle.transaction_id, lifecycle.billing_status, instrument.instrument_key, revision.direction
     FROM canonical_credit_card_transaction_lifecycle lifecycle

@@ -766,9 +766,10 @@ test("a Yuanta billed member that reverts to unbilled in its queried statement b
 
 /**
  * Two captures store two copies of one member, then the newest lifecycle row
- * is deleted. That is the state a re-sync leaves once it reuses an older copy
- * and writes lifecycle rows only on change (ADR 0152): the latest copy has no
- * lifecycle row of its own, and only an earlier capture records the status.
+ * is deleted. Under ADR 0152, a re-sync writes a new copy when a stored field
+ * or the coverage shape differs, and skips the lifecycle row when the billing
+ * status is unchanged. The latest copy then has no lifecycle row of its own,
+ * and only an earlier capture records the status.
  */
 async function storeMembersWithoutLatestLifecycle(store: PGliteStore, billingStatuses: readonly ("billed" | "unbilled")[]): Promise<void> {
   await commitPGliteCanonicalCreditCardCapture(store, statementGridCapture("first-copy", billingStatuses));
