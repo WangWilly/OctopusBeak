@@ -1,0 +1,11 @@
+{
+  "name": "octopusbeak-cashflow-social",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "npx --yes hyperframes@0.9.72 preview",
+    "check": "npx --yes hyperframes@0.9.72 check",
+    "render": "npx --yes hyperframes@0.9.72 render",
+    "publish": "npx --yes hyperframes@0.9.72 publish"
+  }
+}

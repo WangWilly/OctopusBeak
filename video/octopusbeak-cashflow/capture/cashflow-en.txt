@@ -1,0 +1,232 @@
+10/01–10/31 · 31 days
+
+This period, of every 100 that came in, 50 stayed
+TWD
+USD
+This week
+This month
+Last 30 days
+Custom
+Inflow
+86,912
+2 items · Salary 99.5%
+−
+Outflow
+43,744
+22 items · Home 67%
+=
+Kept
+43,168
+50% of inflow, up 30 points on the previous period
+Between your accounts · not counted
+Internal transfer · 1
+TWD 30,000
+1 confirmed
+Currency exchange · 1
+TWD 32,064
+1 to review
+Unpaired · 2
+TWD 24,040
+Inflow
+Salary 86,500
+Outflow
+Home 29,381
+Kept 43,168 · 50%
+Inflow
+Salary
+86,500
+Interest
+412
+Outflow
+Home
+29,381
+Transport
+4,736
+Dining
+3,458
+Daily
+2,889
+Shopping
+1,780
+Leisure
+1,500
+Daily list
+
+31 days · 32 transactions
+
+Export CSV
+11
+Sun, October
+Day net
+−860
+誠品生活－松菸店
+Leisure · E.SUN Bank
+−860
+10
+Sat, October
+Day net
++412
+11:48
+利息存入 · 活期存款息
+Interest · Taipei Fubon Bank 7028
++412
+09
+Fri, October
+Day net
+−120
+14:20
+跨行轉帳 · 元大證券交割
+Internal transfer · Taipei Fubon Bank 7028
+Internal transfer · paired
+−30,000
+14:20
+跨行轉入 · 富邦松江 7028 轉入
+Internal transfer · Taipei Fubon Bank 7036
+Internal transfer · paired
+30,000
+台北市停車管理工程處
+Transport · E.SUN Bank
+−120
+08
+Thu, October
+Day net
+−3,988
+21:05
+網銀轉帳 · 自轉 定存帳戶
+Internal transfer · Taipei Fubon Bank 7028
+Internal transfer · not counted
+−8,000
+06:30
+代繳電費 · 台灣電力公司
+Home · Taipei Fubon Bank 7028
+−1,568
+UNIQLO 微風南山
+Shopping · E.SUN Bank
+−1,780
+威秀影城－信義
+Leisure · E.SUN Bank
+−640
+07
+Wed, October
+Day net
+−1,148
+USD +500.00
+20:11
+ATM提款 · 富邦松江ATM
+Cash withdrawal · Taipei Fubon Bank 7028
+Cash withdrawal
+−5,000
+09:52
+匯入匯款
+Other transfers in · Yuanta Bank 7835
+USD +500.00
+09:40
+網銀換匯 · 元大外幣 7835
+Internal transfer · Taipei Fubon Bank 7028
+Internal transfer · not counted
+−16,040
+蝦皮購物
+Home · E.SUN Bank
+−1,148
+06
+Tue, October
+Day net
+−3,074
+18:42
+金融卡消費 · 全聯福利中心松江店
+Daily · Taipei Fubon Bank 7028
+−1,286
+UBER EATS
+Dining · E.SUN Bank
+−438
+台灣中油－直營民權站
+Transport · E.SUN Bank
+−1,350
+05
+Mon, October
+Day net
++61,992
+10:05
+網銀轉帳 · 房租
+Home · Taipei Fubon Bank 7028
+−22,000
+08:12
+薪資轉入 · 台灣雲端科技股份有限公司
+Salary · Taipei Fubon Bank 7028
++86,500
+饗食天堂－京站店
+Dining · E.SUN Bank
+−2,178
+星巴克－信義誠品門市
+Dining · E.SUN Bank
+−330
+04
+Sun, October
+Day net
+−4,380
+台灣高鐵－左營站
+Transport · E.SUN Bank
+−1,490
+IKEA 新店店
+Home · E.SUN Bank
+−2,890
+03
+Sat, October
+Day net
+−1,730
+10:21
+行動換匯
+Internal transfer · Yuanta Bank 7835
+Internal transfer · paired
+USD 1,000.00
+10:21
+行動換匯
+Internal transfer · Yuanta Bank 7819
+Internal transfer · paired
+−32,064
+UBER TRIP
+Transport · E.SUN Bank
+−286
+全聯福利中心－台北民生
+Daily · E.SUN Bank
+−1,444
+02
+Fri, October
+Day net
+−1,775
+06:30
+代繳水費 · 臺北自來水事業處
+Home · Taipei Fubon Bank 7028
+−386
+中華電信－電信費
+Home · E.SUN Bank
+−999
+NETFLIX.COM
+Home · E.SUN Bank
+−390
+01
+Thu, October
+Day net
+−2,161
+12:08
+金融卡消費 · 7-ELEVEN 松江門市
+Daily · Taipei Fubon Bank 7028
+−159
+台灣高鐵－台北站
+Transport · E.SUN Bank
+−1,490
+UBER EATS
+Dining · E.SUN Bank
+−512
+Account net change
+
+Transfers included: where the money moved. Select an account to filter the list.
+
+Taipei Fubon Bank 7036
++30,000
+Taipei Fubon Bank 7028
++2,473
+E.SUN Bank
+−18,345
+Yuanta Bank 7819
+−32,064
