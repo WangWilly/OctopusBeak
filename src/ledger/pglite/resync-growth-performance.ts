@@ -9,24 +9,33 @@
  *   npm run check:pglite-resync-growth
  *
  * PGLITE_RESYNC_RECORDS (default 200) and PGLITE_RESYNC_SYNCS (default 10)
- * size the run; PGLITE_RESYNC_MODE is `deposit`, `card-route` or `both`.
- * Both modes go through the generic commit; `card-route` uses a credit-card
- * route and bucket coverage, one bucket per day so a day leaves the inventory
- * with the window, but not the credit-card command, whose own rows a later
- * step measures.
+ * size the run; PGLITE_RESYNC_MODE is `deposit`, `card-route`, `card-command`
+ * or `all`. `deposit` and `card-route` go through the generic commit;
+ * `card-route` uses a credit-card route and bucket coverage, one bucket per
+ * day so a day leaves the inventory with the window. `card-command` drives
+ * the credit-card command on the same records, with an instrument, statements
+ * and each purchase's card details and lifecycle, so it also measures the
+ * command's own rows.
  */
 import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { PGlite } from "@electric-sql/pglite";
 import { assignOccurrenceSlots } from "../canonical/occurrence-groups.ts";
+import { encodeCreditCardQueryBucket } from "../canonical/credit-card-query-inventory.ts";
 import {
   commitPGliteCanonicalFinancialCapture,
   type PGliteCanonicalFinancialCommitRequest,
 } from "./canonical-source-store.ts";
+import {
+  commitPGliteCanonicalCreditCardCapture,
+  type PGliteCanonicalCreditCardCaptureRequest,
+  type PGliteCanonicalCreditCardStatement,
+} from "./credit-card.ts";
 import { installFinancialStore } from "./store-layout.ts";
 import type { PGliteStore } from "./transaction.ts";
 
-type Mode = "deposit" | "card-route";
+type Mode = "deposit" | "card-route" | "card-command";
+const ALL_MODES: readonly Mode[] = ["deposit", "card-route", "card-command"];
 
 function positiveInteger(name: string, fallback: number, minimum: number): number {
   const value = Number(process.env[name] ?? fallback);
@@ -37,10 +46,11 @@ function positiveInteger(name: string, fallback: number, minimum: number): numbe
 const RECORDS = positiveInteger("PGLITE_RESYNC_RECORDS", 200, 20);
 const SYNCS = positiveInteger("PGLITE_RESYNC_SYNCS", 10, 2);
 const MODES: readonly Mode[] = (() => {
-  const mode = process.env.PGLITE_RESYNC_MODE ?? "both";
-  if (mode === "both") return ["deposit", "card-route"];
-  if (mode === "deposit" || mode === "card-route") return [mode];
-  throw new Error("PGLITE_RESYNC_MODE must be deposit, card-route or both.");
+  const mode = process.env.PGLITE_RESYNC_MODE ?? "all";
+  if (mode === "all") return ALL_MODES;
+  const chosen = ALL_MODES.find((candidate) => candidate === mode);
+  if (chosen === undefined) throw new Error("PGLITE_RESYNC_MODE must be deposit, card-route, card-command or all.");
+  return [chosen];
 })();
 
 /**
@@ -60,12 +70,19 @@ const BYTES_PER_RECORD_BUDGET = 256;
 const token = (value: string) => `sha256:${createHash("sha256").update(value, "utf8").digest("base64url")}`;
 const day = (index: number) => new Date(Date.UTC(2026, 0, 1) + index * 86_400_000).toISOString().slice(0, 10);
 
+/**
+ * One bucket per day. The credit-card command reads its buckets, so it gets
+ * a statement bucket for the day, which promises Billed Monotonicity (ADR 0062).
+ */
+const bucketKey = (mode: Mode, date: string): string =>
+  mode === "card-command" ? encodeCreditCardQueryBucket({ kind: "statement", period: date }) : date;
+
 /** One complete bounded capture of the `RECORDS` synthetic rows inside the window, which moves a day per sync. */
 function capture(mode: Mode, sync: number): PGliteCanonicalFinancialCommitRequest {
   const captureId = `${mode}-capture-${sync}`;
   const startDate = day(sync - 1);
   const endDate = day(180 + sync);
-  const card = mode === "card-route";
+  const card = mode !== "deposit";
   const scopeKey = token("scope");
   const routeKey = card ? "fubon/credit-card/human-attested-v2" : "fubon/domestic-deposit/human-attested-v1";
   const contractVersion = card ? routeKey : "human-attested-v1";
@@ -74,7 +91,7 @@ function capture(mode: Mode, sync: number): PGliteCanonicalFinancialCommitReques
     index,
     date: day((index % 10 === 9 ? index - 1 : index) % 180),
     fingerprint: token(`row-${index % 10 === 9 ? index - 1 : index}`),
-  })).filter((row) => row.date >= startDate).map((row) => ({ ...row, bucketKey: card ? row.date : undefined }));
+  })).filter((row) => row.date >= startDate).map((row) => ({ ...row, bucketKey: card ? bucketKey(mode, row.date) : undefined }));
   const slots = assignOccurrenceSlots({
     rows,
     complete: true,
@@ -171,6 +188,87 @@ function capture(mode: Mode, sync: number): PGliteCanonicalFinancialCommitReques
   };
 }
 
+/** Days a statement spans; a statement is listed while the window holds all of its days. */
+const STATEMENT_DAYS = 10;
+
+/**
+ * The same capture through the credit-card command: one instrument, every
+ * purchase billed on the statement of its ten-day block, and that statement's
+ * summary. A statement whose first day the window has passed is no longer
+ * listed, as its members leave the window with it.
+ */
+function cardCommandCapture(sync: number): PGliteCanonicalCreditCardCaptureRequest {
+  const generic = capture("card-command", sync);
+  const instrumentOccurrence = token("instrument");
+  const firstDay = Date.UTC(2026, 0, 1);
+  const statementKeyOf = (date: string) =>
+    `statement-${Math.floor((Date.parse(`${date}T00:00:00Z`) - firstDay) / 86_400_000 / STATEMENT_DAYS)}`;
+  const factDates = new Map(generic.transactions.map((fact) => [fact.sourceOccurrenceKey, fact.effectiveOn]));
+  const members = new Map<string, string[]>();
+  for (const fact of generic.transactions) {
+    const key = statementKeyOf(fact.effectiveOn);
+    members.set(key, [...(members.get(key) ?? []), fact.sourceOccurrenceKey]);
+  }
+  const statements: PGliteCanonicalCreditCardStatement[] = [...members]
+    .filter(([key]) => {
+      const block = Number(key.slice("statement-".length));
+      return day(block * STATEMENT_DAYS) >= generic.capture.scope.startDate;
+    })
+    .map(([statementKey, occurrences]) => ({
+      statementKey,
+      revisionKey: `${statementKey}-revision-1`,
+      cycleStart: factDates.get(occurrences[0]!)!,
+      cycleEnd: factDates.get(occurrences.at(-1)!)!,
+      issueDate: factDates.get(occurrences.at(-1)!)!,
+      dueDate: factDates.get(occurrences.at(-1)!)!,
+      currency: "TWD",
+      balance: { coefficient: String(occurrences.length * 1000), scale: 0 },
+      minimumPayment: { coefficient: "100", scale: 0 },
+      transactionSourceOccurrenceKeys: occurrences,
+      evidenceSourceOccurrenceKey: token(statementKey),
+    }));
+  const records = [
+        ...generic.capture.records,
+        {
+          occurrenceKey: instrumentOccurrence,
+          providerKey: token("instrument-provider"),
+          contentHash: token("instrument-content"),
+          compact: { kind: "instrument", instrumentKey: "primary" },
+        },
+        ...statements.map((statement) => ({
+          occurrenceKey: statement.evidenceSourceOccurrenceKey,
+          providerKey: token(`${statement.statementKey}-provider`),
+          contentHash: token(`${statement.statementKey}-content`),
+          compact: { kind: "statement", statementKey: statement.statementKey },
+        })),
+  ];
+  return {
+    capture: {
+      ...generic.capture,
+      pages: [{ pageOrdinal: 0, responseCode: "200", rowCount: records.length, terminal: true, metadata: { pageCount: 1 } }],
+      records,
+    },
+    account: generic.account,
+    identity: { accountNaturalKey: token("card-account"), identityMethod: "opaque-provider-account" },
+    instruments: [{ instrumentKey: "primary", cardMask: "****4281", role: "primary", lifecycle: "active", evidenceSourceOccurrenceKey: instrumentOccurrence }],
+    transactions: generic.transactions.map((fact) => ({
+      ...fact,
+      instrumentKey: "primary",
+      billingStatus: "billed" as const,
+      consumeDate: fact.effectiveOn,
+      postingDate: fact.effectiveOn,
+      effectiveDateBasis: "consume-date" as const,
+      statementKey: statementKeyOf(fact.effectiveOn),
+    })),
+    statements,
+  };
+}
+
+async function commit(store: PGliteStore, mode: Mode, sync: number): Promise<void> {
+  if (mode === "card-command") await commitPGliteCanonicalCreditCardCapture(store, cardCommandCapture(sync));
+  else await commitPGliteCanonicalFinancialCapture(store, capture(mode, sync));
+}
+
 async function rowCounts(store: PGliteStore): Promise<Map<string, number>> {
   const tables = await store.query<{ name: string }>(
     `SELECT table_name AS name FROM information_schema.tables
@@ -201,13 +299,13 @@ async function deadTuples(store: PGliteStore): Promise<number> {
 async function measure(mode: Mode) {
   const store = await installFinancialStore(await PGlite.create());
   try {
-    await commitPGliteCanonicalFinancialCapture(store, capture(mode, 1));
+    await commit(store, mode, 1);
     const afterFirst = await rowCounts(store);
     const bytesAfterFirst = await databaseBytes(store);
     const deadAfterFirst = await deadTuples(store);
     const started = performance.now();
     for (let sync = 2; sync <= SYNCS; sync += 1) {
-      await commitPGliteCanonicalFinancialCapture(store, capture(mode, sync));
+      await commit(store, mode, sync);
     }
     const resyncMs = (performance.now() - started) / (SYNCS - 1);
     const afterLast = await rowCounts(store);
