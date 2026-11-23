@@ -679,8 +679,8 @@ export async function commitPGliteCanonicalLoanCaptureInTransaction(
 ): Promise<PGliteCanonicalLoanCommitResult> {
   const snapshot = structuredClone(request);
   validateLoanCapture(snapshot.capture);
-    const plan = await planLoanCitations(transaction, snapshot.capture);
-    const reuse = options.reuseSourceRecords !== false;
+  const plan = await planLoanCitations(transaction, snapshot.capture);
+  const reuse = options.reuseSourceRecords !== false;
     const mainAdmitted = await admitPGliteCanonicalFinancialCaptureInTransaction(transaction, {
       capture: captureSource(snapshot.capture),
       account: loanAccount(snapshot.capture),

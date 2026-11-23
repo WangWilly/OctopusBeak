@@ -4,7 +4,7 @@ Status: accepted
 
 [ADR 0008](./0008-source-scoped-lineage-and-strict-canonical-admission.md) amends this model's identity, source-evidence retention, admission, temporal requirements, `unknown`, candidate, and user-correction semantics. Where this ADR describes provisional or cross-source identity, raw replayable records, optional Balance/Holding effective time, canonical conflicts, or financial match candidates, ADR 0008 governs.
 
-Accepted amendment: [ADR 0152](./0152-an-unchanged-re-sync-reuses-stored-source-records.md) writes a Security name observation only when the name changes, instead of one per admitted Capture.
+Accepted amendment: [ADR 0152](./0152-an-unchanged-re-sync-reuses-stored-source-records.md) writes a Security name observation only when the Security is new or its name or contract version changes, instead of one per admitted Capture.
 
 ## Context
 
