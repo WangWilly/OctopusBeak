@@ -452,26 +452,28 @@ export async function refreshPGliteTransactionFields(
   await refreshCurrentFields(transaction, { commitId: commit.id, cutoffSequence: commit.sequence }, affected);
   const active = await first<Row>(transaction, "SELECT generation_id FROM active_projection_generation WHERE singleton_id = 1");
   if (!active) return;
-  const generationId = Number(active.generation_id);
-  await query(
-    transaction,
-    `DELETE FROM projection_generation_transaction_fields
-      WHERE generation_id = ?
-        AND transaction_id IN (${inList(affected)})`,
-    [generationId, ...affected],
-  );
-  await query(
-    transaction,
-    `INSERT INTO projection_generation_transaction_fields(
-       generation_id, transaction_id, field_name, value_text, origin,
-       derived_assertion_id, user_assertion_id, projection_commit_id
-     )
-     SELECT ?, field.transaction_id, field.field_name, field.value_text, field.origin,
-            field.derived_assertion_id, field.user_assertion_id, field.projection_commit_id
-       FROM current_transaction_fields field
-      WHERE field.transaction_id IN (${inList(affected)})`,
-    [generationId, ...affected],
-  );
+  await syncGenerationTransactionFields(transaction, Number(active.generation_id), affected);
+}
+
+/** Copies the current display names and notes of `affected` into the generation. */
+async function syncGenerationTransactionFields(
+  transaction: PGliteTransaction,
+  generationId: number,
+  affected: readonly Uint8Array[],
+): Promise<void> {
+  await writeProjectedRows(transaction, {
+    table: "projection_generation_transaction_fields",
+    keys: ["generation_id", "transaction_id", "field_name"],
+    values: ["value_text", "origin", "derived_assertion_id", "user_assertion_id", "projection_commit_id"],
+    scope: `target.generation_id = ? AND target.transaction_id IN (${inList(affected)})`,
+    scopeParams: [generationId, ...affected],
+    source: `SELECT ?::bigint AS generation_id, field.transaction_id, field.field_name, field.value_text,
+                    field.origin, field.derived_assertion_id, field.user_assertion_id,
+                    field.projection_commit_id
+               FROM current_transaction_fields field
+              WHERE field.transaction_id IN (${inList(affected)})`,
+    sourceParams: [generationId, ...affected],
+  });
 }
 
 /**
@@ -611,19 +613,7 @@ async function syncGenerationTransactions(
               WHERE current_row.transaction_id IN (${inList(affected)})`,
     sourceParams: [generationId, ...affected],
   });
-  await writeProjectedRows(transaction, {
-    table: "projection_generation_transaction_fields",
-    keys: ["generation_id", "transaction_id", "field_name"],
-    values: ["value_text", "origin", "derived_assertion_id", "user_assertion_id", "projection_commit_id"],
-    scope,
-    scopeParams: [generationId, ...affected],
-    source: `SELECT ?::bigint AS generation_id, field.transaction_id, field.field_name, field.value_text,
-                    field.origin, field.derived_assertion_id, field.user_assertion_id,
-                    field.projection_commit_id
-               FROM current_transaction_fields field
-              WHERE field.transaction_id IN (${inList(affected)})`,
-    sourceParams: [generationId, ...affected],
-  });
+  await syncGenerationTransactionFields(transaction, generationId, affected);
   await refreshGenerationTransactionCategorizations(transaction, generationId, affected, projectionCommitId);
 }
 

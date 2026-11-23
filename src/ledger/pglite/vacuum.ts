@@ -3,43 +3,77 @@ import type { PGliteStore } from "./transaction.ts";
 /**
  * PGlite runs Postgres as a single backend with no autovacuum launcher, so
  * the dead tuples an UPDATE or DELETE leaves are never reclaimed on their own
- * and a table that is rewritten keeps growing. This step does what autovacuum
- * would: it vacuums each table whose dead tuples passed autovacuum's default
- * threshold, 50 plus a fifth of its live rows. A plain VACUUM takes no
- * exclusive lock; it marks the space free for the table's next writes, so a
- * table stays at its working size instead of shrinking (ADR 0153).
+ * and a table that is rewritten keeps growing. This step stands in for
+ * autovacuum (ADR 0153):
+ *
+ * - Shortly after the store opens, one VACUUM of the whole database. PGlite
+ *   keeps no table statistics across a close, so dead tuples left by an
+ *   earlier session are invisible to the threshold below. The visibility map
+ *   makes this pass cheap on a store that is already clean.
+ * - Then, every interval, a VACUUM of each table whose dead tuples passed
+ *   autovacuum's default threshold: 50 plus a fifth of its live rows. System
+ *   catalogs count too; a live-view subscription creates and drops a
+ *   temporary view, and every ANALYZE rewrites `pg_statistic`.
+ *
+ * A plain VACUUM frees dead tuples' space for the table's next writes. It
+ * takes an exclusive lock only briefly, to cut empty pages from the end of a
+ * table, so a table stays near its working size.
  */
 export const PGLITE_VACUUM_THRESHOLD_TUPLES = 50;
 export const PGLITE_VACUUM_SCALE_FACTOR = 0.2;
 export const PGLITE_VACUUM_INTERVAL_MS = 60_000;
+export const PGLITE_VACUUM_STARTUP_DELAY_MS = 5_000;
 
 export type PgliteVacuumPolicy = Readonly<{ thresholdTuples?: number; scaleFactor?: number }>;
 
-/** The tables whose dead tuples passed the threshold, most dead first. */
+/** The tables, catalogs included, whose dead tuples passed the threshold, most dead first. */
 export async function pgliteTablesToVacuum(store: PGliteStore, policy: PgliteVacuumPolicy = {}): Promise<string[]> {
   // A backend publishes its table counts at most once a second, after a
   // statement ends; this makes the read below see every write before it.
   await store.query("SELECT pg_stat_force_next_flush()");
+  // A TOAST table is vacuumed with its owner, and a temporary one belongs to its session.
   const result = await store.query<{ table_name: string }>(
     `SELECT format('%I.%I', schemaname, relname) AS table_name
-       FROM pg_stat_user_tables
-      WHERE n_dead_tup > $1::float8 + $2::float8 * n_live_tup
+       FROM pg_stat_all_tables
+      WHERE schemaname <> 'pg_toast'
+        AND schemaname NOT LIKE 'pg\\_temp\\_%'
+        AND schemaname NOT LIKE 'pg\\_toast\\_temp\\_%'
+        AND n_dead_tup > $1::float8 + $2::float8 * n_live_tup
       ORDER BY n_dead_tup DESC`,
     [policy.thresholdTuples ?? PGLITE_VACUUM_THRESHOLD_TUPLES, policy.scaleFactor ?? PGLITE_VACUUM_SCALE_FACTOR],
   );
   return result.rows.map((row) => row.table_name);
 }
 
+export type PgliteVacuumPass = Readonly<{
+  vacuumed: readonly string[];
+  failed: readonly Readonly<{ table: string; error: unknown }>[];
+}>;
+
 /**
- * Vacuums the tables past the threshold and returns them. ANALYZE comes with
- * it: VACUUM records the table's current page count, which the projection
- * reads as the size its statistics describe (`refreshPlannerStatistics`).
+ * Vacuums the tables past the threshold. A table that fails is reported and
+ * the rest are still vacuumed. A store table is analyzed too: VACUUM records
+ * its current page count, which the projection reads as the size its
+ * statistics describe (`refreshPlannerStatistics`).
  */
-export async function vacuumPgliteDeadTuples(store: PGliteStore, policy: PgliteVacuumPolicy = {}): Promise<string[]> {
-  const tables = await pgliteTablesToVacuum(store, policy);
+export async function vacuumPgliteDeadTuples(store: PGliteStore, policy: PgliteVacuumPolicy = {}): Promise<PgliteVacuumPass> {
+  const vacuumed: string[] = [];
+  const failed: { table: string; error: unknown }[] = [];
   // VACUUM cannot run in a transaction block, so each table is its own statement.
-  for (const table of tables) await store.exec(`VACUUM (ANALYZE) ${table}`);
-  return tables;
+  for (const table of await pgliteTablesToVacuum(store, policy)) {
+    try {
+      await store.exec(table.startsWith("pg_catalog.") ? `VACUUM ${table}` : `VACUUM (ANALYZE) ${table}`);
+      vacuumed.push(table);
+    } catch (error) {
+      failed.push({ table, error });
+    }
+  }
+  return { vacuumed, failed };
+}
+
+/** One VACUUM of every table, for the dead tuples no statistic counts. */
+export async function vacuumPgliteStore(store: PGliteStore): Promise<void> {
+  await store.exec("VACUUM");
 }
 
 export type PgliteVacuums = {
@@ -51,10 +85,12 @@ export function startPgliteVacuums(
   store: PGliteStore,
   options: PgliteVacuumPolicy & {
     intervalMs?: number;
+    /** Delay before the whole-store pass, so a launch reads its pages first. */
+    startupDelayMs?: number;
     /** Queue that owns the database; a VACUUM blocks its thread while it runs. */
     run?: <T>(task: () => Promise<T>) => Promise<T>;
     onVacuum?: (tables: readonly string[]) => void;
-    onError?: (error: unknown) => void;
+    onError?: (error: unknown, table?: string) => void;
   } = {},
 ): PgliteVacuums {
   const intervalMs = options.intervalMs ?? PGLITE_VACUUM_INTERVAL_MS;
@@ -62,17 +98,22 @@ export function startPgliteVacuums(
   let stopped = false;
   let running: Promise<void> = Promise.resolve();
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const schedule = () => {
+  const tick = async () => {
+    const pass = await run(() => vacuumPgliteDeadTuples(store, options));
+    if (stopped) return;
+    if (pass.vacuumed.length > 0) options.onVacuum?.(pass.vacuumed);
+    for (const { table, error } of pass.failed) options.onError?.(error, table);
+  };
+  const schedule = (delayMs: number, task: () => Promise<void>) => {
     timer = setTimeout(() => {
-      running = run(() => vacuumPgliteDeadTuples(store, options))
-        .then((tables) => { if (tables.length > 0) options.onVacuum?.(tables); })
+      running = task()
         .catch((error: unknown) => { if (!stopped) options.onError?.(error); })
-        .finally(() => { if (!stopped) schedule(); });
-    }, intervalMs);
+        .finally(() => { if (!stopped) schedule(intervalMs, tick); });
+    }, delayMs);
     // A pending vacuum must never keep the worker alive on its own.
     timer.unref?.();
   };
-  schedule();
+  schedule(options.startupDelayMs ?? PGLITE_VACUUM_STARTUP_DELAY_MS, () => run(() => vacuumPgliteStore(store)));
   return {
     async stop() {
       stopped = true;

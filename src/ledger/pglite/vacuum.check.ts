@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { PGlite } from "@electric-sql/pglite";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PGliteStore } from "./transaction.ts";
 import { pgliteTablesToVacuum, startPgliteVacuums, vacuumPgliteDeadTuples } from "./vacuum.ts";
 
-async function storeWithTables(): Promise<PGliteStore> {
-  const store = new PGliteStore(await PGlite.create());
+async function storeWithTables(dataDir?: string): Promise<PGliteStore> {
+  const store = new PGliteStore(await PGlite.create(dataDir));
   await store.exec(`
     CREATE TABLE rewritten (id int PRIMARY KEY, pad text);
     CREATE TABLE quiet (id int PRIMARY KEY, pad text);
@@ -35,7 +38,7 @@ test("only a table whose dead tuples passed the threshold is vacuumed", async ()
     await store.exec("UPDATE quiet SET pad = pad WHERE id <= 100");
     assert.equal(await dead(store, "rewritten"), 2000, "PGlite counts dead tuples");
     assert.deepEqual(await pgliteTablesToVacuum(store), ["public.rewritten"]);
-    assert.deepEqual(await vacuumPgliteDeadTuples(store), ["public.rewritten"]);
+    assert.deepEqual(await vacuumPgliteDeadTuples(store), { vacuumed: ["public.rewritten"], failed: [] });
     assert.equal(await dead(store, "rewritten"), 0);
     assert.equal(await dead(store, "quiet"), 100);
   } finally {
@@ -62,11 +65,79 @@ test("vacuuming between rewrites keeps a table at its working size", async () =>
   }
 });
 
+test("a failing table is reported and the rest are still vacuumed", async () => {
+  const store = await storeWithTables();
+  try {
+    await rewriteAll(store);
+    await store.exec("UPDATE quiet SET pad = pad");
+    // A table dropped between reading the counts and vacuuming it.
+    const exec = store.exec.bind(store);
+    store.exec = async (sql: string) => {
+      if (sql.includes("public.rewritten")) throw new Error("gone");
+      return exec(sql);
+    };
+    const pass = await vacuumPgliteDeadTuples(store);
+    assert.deepEqual(pass.vacuumed, ["public.quiet"]);
+    assert.deepEqual(pass.failed.map(({ table }) => table), ["public.rewritten"]);
+  } finally {
+    await store.close();
+  }
+});
+
+test("system catalogs a temporary view churns are vacuumed", async () => {
+  const store = await storeWithTables();
+  try {
+    // What each live-view subscription does.
+    for (let index = 0; index < 20; index += 1) await store.exec("CREATE TEMP VIEW live_view AS SELECT 1 AS one; DROP VIEW live_view;");
+    const tables = await pgliteTablesToVacuum(store, { thresholdTuples: 10, scaleFactor: 0 });
+    assert.ok(tables.includes("pg_catalog.pg_depend"), `pg_depend is counted: ${tables.join(", ")}`);
+    const pass = await vacuumPgliteDeadTuples(store, { thresholdTuples: 10, scaleFactor: 0 });
+    assert.deepEqual(pass.failed, []);
+    await store.query("SELECT pg_stat_force_next_flush()");
+    const left = (await store.query<{ dead: number | string }>(
+      "SELECT n_dead_tup AS dead FROM pg_stat_all_tables WHERE schemaname = 'pg_catalog' AND relname = 'pg_depend'",
+    )).rows[0]!;
+    assert.equal(Number(left.dead), 0);
+  } finally {
+    await store.close();
+  }
+});
+
+test("a reopened store counts no dead tuples, and the startup pass still reclaims them", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "pglite-vacuum-"));
+  try {
+    const before = await storeWithTables(dataDir);
+    await rewriteAll(before);
+    const grown = await pages(before, "rewritten");
+    await before.close();
+
+    const store = new PGliteStore(await PGlite.create(dataDir));
+    // PGlite writes no statistics file when it closes, so the threshold sees nothing.
+    assert.equal(await dead(store, "rewritten"), 0);
+    assert.deepEqual(await pgliteTablesToVacuum(store), []);
+    let passed!: () => void;
+    const startupPass = new Promise<void>((resolve) => { passed = resolve; });
+    const vacuums = startPgliteVacuums(store, {
+      startupDelayMs: 0,
+      run: async (task) => { const result = await task(); passed(); return result; },
+    });
+    await startupPass;
+    await vacuums.stop();
+    // The freed copies take the next rewrite, so the table does not grow.
+    await rewriteAll(store);
+    assert.equal(await pages(store, "rewritten"), grown);
+    await store.close();
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("periodic vacuums run on the queue they are given and stop cleanly", async () => {
   const store = await storeWithTables();
   const lane: string[] = [];
   const vacuums = startPgliteVacuums(store, {
     intervalMs: 10,
+    startupDelayMs: 10,
     run: async (task) => { lane.push("background"); return task(); },
   });
   try {

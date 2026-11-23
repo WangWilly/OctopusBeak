@@ -7,17 +7,26 @@ import {
   commitPGliteCanonicalFinancialCapture,
   type PGliteCanonicalFinancialCommitRequest,
 } from "./canonical-source-store.ts";
+import { setPGliteSpendingPurchaseCategory } from "./purchase-category-command.ts";
 import { installFinancialStore } from "./store-layout.ts";
+import { writePGliteTransactionNote } from "./transaction-detail-command.ts";
 import type { PGliteStore } from "./transaction.ts";
 
-/** The tables a commit's projection refresh writes for each transaction in its capture. */
-const PROJECTION_TABLES = [
+/** The tables a commit's projection refresh writes a row in for each transaction in its capture. */
+const PER_TRANSACTION_TABLES = [
   "current_transactions",
   "current_transaction_enrichment",
   "current_spending_pairing_entries",
   "projection_generation_transactions",
   "projection_generation_transaction_selection",
 ] as const;
+/** The tables it writes only for a transaction with a user note or category. */
+const USER_TABLES = [
+  "current_transaction_fields",
+  "projection_generation_transaction_fields",
+  "projection_generation_transaction_categorizations",
+] as const;
+const PROJECTION_TABLES = [...PER_TRANSACTION_TABLES, ...USER_TABLES];
 
 const token = (value: string) => `sha256:${createHash("sha256").update(value, "utf8").digest("base64url")}`;
 const day = (index: number) => new Date(Date.UTC(2026, 0, 1) + index * 86_400_000).toISOString().slice(0, 10);
@@ -102,9 +111,9 @@ function cardCapture(captureId: string, count: number): PGliteCanonicalFinancial
 }
 
 /** Each table's live rows, the transaction that wrote each, and its heap pages. */
-async function tableState(store: PGliteStore) {
+async function tableState(store: PGliteStore, tables: readonly string[] = PROJECTION_TABLES) {
   const state: Record<string, { rows: number; writers: string; pages: number }> = {};
-  for (const table of PROJECTION_TABLES) {
+  for (const table of tables) {
     const row = (await store.query<{ rows: number | string; writers: string | null; pages: number | string }>(
       `SELECT count(*) AS rows,
               string_agg(xmin::text, ',' ORDER BY transaction_id) AS writers,
@@ -120,12 +129,19 @@ test("committing the same capture again rewrites no projection row, so the table
   const store = await installFinancialStore(await PGlite.create());
   try {
     await commitPGliteCanonicalFinancialCapture(store, cardCapture("capture-0", 60));
+    const [noted, categorized] = (await store.query<{ id: string }>(
+      "SELECT encode(transaction_id, 'hex') AS id FROM current_transactions ORDER BY transaction_id LIMIT 2",
+    )).rows.map(({ id }) => `${id.slice(0, 8)}-${id.slice(8, 12)}-${id.slice(12, 16)}-${id.slice(16, 20)}-${id.slice(20)}`);
+    await store.transaction((transaction) => writePGliteTransactionNote(transaction, { transactionId: noted, note: "a note" }));
+    const knowledgeAt = Number((await store.query<{ value: number | string }>("SELECT MAX(commit_sequence) AS value FROM canonical_commits")).rows[0]!.value);
+    await setPGliteSpendingPurchaseCategory(store, { purchaseId: `transaction:${categorized}`, knowledgeAt, categoryCode: "dining" });
     const first = await tableState(store);
-    for (const table of PROJECTION_TABLES) assert.ok(first[table]!.rows === 60, `${table} holds every transaction`);
+    const expected = (table: string) => (USER_TABLES as readonly string[]).includes(table) ? 1 : 60;
+    for (const table of PROJECTION_TABLES) assert.equal(first[table]!.rows, expected(table), `${table} holds its rows`);
     for (let sync = 1; sync <= 20; sync += 1) await commitPGliteCanonicalFinancialCapture(store, cardCapture(`capture-${sync}`, 60));
     const after = await tableState(store);
     for (const table of PROJECTION_TABLES) {
-      assert.equal(after[table]!.rows, 60, `${table} still holds every transaction`);
+      assert.equal(after[table]!.rows, expected(table), `${table} still holds its rows`);
       assert.equal(after[table]!.writers, first[table]!.writers, `${table} rows were not rewritten`);
       assert.equal(after[table]!.pages, first[table]!.pages, `${table} did not grow`);
     }
@@ -138,10 +154,10 @@ test("a re-sync that adds a transaction writes only that transaction's rows", as
   const store = await installFinancialStore(await PGlite.create());
   try {
     await commitPGliteCanonicalFinancialCapture(store, cardCapture("capture-0", 10));
-    const first = await tableState(store);
+    const first = await tableState(store, PER_TRANSACTION_TABLES);
     await commitPGliteCanonicalFinancialCapture(store, cardCapture("capture-1", 11));
-    const after = await tableState(store);
-    for (const table of PROJECTION_TABLES) {
+    const after = await tableState(store, PER_TRANSACTION_TABLES);
+    for (const table of PER_TRANSACTION_TABLES) {
       const before = new Set(first[table]!.writers.split(","));
       const now = after[table]!.writers.split(",");
       assert.equal(now.length, 11, `${table} holds the new transaction`);

@@ -122,8 +122,9 @@ export async function startPGliteViewWorker(
   });
   const vacuums = startPgliteVacuums(database, {
     run: (task) => host.scheduler.schedule("background", task),
-    onError: (error) => console.error(
+    onError: (error, table) => console.error(
       "pglite-vacuum-failed",
+      ...(table === undefined ? [] : [table]),
       error instanceof Error ? error.message : String(error),
     ),
   });
