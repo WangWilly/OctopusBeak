@@ -1,30 +1,35 @@
 /**
- * Compacting the domain rows and count rows of a store written before ADR
- * 0152 (ADR 0154) removes exactly what the dry run counts, keeps every
- * reader's answer, and leaves the store as later syncs would find an
- * uncompacted one. A selection that would change an answer rolls back.
+ * Compacting a store written before ADR 0152 (ADR 0154) removes exactly what
+ * the dry run counts, its domain rows, record copies and count rows, keeps
+ * every reader's answer, and leaves the store as later syncs would find an
+ * uncompacted one. A selection that would change an answer, or remove a
+ * copy phase B must keep, rolls back.
  */
 import assert from "node:assert/strict";
 import test from "node:test";
 import { PGlite } from "@electric-sql/pglite";
 import {
   COMPACTION_READERS,
-  compactLedgerDomainAndCounts,
+  compactLedger,
   LedgerCompactionError,
   readCompactionReaders,
+  type LedgerCompactionFailure,
   type CompactedTable,
   type CompactionReader,
   type LedgerCompactionResult,
 } from "./compaction.ts";
 import { COUNTS, PHASE_A, planLedgerCompaction, type CompactionPlan } from "./compaction-plan.ts";
-import { legacyStore, MODES, ROWS, snapshot, SYNCS, writeDirectly } from "./compaction-fixtures.ts";
+import { captureOf, copyOf as copyIn, keyOf, legacyStore, MODES, ROWS, snapshot, SYNCS, writeDirectly } from "./compaction-fixtures.ts";
 import { canonicalState } from "./canonical-state-fixture.ts";
 import { commitResync } from "./resync-fixtures.ts";
 import { PGliteStore } from "./transaction.ts";
 import { PGLITE_FINANCIAL_CONTRACTS } from "../../lib/pglite-rpc/pglite-financial-contracts.ts";
 
-const COMPACTED_TABLES: readonly CompactedTable[] = [...(Object.keys(PHASE_A) as CompactedTable[]), COUNTS];
+const RECORD_TABLES = ["source_record_scopes", "source_record_provenance", "assertion_provenance", "source_records"] as const;
+const COMPACTED_TABLES: readonly CompactedTable[] = [...(Object.keys(PHASE_A) as CompactedTable[]), COUNTS, ...RECORD_TABLES];
 const MARKER = "pglite_operational_migrations";
+const MANIFESTS = "capture_source_record_manifests" as const;
+const MARKERS = ["ledger-compaction-domain-counts-v1", "ledger-compaction-records-v1"];
 
 function planned(plan: Awaited<ReturnType<typeof planLedgerCompaction>>): CompactionPlan {
   assert.equal(plan.status, "planned", JSON.stringify(plan));
@@ -40,15 +45,23 @@ function compacted(result: LedgerCompactionResult): Extract<LedgerCompactionResu
 function plannedRemovals(plan: CompactionPlan): Record<CompactedTable, number> {
   return {
     ...Object.fromEntries(plan.phaseA.map(({ table, removable }) => [table, removable])),
+    ...Object.fromEntries(plan.phaseB.tables.map(({ table, removable }) => [table, removable])),
     [COUNTS]: plan.phaseC.removable,
   } as Record<CompactedTable, number>;
 }
 
-async function rowCounts(store: PGliteStore): Promise<Record<CompactedTable, number>> {
+async function rowCounts(store: PGliteStore): Promise<Record<CompactedTable | typeof MANIFESTS, number>> {
   const { rows } = await store.query<{ table_name: CompactedTable; rows: number }>(
-    COMPACTED_TABLES.map((table) => `SELECT '${table}' AS table_name, count(*)::int AS rows FROM ${table}`).join("\nUNION ALL\n"),
+    [...COMPACTED_TABLES, MANIFESTS].map((table) => `SELECT '${table}' AS table_name, count(*)::int AS rows FROM ${table}`).join("\nUNION ALL\n"),
   );
-  return Object.fromEntries(rows.map((row) => [row.table_name, row.rows])) as Record<CompactedTable, number>;
+  return Object.fromEntries(rows.map((row) => [row.table_name, row.rows])) as Record<CompactedTable | typeof MANIFESTS, number>;
+}
+
+/** Each record copy's capture, both as hex. */
+async function copiesByCapture(store: PGliteStore): Promise<Map<string, string>> {
+  const { rows } = await store.query<{ copy: string; capture: string }>(
+    "SELECT encode(source_record_id, 'hex') AS copy, encode(capture_id, 'hex') AS capture FROM source_records");
+  return new Map(rows.map(({ copy, capture }) => [copy, capture]));
 }
 
 async function markers(store: PGliteStore): Promise<string[]> {
@@ -69,14 +82,21 @@ test("compaction removes what the dry run counts and keeps every reader's answer
   try {
     const plan = planned(await planLedgerCompaction(store));
     const expected = plannedRemovals(plan);
-    // Every table the old writers repeated has rows to remove, the counts included.
-    for (const table of COMPACTED_TABLES) assert.ok(expected[table]! > 0, `${table} has repeats (${repeated[table]})`);
+    // Every table the old writers repeated has rows to remove, the counts and the record copies included.
+    for (const table of COMPACTED_TABLES) assert.ok(expected[table]! > 0, `${table} has repeats (${repeated[table] ?? "copies"})`);
     const before = await snapshot(store);
     const counts = await rowCounts(store);
     const readers = await readCompactionReaders(store);
 
-    const result = compacted(await compactLedgerDomainAndCounts(store));
+    const copiesBefore = await copiesByCapture(store);
+
+    const result = compacted(await compactLedger(store));
     assert.deepEqual(result.removed, expected);
+    // One manifest for each capture that lost a copy, none of which had one.
+    const copiesAfter = await copiesByCapture(store);
+    const capturesWithCopies = [...copiesBefore].filter(([copy]) => !copiesAfter.has(copy)).map(([, capture]) => capture);
+    assert.equal(capturesWithCopies.length, expected.source_records);
+    assert.equal(result.manifests, new Set(capturesWithCopies).size);
     assert.equal(result.verification.passed, true);
     assert.deepEqual(result.verification.readers, readers);
     assert.deepEqual(Object.keys(readers).sort(), Object.keys(COMPACTION_READERS).sort());
@@ -86,12 +106,25 @@ test("compaction removes what the dry run counts and keeps every reader's answer
     // Only the compacted tables lost rows, exactly the ones removed, and the marker is written.
     const after = await snapshot(store);
     const changed = [...after.keys()].filter((table) => after.get(table) !== before.get(table)).sort();
-    assert.deepEqual(changed, [...COMPACTED_TABLES.map((table) => `public.${table}`), `public.${MARKER}`].sort());
+    assert.deepEqual(changed, [...COMPACTED_TABLES.map((table) => `public.${table}`), `public.${MARKER}`, `public.${MANIFESTS}`].sort());
     const remaining = await rowCounts(store);
     for (const table of COMPACTED_TABLES) assert.equal(remaining[table], counts[table] - expected[table], `${table} lost its repeats only`);
-    assert.deepEqual(await markers(store), ["ledger-compaction-domain-counts-v1"]);
+    assert.deepEqual(await markers(store), MARKERS);
+    // Each new manifest lists, for each copy its capture lost, an earlier copy of the same record.
+    const { rows: [listed] } = await store.query<{ listed: number; earlier: number }>(
+      `SELECT count(*)::int AS listed,
+              (count(*) FILTER (WHERE kept_commit.commit_sequence < capture_commit.commit_sequence))::int AS earlier
+         FROM ${MANIFESTS} manifest
+         JOIN canonical_commits capture_commit ON capture_commit.commit_id = manifest.commit_id
+        CROSS JOIN generate_series(0, manifest.record_count - 1) AS slot
+         JOIN source_records kept ON kept.source_record_id = substring(manifest.source_record_ids FROM slot * 16 + 1 FOR 16)
+         JOIN canonical_commits kept_commit ON kept_commit.commit_id = kept.commit_id
+        WHERE encode(manifest.capture_id, 'hex') = ANY($1::text[])`,
+      [[...new Set(capturesWithCopies)]],
+    );
+    assert.deepEqual(listed, { listed: expected.source_records, earlier: expected.source_records });
 
-    // The dry run now finds nothing more in phases A and C.
+    // The dry run now finds nothing more in any phase.
     const replanned = planned(await planLedgerCompaction(store));
     assert.deepEqual(Object.values(plannedRemovals(replanned)), COMPACTED_TABLES.map(() => 0));
   } finally {
@@ -99,39 +132,51 @@ test("compaction removes what the dry run counts and keeps every reader's answer
   }
 });
 
+/** The sync number of each mode's `round`th sync after the old-shaped store's; deposit already synced once more. */
+const nextSync = (mode: (typeof MODES)[number], round: number) => (mode === "deposit" ? SYNCS + 1 : SYNCS) + round;
+
 test("later syncs leave a compacted store as they leave an uncompacted copy", async () => {
   const database = await PGlite.create();
   const { store } = await legacyStore(database);
   const uncompacted = await copyOf(database);
   try {
-    compacted(await compactLedgerDomainAndCounts(store));
-    const grown: Record<CompactedTable, number>[] = [];
+    compacted(await compactLedger(store));
+    const grown: Record<CompactedTable | typeof MANIFESTS, number>[] = [];
     const states: Record<string, readonly string[]>[] = [];
     for (const target of [uncompacted, store]) {
       const before = await rowCounts(target);
-      for (const mode of MODES) await commitResync(target, mode, mode === "deposit" ? SYNCS + 2 : SYNCS + 1, { rowCount: ROWS });
+      // Two rounds: the first reuses the copies compaction kept, the second the ones the first stored or reused.
+      for (const round of [1, 2])
+        for (const mode of MODES) await commitResync(target, mode, nextSync(mode, round), { rowCount: ROWS });
       // Every mode committed, the investment sync too, whose name writer compares with the kept name rows.
       const { rows: [committed] } = await target.query<{ captures: number }>(
         `SELECT count(*)::int AS captures FROM source_captures WHERE capture_key = ANY($1::text[])`,
-        [MODES.map((mode) => `${mode}-capture-${mode === "deposit" ? SYNCS + 2 : SYNCS + 1}`)],
+        [[1, 2].flatMap((round) => MODES.map((mode) => `${mode}-capture-${nextSync(mode, round)}`))],
       );
-      assert.equal(committed!.captures, MODES.length);
+      assert.equal(committed!.captures, 2 * MODES.length);
       const after = await rowCounts(target);
-      grown.push(Object.fromEntries(COMPACTED_TABLES.map((table) => [table, after[table] - before[table]])) as Record<CompactedTable, number>);
+      grown.push(Object.fromEntries(([...COMPACTED_TABLES, MANIFESTS] as const).map((table) => [table, after[table] - before[table]])) as
+        Record<CompactedTable | typeof MANIFESTS, number>);
       states.push(await canonicalState(target, Object.fromEntries(Object.entries(COMPACTION_READERS).map(([reader, sql]) =>
         [`reader ${reader}`, `SELECT to_jsonb(answer) AS row FROM (${sql}) answer`]))));
     }
-    // Nothing changed, so neither store's writers wrote a row to a compacted
-    // table: on the compacted store each found the latest row it compares
-    // with, and an equal one.
+    // Both stores' writers wrote the same rows. Nothing changed, so neither
+    // wrote a domain or count row: on the compacted store each found the
+    // latest row it compares with, and an equal one. The record copies they
+    // stored or reused are the same too, by content.
     assert.deepEqual(grown[0], grown[1]);
-    assert.deepEqual(Object.values(grown[0]!), COMPACTED_TABLES.map(() => 0));
+    for (const table of COMPACTED_TABLES.filter((table) => !(RECORD_TABLES as readonly string[]).includes(table)))
+      assert.equal(grown[0]![table], 0, `${table} gained no row`);
+    assert.ok(grown[0]![MANIFESTS] > 0);
     const [compactedState, uncompactedState] = states;
     for (const key of [...COMPACTED_TABLES, MARKER]) {
       delete compactedState![key];
       delete uncompactedState![key];
     }
     assert.deepEqual(Object.keys(compactedState!), Object.keys(uncompactedState!));
+    // The record copies, their membership, sightings and expected occurrences, as `canonicalState` derives them.
+    for (const key of ["distinct source records", "capture members", "capture sightings", "assertion sources", "expected occurrences"])
+      assert.ok(compactedState![key]!.length > 0, `${key} is compared`);
     for (const key of Object.keys(uncompactedState!))
       assert.deepEqual(compactedState![key], uncompactedState![key], `${key} is the same on both stores`);
   } finally {
@@ -143,19 +188,43 @@ test("later syncs leave a compacted store as they leave an uncompacted copy", as
 test("a second compaction removes nothing", async () => {
   const { store } = await legacyStore();
   try {
-    compacted(await compactLedgerDomainAndCounts(store));
+    compacted(await compactLedger(store));
     const before = await snapshot(store);
-    const again = await compactLedgerDomainAndCounts(store);
+    const again = await compactLedger(store);
     assert.equal(again.status, "already-compacted");
     assert.deepEqual(Object.values(again.removed), COMPACTED_TABLES.map(() => 0));
     assert.deepEqual(await snapshot(store), before);
 
-    // Without the marker the selection itself finds nothing.
-    await store.query(`DELETE FROM ${MARKER} WHERE migration_key = 'ledger-compaction-domain-counts-v1'`);
-    const rerun = compacted(await compactLedgerDomainAndCounts(store));
+    // Without the markers the selections themselves find nothing, and write no manifest.
+    await store.query(`DELETE FROM ${MARKER} WHERE migration_key = ANY($1::text[])`, [MARKERS]);
+    const rerun = compacted(await compactLedger(store));
     assert.deepEqual(Object.values(rerun.removed), COMPACTED_TABLES.map(() => 0));
+    assert.equal(rerun.manifests, 0);
+    assert.deepEqual(await markers(store), MARKERS);
   } finally {
     await store.close();
+  }
+});
+
+test("a store compacted before phase B existed has its record copies compacted only", async () => {
+  const database = await PGlite.create();
+  const { store } = await legacyStore(database);
+  const whole = await copyOf(database);
+  try {
+    await store.query(`INSERT INTO ${MARKER}(migration_key, schema_signature) VALUES ($1, 'phase A and C only')`, [MARKERS[0]]);
+    const counts = await rowCounts(store);
+    const result = compacted(await compactLedger(store));
+    // Phases A and C are skipped, so their repeats still pin the copies they cite, and fewer copies go.
+    const wholeResult = compacted(await compactLedger(whole));
+    for (const table of COMPACTED_TABLES.filter((table) => !(RECORD_TABLES as readonly string[]).includes(table)))
+      assert.equal(result.removed[table], 0, `${table} is not compacted again`);
+    assert.ok(result.removed.source_records > 0);
+    assert.ok(result.removed.source_records < wholeResult.removed.source_records);
+    assert.equal((await rowCounts(store)).source_records, counts.source_records - result.removed.source_records);
+    assert.deepEqual(await markers(store), MARKERS);
+  } finally {
+    await store.close();
+    await whole.close();
   }
 });
 
@@ -336,7 +405,7 @@ test("a selection that would change a reader's answer rolls back and changes not
     const before = await snapshot(store);
     for (const mutation of MUTATIONS) {
       await assert.rejects(
-        compactLedgerDomainAndCounts(store, { selections: { ...mutation.also, [mutation.table]: mutation.selection } }),
+        compactLedger(store, { selections: { ...mutation.also, [mutation.table]: mutation.selection } }),
         (error: unknown) => {
           assert.ok(error instanceof LedgerCompactionError, String(error));
           assert.deepEqual(error.failure, { reason: "reader-changed", readers: mutation.readers }, mutation.name);
@@ -348,7 +417,128 @@ test("a selection that would change a reader's answer rolls back and changes not
     }
     assert.deepEqual(await markers(store), []);
     // The real selection still compacts the same store.
-    compacted(await compactLedgerDomainAndCounts(store));
+    compacted(await compactLedger(store));
+  } finally {
+    await store.close();
+  }
+});
+
+/** A phase B selection: each removed copy with the copy its capture's manifest lists instead. */
+const removing = (...copies: readonly (readonly [removed: string, kept: string])[]) =>
+  `SELECT * FROM (VALUES ${copies.map(([removed, kept]) => `(${removed}, ${kept})`).join(", ")}) AS copy(source_record_id, kept_id)`;
+const invoice = (n: number) => keyOf("einvoice-capture-3", n);
+/** The `n`th invoice's copy in the `sync`th e-invoice capture. */
+const invoiceCopy = (sync: number, n: number) => copyIn(`einvoice-capture-${sync}`, invoice(n));
+/** The `n`th record both captures hold: its copy in `later`, and in `earlier`. */
+function laterAndEarlier(earlier: string, later: string, n = 0): readonly [string, string] {
+  const key = `(SELECT occurrence_key FROM source_records WHERE capture_id = ${captureOf(later)}
+      AND occurrence_key IN (SELECT occurrence_key FROM source_records WHERE capture_id = ${captureOf(earlier)})
+    ORDER BY occurrence_key OFFSET ${n} LIMIT 1)`;
+  return [copyIn(later, key), copyIn(earlier, key)];
+}
+/** The deposit copy of the third sync that an assertion row naming a run pins. */
+const depositCopyNamingARun = `(SELECT source_record_id FROM assertion_provenance WHERE enrichment_run_id IS NOT NULL
+   AND source_record_id IN (SELECT source_record_id FROM source_records WHERE capture_id = ${captureOf(`deposit-capture-${SYNCS}`)}))`;
+const sameRecordIn = (captureKey: string, copy: string) =>
+  copyIn(captureKey, `(SELECT occurrence_key FROM source_records WHERE source_record_id = ${copy})`);
+
+/**
+ * Phase B selections that each remove a copy the real selection keeps, or
+ * list the wrong kept copy, with the failure that must stop each. The first
+ * five break one of the conditions a removed copy must meet and are refused
+ * before any delete; the rest pass those checks and change what a reader
+ * answers.
+ */
+const RECORD_MUTATIONS: readonly Readonly<{ name: string; selection: string; failure: LedgerCompactionFailure }>[] = [
+  {
+    name: "a copy a revision, its observation and its event cite",
+    selection: removing([invoiceCopy(3, 1), invoiceCopy(2, 1)]),
+    failure: {
+      reason: "removed-copy-cited",
+      tables: ["einvoice_invoice_revisions", "einvoice_revision_events", "einvoice_revision_observations"],
+    },
+  },
+  {
+    name: "a copy a later capture's manifest lists",
+    selection: removing(laterAndEarlier("deposit-capture-2", "deposit-capture-3")),
+    failure: { reason: "removed-copy-cited", tables: ["capture_source_record_manifests"] },
+  },
+  {
+    name: "a copy an assertion row naming a run cites",
+    selection: removing([depositCopyNamingARun, sameRecordIn("deposit-capture-2", depositCopyNamingARun)]),
+    failure: { reason: "removed-copy-cited", tables: ["assertion_provenance (non-source)"] },
+  },
+  {
+    name: "a copy of a capture that already has a manifest",
+    selection: removing(laterAndEarlier("card-command-capture-2", `card-command-capture-${SYNCS}`, 5)),
+    failure: { reason: "removed-copy-in-manifest-capture", copies: 1 },
+  },
+  {
+    name: "a copy whose payload differs from the copy before it",
+    selection: removing([invoiceCopy(2, 0), invoiceCopy(1, 0)]),
+    failure: { reason: "removed-copy-differs", copies: 1 },
+  },
+  {
+    // Its capture's coverage has a bucket inventory, the earlier one's none.
+    name: "the latest copy of an investment record, whose coverage shape differs",
+    selection: removing(laterAndEarlier("investment-capture-2", `investment-capture-${SYNCS}`, 3)),
+    failure: { reason: "reader-changed", readers: ["recordExpectedOccurrences", "recordLatestCopy", "recordLatestCopyHistory"] },
+  },
+  {
+    // The latest copy backs the assertion again, so only the history and the membership see it.
+    name: "a loan counterpart copy that backs no assertion, listing one that does",
+    selection: removing(laterAndEarlier("loan-counterpart-capture-1-0", "loan-counterpart-capture-2-0")),
+    failure: { reason: "reader-changed", readers: ["recordLatestCopyHistory", "captureMembership"] },
+  },
+  {
+    name: "the latest loan counterpart copy, listing one that backs no assertion",
+    selection: removing(laterAndEarlier("loan-counterpart-capture-2-0", "loan-counterpart-capture-3-0")),
+    failure: { reason: "reader-changed", readers: ["recordLatestCopy", "recordLatestCopyHistory", "captureMembership"] },
+  },
+  {
+    name: "a copy whose scope row names another account",
+    selection: removing([invoiceCopy(2, 4), invoiceCopy(1, 4)]),
+    failure: { reason: "reader-changed", readers: ["captureMembership"] },
+  },
+  {
+    // The capture would list a copy its own commit did not know yet.
+    name: "a copy listing the equal copy after it",
+    selection: removing([invoiceCopy(2, 3), invoiceCopy(3, 3)]),
+    failure: { reason: "reader-changed", readers: ["captureMembership"] },
+  },
+  {
+    // The third capture would list a copy that is gone.
+    name: "two copies in a row, the second listing the first",
+    selection: removing([invoiceCopy(2, 3), invoiceCopy(1, 3)], [invoiceCopy(3, 3), invoiceCopy(2, 3)]),
+    failure: { reason: "reader-changed", readers: ["captureMembership"] },
+  },
+];
+
+test("a phase B selection that removes a copy it must keep rolls back and changes nothing", async () => {
+  const { store } = await legacyStore();
+  try {
+    // The scope row of one second-sync invoice copy names an account, so it differs from its first-sync copy only there.
+    assert.equal(await writeDirectly(store, `UPDATE source_record_scopes
+        SET account_id = (SELECT account_id FROM financial_accounts ORDER BY account_id LIMIT 1)
+      WHERE source_record_id = ${invoiceCopy(2, 4)}`), 1);
+    const before = await snapshot(store);
+    const caught = new Set<string>();
+    for (const mutation of RECORD_MUTATIONS) {
+      await assert.rejects(compactLedger(store, { selections: { source_records: mutation.selection } }), (error: unknown) => {
+        assert.ok(error instanceof LedgerCompactionError, String(error));
+        assert.deepEqual(error.failure, mutation.failure, mutation.name);
+        return true;
+      }, mutation.name);
+      assert.deepEqual(await snapshot(store), before, `${mutation.name} changed nothing`);
+      caught.add(mutation.failure.reason);
+      if (mutation.failure.reason === "reader-changed") for (const reader of mutation.failure.readers) caught.add(reader);
+    }
+    // Each condition and each record reader stops at least one of them.
+    for (const check of ["removed-copy-cited", "removed-copy-in-manifest-capture", "removed-copy-differs",
+      "recordExpectedOccurrences", "recordLatestCopy", "recordLatestCopyHistory", "captureMembership"])
+      assert.ok(caught.has(check), `${check} stops a mutation`);
+    assert.deepEqual(await markers(store), []);
+    compacted(await compactLedger(store));
   } finally {
     await store.close();
   }
@@ -361,7 +551,7 @@ test("a compaction that stops part way changes nothing, and the next one complet
     const before = await snapshot(store);
     const deleted: string[] = [];
     await assert.rejects(
-      compactLedgerDomainAndCounts(store, {
+      compactLedger(store, {
         onRemoved: (table) => {
           deleted.push(table);
           if (deleted.length === 3) throw new Error("The worker stopped.");
@@ -374,7 +564,7 @@ test("a compaction that stops part way changes nothing, and the next one complet
 
     const controller = new AbortController();
     await assert.rejects(
-      compactLedgerDomainAndCounts(store, {
+      compactLedger(store, {
         signal: controller.signal,
         onRemoved: () => controller.abort(new Error("Settings closed.")),
       }),
@@ -383,7 +573,7 @@ test("a compaction that stops part way changes nothing, and the next one complet
     assert.deepEqual(await snapshot(store), before);
     assert.deepEqual(await markers(store), []);
 
-    assert.deepEqual(compacted(await compactLedgerDomainAndCounts(store)).removed, expected);
+    assert.deepEqual(compacted(await compactLedger(store)).removed, expected);
   } finally {
     await store.close();
   }
@@ -395,13 +585,13 @@ test("a store something else cites a compacted table in is refused", async () =>
     await store.exec(`CREATE TABLE probe_citations(lifecycle_event_id BYTEA PRIMARY KEY
       REFERENCES canonical_credit_card_transaction_lifecycle(lifecycle_event_id))`);
     const before = await snapshot(store);
-    await assert.rejects(compactLedgerDomainAndCounts(store), (error: unknown) => {
+    await assert.rejects(compactLedger(store), (error: unknown) => {
       assert.ok(error instanceof LedgerCompactionError);
       assert.deepEqual(error.failure, { reason: "unexpected-reference", tables: ["probe_citations"] });
       return true;
     });
     await store.exec("DROP TABLE probe_citations; ALTER TABLE source_occurrence_group_counts ENABLE ALWAYS TRIGGER source_occurrence_group_counts_no_delete");
-    await assert.rejects(compactLedgerDomainAndCounts(store), (error: unknown) => {
+    await assert.rejects(compactLedger(store), (error: unknown) => {
       assert.ok(error instanceof LedgerCompactionError);
       assert.deepEqual(error.failure, {
         reason: "unexpected-trigger",
@@ -409,15 +599,67 @@ test("a store something else cites a compacted table in is refused", async () =>
       });
       return true;
     });
+    // A record citation phase B does not know fails closed, as the dry run does.
+    await store.exec(`ALTER TABLE source_occurrence_group_counts ENABLE TRIGGER source_occurrence_group_counts_no_delete;
+      CREATE TABLE probe_record_citations(source_record_id BYTEA REFERENCES source_records(source_record_id))`);
+    await assert.rejects(compactLedger(store), (error: unknown) => {
+      assert.ok(error instanceof LedgerCompactionError);
+      assert.deepEqual(error.failure, {
+        reason: "unrecognised-citations",
+        problems: [{ table: "probe_record_citations", columns: ["source_record_id"], problem: "unknown-foreign-key" }],
+      });
+      return true;
+    });
+    // So does a table that cites a satellite of the copies.
+    await store.exec(`DROP TABLE probe_record_citations;
+      CREATE TABLE probe_scope_citations(source_record_id BYTEA REFERENCES source_record_scopes(source_record_id))`);
+    await assert.rejects(compactLedger(store), (error: unknown) => {
+      assert.ok(error instanceof LedgerCompactionError);
+      assert.deepEqual(error.failure, { reason: "unexpected-reference", tables: ["probe_scope_citations"] });
+      return true;
+    });
+    await store.exec("DROP TABLE probe_scope_citations");
     before.delete("public.probe_citations");
     assert.deepEqual(await snapshot(store), before);
+    compacted(await compactLedger(store));
+  } finally {
+    await store.close();
+  }
+});
+
+test("a copy named only by a record id kept as text is kept", async () => {
+  const database = await PGlite.create();
+  const { store } = await legacyStore(database);
+  try {
+    // Which copies a compaction removes, learned on a twin.
+    const twin = await copyOf(database);
+    let removed: string[];
+    try {
+      const before = await copiesByCapture(twin);
+      compacted(await compactLedger(twin));
+      const after = await copiesByCapture(twin);
+      removed = [...before.keys()].filter((copy) => !after.has(copy)).sort();
+    } finally {
+      await twin.close();
+    }
+    assert.ok(removed.length > 0);
+    // An enrichment output's provenance names one of them, and nothing else does.
+    const named = removed[0]!;
+    const uuid = named.replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/u, "$1-$2-$3-$4-$5");
+    assert.equal(await writeDirectly(store, `UPDATE enrichment_run_outputs
+        SET provenance_json = jsonb_set(provenance_json::jsonb, '{sourceRecordId}', to_jsonb('${uuid}'::text))::text
+      WHERE output_id = (SELECT output_id FROM enrichment_run_outputs ORDER BY output_id LIMIT 1)`), 1);
+    const plan = planned(await planLedgerCompaction(store));
+    assert.equal(plan.phaseB.pinnedBy["enrichment_run_outputs.provenance_json"], 1);
+    compacted(await compactLedger(store));
+    assert.ok((await copiesByCapture(store)).has(named), "the copy named in provenance_json is kept");
   } finally {
     await store.close();
   }
 });
 
 test("compaction is a host-only financial operation", () => {
-  const contract = PGLITE_FINANCIAL_CONTRACTS["financial.canonical.compactDomainAndCounts"];
+  const contract = PGLITE_FINANCIAL_CONTRACTS["financial.canonical.compactLedger"];
   assert.equal("renderer" in contract, false);
   assert.equal(contract.workflow, undefined);
   assert.equal(contract.lane, "background");

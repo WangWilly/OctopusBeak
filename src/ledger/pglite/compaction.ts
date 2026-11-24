@@ -1,27 +1,45 @@
 import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { latestCardDetailsByRevisionSql } from "./card-details-sql.ts";
-import { COUNTS, PHASE_A, phaseCMarkedSql, type PhaseATable } from "./compaction-plan.ts";
+import { captureSourceRecordIdsSql } from "./capture-manifest.ts";
+import {
+  COUNTS,
+  MANIFEST,
+  PHASE_A,
+  phaseCMarkedSql,
+  readCitingColumns,
+  recordCitationsSql,
+  recordCopiesSql,
+  SATELLITES,
+  type CompactionCitingColumnProblem,
+  type PhaseATable,
+} from "./compaction-plan.ts";
 import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
 
 /**
- * Compacts the domain rows and count rows of a store written before ADR 0152
- * (ADR 0154): phases A and C of the compaction the dry run plans. Record
- * copies, phase B, are not touched.
+ * Compacts a store written before ADR 0152 (ADR 0154): the three phases the
+ * dry run plans.
  *
  * - A: in each table a command now writes only on change, a row that repeats
  *   the row before it, in its reader's order, is removed; the first of each
  *   run is kept.
+ * - B: a record copy that nothing cites once A is done, whose capture has no
+ *   manifest yet, and that equals the copy before it is removed with its
+ *   satellite rows; its capture gets a manifest that lists the nearest
+ *   earlier kept copy instead, as the ADR 0152 writer would have reused it.
  * - C: a count row that does not raise the maximum stored before it in its
  *   partition is removed.
  *
  * The rows are the ones the dry run marks: both run the same queries
- * (`PHASE_A` and `phaseCMarkedSql`). Everything happens in one transaction.
- * Before deleting, each answer in `COMPACTION_READERS` is read as a digest,
- * latest and at every knowledge point; after deleting, it is read again,
- * and any difference throws, which rolls the transaction back. A marker in
- * `pglite_operational_migrations`, written in the same transaction, makes a
- * second run a no-op.
+ * (`PHASE_A`, `recordCopiesSql` and `phaseCMarkedSql`). Everything happens in
+ * one transaction. Before deleting, each answer in `COMPACTION_READERS` is
+ * read as a digest, latest and at every knowledge point; after deleting, it
+ * is read again, and any difference throws, which rolls the transaction
+ * back. Before phase B deletes, each copy it would remove is checked again on
+ * its own: nothing cites it, its capture has no manifest, and its stored
+ * columns equal its kept copy's exactly. Markers in
+ * `pglite_operational_migrations`, written in the same transaction, make a
+ * second run a no-op: one for phases A and C, one for phase B.
  *
  * Not for the open path, and not yet for the UI: the whole compaction is one
  * transaction that holds the ledger for as long as it runs. Wire it to
@@ -30,11 +48,19 @@ import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
  * financial operation.
  */
 
-const COMPACTED = "ledger-compaction-domain-counts-v1";
+/** Phases A and C. A store compacted before phase B existed keeps this marker, and phase B still runs. */
+const DOMAIN_COUNTS_MARKER = "ledger-compaction-domain-counts-v1";
+const RECORDS_MARKER = "ledger-compaction-records-v1";
 
-export type CompactedTable = PhaseATable | typeof COUNTS;
+const RECORDS = "source_records";
+/** Phase B's tables: the satellites first, so each delete leaves no row naming a removed copy. */
+const RECORD_TABLES = [...SATELLITES, RECORDS] as const;
+export type RecordTable = (typeof RECORD_TABLES)[number];
+export type DomainCountsTable = PhaseATable | typeof COUNTS;
+export type CompactedTable = DomainCountsTable | RecordTable;
 
-const COMPACTED_TABLES: readonly CompactedTable[] = [...(Object.keys(PHASE_A) as PhaseATable[]), COUNTS];
+const DOMAIN_COUNTS_TABLES: readonly DomainCountsTable[] = [...(Object.keys(PHASE_A) as PhaseATable[]), COUNTS];
+const COMPACTED_TABLES: readonly CompactedTable[] = [...DOMAIN_COUNTS_TABLES, ...RECORD_TABLES];
 
 const commitOfCapture = (alias: string) =>
   `JOIN source_captures ${alias}_capture ON ${alias}_capture.capture_id = ${alias}.capture_id
@@ -83,10 +109,44 @@ const OBSERVED_SETS = `
    GROUP BY revision.invoice_id, observation_commit.commit_sequence`;
 
 /**
+ * Every stored column of a record copy a reader can compare, ids aside:
+ * phase B replaces a copy's id with its kept copy's, so record readers name
+ * a copy by what it holds.
+ */
+const RECORD_CONTENT = {
+  sequence_lexeme: "record.sequence_lexeme", provider_key: "record.provider_key", content_hash: "record.content_hash",
+  collision_key: "record.collision_key", description: "record.description",
+  payload_sha256: "encode(sha256(convert_to(record.payload_json, 'UTF8')), 'hex')",
+  scope_key: "record.occurrence_group_scope_key", fingerprint: "record.occurrence_group_fingerprint",
+  partition_date: "record.occurrence_group_partition_date", ordinal: "record.occurrence_group_ordinal",
+  bucket_key: "record.occurrence_group_bucket_key",
+} as const;
+const recordContent = Object.entries(RECORD_CONTENT).map(([name, expression]) => `${expression} AS ${name}`).join(", ");
+
+/** A copy's owner capture's coverage shape for its scope key, which the reuse writer compares (ADR 0152). */
+const OWNER_SHAPE = `
+  LEFT JOIN LATERAL (
+    SELECT string_agg(DISTINCT coverage.contract_version || CASE WHEN coverage.bucket_inventory_json IS NULL THEN '/n' ELSE '/i' END, ',') AS shape
+      FROM source_occurrence_group_coverages coverage
+     WHERE coverage.capture_id = record.capture_id AND coverage.scope_key = record.occurrence_group_scope_key
+  ) owner ON TRUE`;
+/** The source transaction assertions a copy backs, which the reuse writer compares. */
+const BACKED_REVISIONS = `
+  LEFT JOIN LATERAL (
+    SELECT string_agg(encode(provenance.assertion_id, 'hex'), ',' ORDER BY provenance.assertion_id) AS assertions
+      FROM assertion_provenance provenance
+      JOIN assertions assertion ON assertion.assertion_id = provenance.assertion_id
+     WHERE provenance.source_record_id = record.source_record_id
+       AND assertion.origin = 'source' AND assertion.field_name = 'transaction_revision'
+  ) backed ON TRUE`;
+
+/**
  * The answers the removed rows feed, each as the rows its reader can tell
  * apart. Each mirrors its reader's selection and keeps every column a reader
  * returns or compares; generated ids are kept as stored, so a reader that
- * would now pick a row with other values differs. The history readers hold
+ * would now pick a row with other values differs. Record ids are the
+ * exception: a record reader names a copy by its content, since phase B
+ * points each capture at an equal earlier copy. The history readers hold
  * each table's answer at every knowledge point, which keeping the first row
  * of a run preserves and keeping the last would not.
  */
@@ -265,6 +325,74 @@ export const COMPACTION_READERS = {
         JOIN source_occurrence_group_coverages coverage ON coverage.coverage_id = count_row.coverage_id
         JOIN canonical_commits written ON written.commit_id = coverage.commit_id
     ) running WHERE raises`,
+  /**
+   * `listPGliteExpectedOccurrences` for every subject, kind, scope key and
+   * inventoried contract version, all buckets at once: the latest copy of
+   * each occurrence found through its owner capture's coverage.
+   */
+  recordExpectedOccurrences: `
+    SELECT DISTINCT ON (record.source_subject_id, record.record_kind, record.occurrence_group_scope_key, coverage.contract_version,
+                        record.occurrence_key)
+           record.source_subject_id, record.record_kind, record.occurrence_group_scope_key, coverage.contract_version,
+           record.occurrence_key, assertion.transaction_id, record.occurrence_group_partition_date,
+           record.occurrence_group_fingerprint, record.occurrence_group_bucket_key
+      FROM source_records record
+      JOIN source_occurrence_group_coverages coverage
+        ON coverage.capture_id = record.capture_id AND coverage.scope_key = record.occurrence_group_scope_key
+      JOIN canonical_commits written ON written.commit_id = record.commit_id
+      LEFT JOIN assertion_provenance provenance ON provenance.source_record_id = record.source_record_id
+      LEFT JOIN assertions assertion ON assertion.assertion_id = provenance.assertion_id
+       AND assertion.origin = 'source' AND assertion.field_name = 'transaction_revision'
+     WHERE coverage.bucket_inventory_json IS NOT NULL
+     ORDER BY record.source_subject_id, record.record_kind, record.occurrence_group_scope_key, coverage.contract_version,
+              record.occurrence_key, written.commit_sequence DESC, (assertion.transaction_id IS NULL), assertion.transaction_id,
+              record.source_record_id DESC`,
+  /** The reuse writer's latest copy of each record (`planSourceRecordReuse`), with what it compares. */
+  recordLatestCopy: `
+    SELECT DISTINCT ON (record.source_subject_id, record.record_kind, record.occurrence_key)
+           record.source_subject_id, record.record_kind, record.occurrence_key, ${recordContent}, owner.shape, backed.assertions
+      FROM source_records record
+      JOIN canonical_commits written ON written.commit_id = record.commit_id
+      ${OWNER_SHAPE}
+      ${BACKED_REVISIONS}
+     WHERE record.occurrence_key IS NOT NULL
+     ORDER BY record.source_subject_id, record.record_kind, record.occurrence_key, written.commit_sequence DESC, record.source_record_id DESC`,
+  /** The latest copy of each record at every knowledge point. */
+  recordLatestCopyHistory: historySql(
+    { source_subject_id: "record.source_subject_id", record_kind: "record.record_kind", occurrence_key: "record.occurrence_key" },
+    {
+      ...Object.fromEntries(Object.keys(RECORD_CONTENT).map((name) => [name, `record.${name}`])),
+      shape: "record.shape", assertions: "record.assertions",
+    },
+    `FROM (SELECT record.source_record_id, record.source_subject_id, record.record_kind, record.occurrence_key, ${recordContent},
+                  owner.shape, backed.assertions, written.commit_sequence
+             FROM source_records record
+             JOIN canonical_commits written ON written.commit_id = record.commit_id
+             ${OWNER_SHAPE}
+             ${BACKED_REVISIONS}
+            WHERE record.occurrence_key IS NOT NULL) record`,
+    "record.source_record_id DESC",
+  ),
+  /**
+   * What each capture saw, through `captureSourceRecordIdsSql` as
+   * withdrawal by omission and counterparty evidence read it: each member
+   * by occurrence key, with its content, its scope row's account and
+   * subject, every assertion it backs, and whether it was known by the
+   * capture's commit. Not distinct, so a member listed twice shows, and a
+   * member whose copy is gone keeps a row with no content.
+   */
+  captureMembership: `
+    SELECT capture.capture_key, record.source_subject_id, record.record_kind, record.occurrence_key, ${recordContent},
+           record_commit.commit_sequence <= capture_commit.commit_sequence AS known_at_capture,
+           scope.account_id, scope.source_subject_id AS scope_subject_id,
+           (SELECT string_agg(encode(provenance.assertion_id, 'hex'), ',' ORDER BY provenance.assertion_id)
+              FROM assertion_provenance provenance WHERE provenance.source_record_id = member.source_record_id) AS assertions
+      FROM source_captures capture
+      JOIN canonical_commits capture_commit ON capture_commit.commit_id = capture.commit_id
+      JOIN LATERAL (${captureSourceRecordIdsSql("capture.capture_id")}) member ON TRUE
+      LEFT JOIN source_records record ON record.source_record_id = member.source_record_id
+      LEFT JOIN canonical_commits record_commit ON record_commit.commit_id = record.commit_id
+      LEFT JOIN source_record_scopes scope ON scope.source_record_id = member.source_record_id`,
 } as const;
 
 export type CompactionReader = keyof typeof COMPACTION_READERS;
@@ -275,23 +403,35 @@ export type ReaderDigest = Readonly<{ rows: number; sha256: string }>;
 export type LedgerCompactionResult =
   | Readonly<{
     status: "compacted";
+    /** Zero for each table of a phase whose marker was already written. */
     removed: Readonly<Record<CompactedTable, number>>;
+    /** The captures phase B gave a manifest, one each. */
+    manifests: number;
     /** Each answer in `COMPACTION_READERS` read the same before and after; a difference would have thrown. */
     verification: Readonly<{ passed: true; readers: Readonly<Record<CompactionReader, ReaderDigest>> }>;
     durationMs: number;
   }>
   | Readonly<{
-    /** The marker was already written; nothing was read or removed. */
+    /** Both markers were already written; nothing was read or removed. */
     status: "already-compacted";
     removed: Readonly<Record<CompactedTable, number>>;
+    manifests: 0;
     durationMs: number;
   }>;
 
 export type LedgerCompactionFailure =
-  /** A table cites a compacted table, so a removed row could be named. */
+  /** A table cites a compacted table other than `source_records`, so a removed row could be named. */
   | Readonly<{ reason: "unexpected-reference"; tables: readonly string[] }>
   /** A trigger on a compacted table is not in the default mode that replication mode turns off. */
   | Readonly<{ reason: "unexpected-trigger"; triggers: readonly string[] }>
+  /** A column cites `source_records` in a way phase B does not know, so it cannot tell which copies are cited. */
+  | Readonly<{ reason: "unrecognised-citations"; problems: readonly CompactionCitingColumnProblem[] }>
+  /** A copy phase B would remove is cited, by these tables. */
+  | Readonly<{ reason: "removed-copy-cited"; tables: readonly string[] }>
+  /** A copy phase B would remove belongs to a capture that already has a manifest. */
+  | Readonly<{ reason: "removed-copy-in-manifest-capture"; copies: number }>
+  /** A copy phase B would remove differs from its kept copy in a stored column, or its kept copy is missing. */
+  | Readonly<{ reason: "removed-copy-differs"; copies: number }>
   /** A delete removed another number of rows than were selected. */
   | Readonly<{ reason: "removed-count-mismatch"; table: CompactedTable; selected: number; removed: number }>
   /** A reader answered differently after the delete. */
@@ -308,29 +448,33 @@ export class LedgerCompactionError extends Error {
   }
 }
 
+/** A selection a check may replace: a phase A or C table's, or phase B's copies. */
+export type CompactionSelection = DomainCountsTable | typeof RECORDS;
+
 export type LedgerCompactionOptions = Readonly<{
   /** Checked between steps; an abort throws its reason and rolls back. */
   signal?: AbortSignal;
   /** Called inside the transaction once a table's rows are deleted; a throw rolls back. */
   onRemoved?: (table: CompactedTable, removed: number) => void | Promise<void>;
   /**
-   * Replaces a table's selection, a query that returns `row_ctid` and
-   * `repeats` for each row. Only checks use it, to prove the verifier
-   * refuses a wrong selection.
+   * Replaces a selection. Only checks use it, to prove the guards and the
+   * verifier refuse a wrong one. A phase A or C table's returns `row_ctid`
+   * and `repeats` for each row; phase B's returns `source_record_id` and
+   * `kept_id` for each copy to remove.
    */
-  selections?: Readonly<Partial<Record<CompactedTable, string>>>;
+  selections?: Readonly<Partial<Record<CompactionSelection, string>>>;
 }>;
 
 const zeroRemoved = (): Record<CompactedTable, number> =>
   Object.fromEntries(COMPACTED_TABLES.map((table) => [table, 0])) as Record<CompactedTable, number>;
 
 /**
- * Remove the phase A and phase C repeats of `store` in one transaction, or
- * nothing when a previous run wrote the marker. Throws a
+ * Compact `store` in one transaction: phases A and C unless their marker is
+ * written, then phase B unless its marker is. Throws a
  * `LedgerCompactionError`, and keeps every row, when anything is unexpected
  * or a reader would answer differently.
  */
-export async function compactLedgerDomainAndCounts(
+export async function compactLedger(
   store: PGliteStore,
   options: LedgerCompactionOptions = {},
 ): Promise<LedgerCompactionResult> {
@@ -338,37 +482,87 @@ export async function compactLedgerDomainAndCounts(
   const step = () => options.signal?.throwIfAborted();
   step();
   return store.transaction(async (transaction) => {
-    const { rows: marked } = await transaction.query(
-      "SELECT 1 FROM pglite_operational_migrations WHERE migration_key = $1",
-      [COMPACTED],
+    const { rows: marked } = await transaction.query<{ migration_key: string }>(
+      "SELECT migration_key FROM pglite_operational_migrations WHERE migration_key = ANY($1::text[])",
+      [[DOMAIN_COUNTS_MARKER, RECORDS_MARKER]],
     );
-    if (marked.length > 0) return { status: "already-compacted", removed: zeroRemoved(), durationMs: elapsed(started) };
+    const done = new Set(marked.map(({ migration_key }) => migration_key));
+    const domainAndCounts = !done.has(DOMAIN_COUNTS_MARKER);
+    const records = !done.has(RECORDS_MARKER);
+    if (!domainAndCounts && !records)
+      return { status: "already-compacted", removed: zeroRemoved(), manifests: 0, durationMs: elapsed(started) };
 
     await refuseUnexpectedDependents(transaction);
+    const citing = await readCitingColumns(transaction);
+    if (citing.problems.length > 0) throw new LedgerCompactionError({ reason: "unrecognised-citations", problems: citing.problems });
     step();
     const before = await readCompactionReaders(transaction, step);
 
-    // Every selection is made before any delete: the e-invoice selections of
-    // both tables read the observations, which the first delete changes.
-    await transaction.query("CREATE TEMP TABLE ledger_compaction_removed(table_name TEXT NOT NULL, row_ctid TID NOT NULL) ON COMMIT DROP");
-    const selected = zeroRemoved();
-    for (const table of COMPACTED_TABLES) {
-      step();
-      const selection = options.selections?.[table] ?? (table === COUNTS ? phaseCMarkedSql() : PHASE_A[table].marked);
-      selected[table] = (await transaction.query(
-        `INSERT INTO ledger_compaction_removed(table_name, row_ctid)
-         SELECT $1, selection.row_ctid FROM (${selection}) selection WHERE selection.repeats`,
-        [table],
-      )).affectedRows ?? 0;
-    }
-
-    // As ADR 0144: no per-row foreign-key checks or triggers, which the
-    // dependents check above makes safe; the purge guard also lets the
-    // append-only guards pass should one fire anyway.
-    await transaction.query("SET LOCAL session_replication_role = replica");
-    await transaction.query("SELECT set_config('pglite.canonical_purge_delete_allowed', '1', true)");
     const removed = zeroRemoved();
-    for (const table of COMPACTED_TABLES) {
+    await transaction.query("CREATE TEMP TABLE ledger_compaction_removed(table_name TEXT NOT NULL, row_ctid TID NOT NULL) ON COMMIT DROP");
+    if (domainAndCounts) await compactDomainAndCounts(transaction, options, removed, step);
+    // After phase A, whose kept rows are the domain rows that still cite a copy.
+    const manifests = records ? await compactRecordCopies(transaction, citing.columns, options, removed, step) : 0;
+
+    const after = await readCompactionReaders(transaction, step);
+    const changed = (Object.keys(before) as CompactionReader[])
+      .filter((reader) => before[reader].sha256 !== after[reader].sha256 || before[reader].rows !== after[reader].rows);
+    if (changed.length > 0) throw new LedgerCompactionError({ reason: "reader-changed", readers: changed });
+
+    const touched = [...COMPACTED_TABLES.filter((table) => removed[table] > 0), ...(manifests > 0 ? [MANIFEST] : [])];
+    if (touched.length > 0) await transaction.query(`ANALYZE ${touched.join(", ")}`);
+    for (const marker of [...(domainAndCounts ? [DOMAIN_COUNTS_MARKER] : []), ...(records ? [RECORDS_MARKER] : [])])
+      await transaction.query(
+        `INSERT INTO pglite_operational_migrations(migration_key, schema_signature) VALUES ($1, $2)`,
+        [marker, createHash("sha256").update(marker).digest("hex")],
+      );
+    return {
+      status: "compacted",
+      removed,
+      manifests,
+      verification: { passed: true, readers: after },
+      durationMs: elapsed(started),
+    };
+  });
+}
+
+const elapsed = (started: number) => Math.round(performance.now() - started);
+
+/**
+ * As ADR 0144: no per-row foreign-key checks or triggers, which the
+ * dependents check makes safe; the purge guard also lets the append-only
+ * guards pass should one fire anyway.
+ */
+async function deleting<T>(transaction: PGliteTransaction, body: () => Promise<T>): Promise<T> {
+  await transaction.query("SET LOCAL session_replication_role = replica");
+  await transaction.query("SELECT set_config('pglite.canonical_purge_delete_allowed', '1', true)");
+  const result = await body();
+  await transaction.query("SELECT set_config('pglite.canonical_purge_delete_allowed', '0', true)");
+  await transaction.query("SET LOCAL session_replication_role = origin");
+  return result;
+}
+
+/** Phases A and C. */
+async function compactDomainAndCounts(
+  transaction: PGliteTransaction,
+  options: LedgerCompactionOptions,
+  removed: Record<CompactedTable, number>,
+  step: () => void,
+): Promise<void> {
+  // Every selection is made before any delete: the e-invoice selections of
+  // both tables read the observations, which the first delete changes.
+  const selected = zeroRemoved();
+  for (const table of DOMAIN_COUNTS_TABLES) {
+    step();
+    const selection = options.selections?.[table] ?? (table === COUNTS ? phaseCMarkedSql() : PHASE_A[table].marked);
+    selected[table] = (await transaction.query(
+      `INSERT INTO ledger_compaction_removed(table_name, row_ctid)
+       SELECT $1, selection.row_ctid FROM (${selection}) selection WHERE selection.repeats`,
+      [table],
+    )).affectedRows ?? 0;
+  }
+  await deleting(transaction, async () => {
+    for (const table of DOMAIN_COUNTS_TABLES) {
       step();
       if (selected[table] === 0) continue;
       removed[table] = (await transaction.query(
@@ -379,42 +573,103 @@ export async function compactLedgerDomainAndCounts(
         throw new LedgerCompactionError({ reason: "removed-count-mismatch", table, selected: selected[table], removed: removed[table] });
       await options.onRemoved?.(table, removed[table]);
     }
-    await transaction.query("SELECT set_config('pglite.canonical_purge_delete_allowed', '0', true)");
-    await transaction.query("SET LOCAL session_replication_role = origin");
-
-    const after = await readCompactionReaders(transaction, step);
-    const changed = (Object.keys(before) as CompactionReader[])
-      .filter((reader) => before[reader].sha256 !== after[reader].sha256 || before[reader].rows !== after[reader].rows);
-    if (changed.length > 0) throw new LedgerCompactionError({ reason: "reader-changed", readers: changed });
-
-    const touched = COMPACTED_TABLES.filter((table) => removed[table] > 0);
-    if (touched.length > 0) await transaction.query(`ANALYZE ${touched.join(", ")}`);
-    await transaction.query(
-      `INSERT INTO pglite_operational_migrations(migration_key, schema_signature) VALUES ($1, $2)`,
-      [COMPACTED, createHash("sha256").update(COMPACTED).digest("hex")],
-    );
-    return {
-      status: "compacted",
-      removed,
-      verification: { passed: true, readers: after },
-      durationMs: elapsed(started),
-    };
   });
 }
 
-const elapsed = (started: number) => Math.round(performance.now() - started);
+/**
+ * Phase B: select the removable copies, check each again on its own, give
+ * each one's capture a manifest listing its kept copy, and delete the copies
+ * with their satellite rows. Returns the manifests written.
+ */
+async function compactRecordCopies(
+  transaction: PGliteTransaction,
+  columns: Awaited<ReturnType<typeof readCitingColumns>>["columns"],
+  options: LedgerCompactionOptions,
+  removed: Record<CompactedTable, number>,
+  step: () => void,
+): Promise<number> {
+  step();
+  const selection = options.selections?.[RECORDS]
+    ?? `SELECT source_record_id, kept_id FROM (${recordCopiesSql("TRUE", columns, false)}) copy WHERE copy.category = 'removable'`;
+  await transaction.query(`CREATE TEMP TABLE ledger_compaction_copies(
+      source_record_id BYTEA PRIMARY KEY, capture_id BYTEA NOT NULL, kept_id BYTEA NOT NULL) ON COMMIT DROP`);
+  const selected = (await transaction.query(
+    `INSERT INTO ledger_compaction_copies(source_record_id, capture_id, kept_id)
+     SELECT selection.source_record_id, record.capture_id, selection.kept_id
+       FROM (${selection}) selection JOIN source_records record ON record.source_record_id = selection.source_record_id`,
+  )).affectedRows ?? 0;
+  if (selected === 0) return 0;
+  await transaction.query("ANALYZE ledger_compaction_copies");
+
+  // 1. Nothing cites a removed copy: no citing column, manifest or assertion row naming a run.
+  step();
+  const removedCopy = (column: string) => `${column} IN (SELECT source_record_id FROM ledger_compaction_copies)`;
+  const { rows: citing } = await transaction.query<{ citing_table: string }>(
+    `SELECT DISTINCT citing_table FROM (${recordCitationsSql(columns, removedCopy, false)}) citation ORDER BY 1`,
+  );
+  if (citing.length > 0)
+    throw new LedgerCompactionError({ reason: "removed-copy-cited", tables: citing.map(({ citing_table }) => citing_table) });
+  // 2. Its capture has no manifest yet.
+  const { rows: [manifested] } = await transaction.query<{ copies: number }>(
+    `SELECT count(*)::int AS copies FROM ledger_compaction_copies copy
+      WHERE EXISTS (SELECT 1 FROM ${MANIFEST} manifest WHERE manifest.capture_id = copy.capture_id)`,
+  );
+  if (manifested!.copies > 0) throw new LedgerCompactionError({ reason: "removed-copy-in-manifest-capture", copies: manifested!.copies });
+  // 3. Every stored column but the ids equals its kept copy's, compared exactly, not by hash.
+  step();
+  const { rows: stored } = await transaction.query<{ name: string }>(
+    `SELECT column_name AS name FROM information_schema.columns
+      WHERE table_schema = current_schema() AND table_name = $1
+        AND column_name NOT IN ('source_record_id', 'capture_id', 'commit_id') ORDER BY ordinal_position`,
+    [RECORDS],
+  );
+  const compared = stored.map(({ name }) => `record.${name}`).join(", ");
+  const { rows: [differing] } = await transaction.query<{ copies: number }>(
+    `SELECT count(*)::int AS copies FROM (
+       SELECT copy.source_record_id, ${compared} FROM ledger_compaction_copies copy
+         JOIN source_records record ON record.source_record_id = copy.source_record_id
+       EXCEPT
+       SELECT copy.source_record_id, ${compared} FROM ledger_compaction_copies copy
+         JOIN source_records record ON record.source_record_id = copy.kept_id
+     ) differing`,
+  );
+  if (differing!.copies > 0) throw new LedgerCompactionError({ reason: "removed-copy-differs", copies: differing!.copies });
+
+  // A capture's removed copies have distinct occurrence keys, so their kept copies are distinct too.
+  step();
+  const manifests = (await transaction.query(
+    `INSERT INTO ${MANIFEST}(capture_id, source_record_ids, record_count, commit_id)
+     SELECT copy.capture_id, string_agg(copy.kept_id, ''::bytea ORDER BY copy.kept_id), count(*)::int, capture.commit_id
+       FROM ledger_compaction_copies copy JOIN source_captures capture ON capture.capture_id = copy.capture_id
+      GROUP BY copy.capture_id, capture.commit_id`,
+  )).affectedRows ?? 0;
+
+  await deleting(transaction, async () => {
+    for (const table of RECORD_TABLES) {
+      step();
+      removed[table] = (await transaction.query(
+        `DELETE FROM ${table} WHERE source_record_id IN (SELECT source_record_id FROM ledger_compaction_copies)`,
+      )).affectedRows ?? 0;
+      await options.onRemoved?.(table, removed[table]);
+    }
+  });
+  if (removed[RECORDS] !== selected)
+    throw new LedgerCompactionError({ reason: "removed-count-mismatch", table: RECORDS, selected, removed: removed[RECORDS] });
+  return manifests;
+}
 
 /**
- * Nothing may cite a compacted table, and every trigger on one must be in
- * the default mode, which replication mode turns off. A disabled, replica
- * or always trigger is refused too: skipping the checks is only known safe
- * for the triggers the schema installs.
+ * Nothing may cite a compacted table, `source_records` aside, whose citing
+ * columns phase B reads; and every trigger on one must be in the default
+ * mode, which replication mode turns off. A disabled, replica or always
+ * trigger is refused too: skipping the checks is only known safe for the
+ * triggers the schema installs.
  */
 async function refuseUnexpectedDependents(transaction: PGliteTransaction): Promise<void> {
   const { rows: references } = await transaction.query<{ table_name: string }>(
     `SELECT DISTINCT conrelid::regclass::text AS table_name FROM pg_constraint
       WHERE contype = 'f' AND confrelid = ANY($1::regclass[]) ORDER BY 1`,
-    [COMPACTED_TABLES],
+    [COMPACTED_TABLES.filter((table) => table !== RECORDS)],
   );
   if (references.length > 0)
     throw new LedgerCompactionError({ reason: "unexpected-reference", tables: references.map(({ table_name }) => table_name) });

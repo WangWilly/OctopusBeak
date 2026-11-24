@@ -388,14 +388,14 @@ export const PGLITE_FINANCIAL_CONTRACTS = Object.freeze({
     { lane: "interactive" },
   ),
   /**
-   * Removes the domain-row and count-row repeats a store written before ADR
-   * 0152 holds, phases A and C of the compaction (ADR 0154), in one verified
-   * transaction. Host-only: no renderer route and no workflow access. Do not
+   * Removes the domain-row repeats, record copies and count-row repeats a
+   * store written before ADR 0152 holds, phases A to C of the compaction (ADR
+   * 0154), in one verified transaction. Host-only: no renderer route and no workflow access. Do not
    * wire it to the UI: the transaction holds the ledger for as long as it
    * runs, and the chunked worker job that will run it from Settings, and
    * return its space, does not exist yet.
    */
-  "financial.canonical.compactDomainAndCounts": operation<[], LedgerCompactionResult>(
+  "financial.canonical.compactLedger": operation<[], LedgerCompactionResult>(
     (args) => args.length === 0,
     { lane: "background" },
   ),
