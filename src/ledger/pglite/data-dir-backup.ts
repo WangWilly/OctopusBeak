@@ -108,9 +108,11 @@ export async function removePartialLedgerBackups(dataDir: string): Promise<void>
 async function stopCopyInto(partial: string): Promise<void> {
   const pid = Number.parseInt(await readFile(`${partial}${PID_SUFFIX}`, "utf8").catch(() => ""), 10);
   if (!Number.isSafeInteger(pid) || pid <= 1) return;
-  // The pid may have gone to another process since: only one whose arguments name the copy is killed.
-  const args = await run("/bin/ps", ["-ww", "-o", "args=", "-p", String(pid)]).then(({ stdout }) => stdout, () => "");
-  if (!args.includes(partial)) return;
+  // The pid may have gone to another process since: only a clone copying into this partial is killed. A UTF-8
+  // locale keeps `ps` from escaping a non-ASCII path, which an App opened from Finder may otherwise get.
+  const args = await run("/bin/ps", ["-ww", "-o", "args=", "-p", String(pid)], { env: { ...process.env, LC_ALL: "en_US.UTF-8" } })
+    .then(({ stdout }) => stdout.trim(), () => "");
+  if (!args.includes(" -cR ") || !args.endsWith(` ${partial}`)) return;
   try {
     process.kill(pid, "SIGKILL");
   } catch {
