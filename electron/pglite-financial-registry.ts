@@ -49,6 +49,7 @@ import { DEFAULT_SYSTEM_TIMEZONE } from "../src/lib/time/timezone.ts";
 import type { PGliteCanonicalCommitOptions } from "../src/ledger/pglite/canonical-source-store.ts";
 import type { CardIdentitySecret } from "../src/lib/shared-identity/card-identity-secret.ts";
 import { cardAccountNamespaces } from "../src/ledger/pglite/card-identity-secret.ts";
+import { planLedgerCompaction } from "../src/ledger/pglite/compaction-plan.ts";
 import {
   readAssetsPage,
   readLiabilitiesPage,
@@ -77,6 +78,13 @@ export type PGliteFinancialRegistryOptions = Readonly<{
   today?: () => string;
   /** The Card identity secret workflows derive card identities from, read at each card commit (ADR 0149). */
   cardIdentitySecret?: () => CardIdentitySecret | undefined;
+  /**
+   * Queues one step of a stepped operation on the background lane; by default
+   * a step runs at once. It must not be called from inside a scheduled job,
+   * where the step would wait behind that job: the worker passes
+   * `scheduler.scheduleStep`, which refuses that call.
+   */
+  runBackgroundStep?: <T>(step: () => Promise<T>) => Promise<T>;
 }>;
 
 export function createPGliteFinancialRegistry(
@@ -154,6 +162,11 @@ export function createPGliteFinancialRegistry(
     "financial.canonical.resetRequired": () =>
       canonicalResetRequiredNamespaces(store, options.cardIdentitySecret?.()),
     "financial.canonical.cardAccountNamespaces": () => cardAccountNamespaces(store),
+    // Not yet for the UI or the live worker: one subject step can hold the
+    // ledger for seconds to tens of seconds until it is split further, for
+    // example by record kind or occurrence-key range (see planLedgerCompaction).
+    "financial.canonical.compactionPlan": (_args, request) =>
+      planLedgerCompaction(store, { runStep: options.runBackgroundStep, signal: request?.signal }),
   });
 }
 

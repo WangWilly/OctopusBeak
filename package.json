@@ -42,6 +42,7 @@
     "check:desktop-browser-payload": "node --test scripts/desktop-browser-payload.check.mjs scripts/forge-config.check.mjs",
     "generate:welcome-assets": "node scripts/welcome-assets.mjs",
     "generate:yuanta-settlement-calendar": "node scripts/generate-yuanta-settlement-calendar.mjs",
+    "ledger:compaction-plan": "node --no-warnings --experimental-strip-types scripts/ledger-compaction-plan.ts",
     "workflow:dev": "node --no-warnings --experimental-strip-types scripts/workflow-dev.ts",
     "calibrate:captcha": "node --no-warnings --experimental-strip-types scripts/captcha-calibration.ts",
     "validate:nextbank-audio": "node --no-warnings --experimental-strip-types scripts/nextbank-audio-validation.ts",
