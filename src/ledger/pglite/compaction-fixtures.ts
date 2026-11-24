@@ -97,7 +97,7 @@ async function numberLoanRecordsByPosition(store: PGliteStore): Promise<void> {
  * one: the card command's last capture, reusing the first copy of a
  * purchase that has left its window.
  */
-async function giveLastCardCaptureAManifest(store: PGliteStore, SYNCS: number): Promise<void> {
+async function giveLastCardCaptureAManifest(store: PGliteStore): Promise<void> {
   await writeDirectly(store, `
     INSERT INTO capture_source_record_manifests(capture_id, source_record_ids, record_count, commit_id)
     SELECT last.capture_id, aged.source_record_id, 1, last.commit_id
@@ -141,7 +141,7 @@ const mixedProvenance = (copy: string) => `
  * - an assertion row naming a run on a deposit copy, and on a card copy whose capture has a manifest;
  * - a second-sync statement record stored under another record kind, with the occurrence key of its kind's copies.
  */
-async function addEdgeCases(store: PGliteStore, SYNCS: number): Promise<Readonly<Record<string, number>>> {
+async function addEdgeCases(store: PGliteStore): Promise<Readonly<Record<string, number>>> {
   const invoice = (n: number) => keyOf("einvoice-capture-3", n);
   const { rows: revisionColumns } = await store.query<{ name: string }>(
     `SELECT column_name AS name FROM information_schema.columns
@@ -205,11 +205,8 @@ async function repeatAccountIdentifiers(store: PGliteStore): Promise<number> {
 
 export type Legacy = Readonly<{ store: PGliteStore; repeated: Readonly<Record<string, number>>; edgeCases: Readonly<Record<string, number>> }>;
 
-/** How large an old-shaped store is: the records of each sync, and the syncs of each mode. */
-export type LegacySize = Readonly<{ rows: number; syncs: number }>;
-
 /** An old-shaped store, one deposit sync through the current writer, which reuses the last copies, and the edge cases. */
-export async function legacyStore(database?: PGlite, { rows: ROWS, syncs: SYNCS }: LegacySize = { rows: 20, syncs: 3 }): Promise<Legacy> {
+export async function legacyStore(database?: PGlite): Promise<Legacy> {
   const store = await installFinancialStore(database ?? await PGlite.create());
   for (const mode of MODES)
     for (let sync = 1; sync <= SYNCS; sync += 1) await commitResync(store, mode, sync, { rowCount: ROWS, reuseSourceRecords: false });
@@ -236,9 +233,9 @@ export async function legacyStore(database?: PGlite, { rows: ROWS, syncs: SYNCS 
          JOIN source_captures capture ON capture.capture_id = coverage.capture_id AND capture.capture_key = 'investment-capture-${SYNCS}'
         ORDER BY count_row.partition_date, count_row.observation_id LIMIT 1)`);
   await numberLoanRecordsByPosition(store);
-  await giveLastCardCaptureAManifest(store, SYNCS);
+  await giveLastCardCaptureAManifest(store);
   await commitResync(store, "deposit", SYNCS + 1, { rowCount: ROWS });
-  return { store, repeated, edgeCases: await addEdgeCases(store, SYNCS) };
+  return { store, repeated, edgeCases: await addEdgeCases(store) };
 }
 
 /**
@@ -270,6 +267,55 @@ export async function addCitedChain(store: PGliteStore, { copies, others }: Read
     SELECT decode(md5('other-' || n), 'hex'), capture.capture_id, decode(md5('other-subject-' || (n % 4001)), 'hex'), capture.commit_id,
            'other-kind-' || (n % 97), 'other-' || n, NULL, '{}'
       FROM generate_series(1, ${others}) n JOIN ${captures("deposit")} ON capture.position = 1 + n % capture.total`);
+  await store.exec("ANALYZE");
+  return kind;
+}
+
+/**
+ * Adds one chain to a `legacyStore`, held by `captures` new captures, each
+ * with its own commit. Every capture holds `fresh` records only it saw, as a
+ * holding or balance is new on every sync, and the first `steadyCaptures` of
+ * them each hold a copy of the same `steady` records, so compaction removes
+ * `steady * (steadyCaptures - 1)` copies. Returns the chain's record kind.
+ */
+export async function addCaptureChain(
+  store: PGliteStore,
+  { name, captures, fresh, steady, steadyCaptures }: Readonly<{ name: string; captures: number; fresh: number; steady: number; steadyCaptures: number }>,
+): Promise<string> {
+  const kind = `${name}-record`;
+  const subject = `decode(md5('${name}-subject'), 'hex')`;
+  const id = (part: string) => `decode(md5('${name}-${part}-' || n), 'hex')`;
+  await writeDirectly(store, `
+    INSERT INTO source_subjects(source_subject_id, source_connection_id, identity_epoch_id, stream, record_kind, subject_digest, created_commit_id)
+    SELECT ${subject}, source_connection_id, identity_epoch_id, stream, '${kind}', '${name}-digest', created_commit_id
+      FROM source_subjects WHERE record_kind = 'investment-source-record' LIMIT 1`);
+  await writeDirectly(store, `
+    INSERT INTO canonical_commits(commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind)
+    SELECT ${id("commit")}, latest.commit_sequence + n, latest.recorded_at_utc_us + n, latest.authority_route, latest.commit_kind
+      FROM generate_series(1, ${captures}) n
+     CROSS JOIN (SELECT * FROM canonical_commits ORDER BY commit_sequence DESC LIMIT 1) latest`);
+  const { rows: columns } = await store.query<{ name: string }>(
+    `SELECT column_name AS name FROM information_schema.columns
+      WHERE table_schema = current_schema() AND table_name = 'source_captures' ORDER BY ordinal_position`,
+  );
+  const capture: Readonly<Record<string, string>> = {
+    capture_id: id("capture"), capture_key: `'${name}-capture-' || n`, source_subject_id: subject, record_kind: `'${kind}'`, commit_id: id("commit"),
+  };
+  await writeDirectly(store, `
+    INSERT INTO source_captures(${columns.map(({ name: column }) => column).join(", ")})
+    SELECT ${columns.map(({ name: column }) => capture[column] ?? `src.${column}`).join(", ")}
+      FROM generate_series(1, ${captures}) n
+     CROSS JOIN (SELECT * FROM source_captures WHERE capture_key = 'investment-capture-1') src`);
+  await writeDirectly(store, `
+    INSERT INTO source_records(source_record_id, capture_id, source_subject_id, commit_id, record_kind, sequence_lexeme, occurrence_key, payload_json)
+    SELECT decode(md5('${name}-record-' || n || '-' || held.key), 'hex'), ${id("capture")}, ${subject}, ${id("commit")}, '${kind}', held.key, held.key,
+           '{"key":"' || held.key || '"}'
+      FROM generate_series(1, ${captures}) n
+     CROSS JOIN LATERAL (
+       SELECT 'fresh-' || n || '-' || member AS key FROM generate_series(1, ${fresh}) member
+       UNION ALL
+       SELECT 'steady-' || member FROM generate_series(1, ${steady}) member WHERE n <= ${steadyCaptures}
+     ) held`);
   await store.exec("ANALYZE");
   return kind;
 }

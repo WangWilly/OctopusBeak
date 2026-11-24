@@ -144,24 +144,28 @@ const BACKED_REVISIONS = `
   ) backed ON TRUE`;
 
 /**
- * The rows one compaction transaction covers. `WHOLE_STORE` is every row;
- * `IN_CHUNK` is one chunk of the worker job: its chains, each a source
- * subject and record kind, and the captures that hold their copies, as two
- * temporary tables the chunk fills. Each returns a condition on the columns
- * it is given.
+ * The rows one compaction transaction covers. `WHOLE_STORE` is every row.
+ * `IN_CHUNK` is one chunk of the worker job, as temporary tables the chunk
+ * fills: its chains, each a source subject and record kind, and, once it has
+ * selected its copies, the records those are copies of and the captures that
+ * own them. Each returns a condition on the columns it is given.
  */
 export type CompactionScope = Readonly<{
   chain(subject: string, kind: string): string;
+  /** A record: every copy of one occurrence key in one chain. */
+  record(subject: string, kind: string, occurrenceKey: string): string;
   capture(column: string): string;
 }>;
 
-export const WHOLE_STORE: CompactionScope = Object.freeze({ chain: () => "TRUE", capture: () => "TRUE" });
+export const WHOLE_STORE: CompactionScope = Object.freeze({ chain: () => "TRUE", record: () => "TRUE", capture: () => "TRUE" });
 const CHUNK_CHAINS = "ledger_compaction_chains";
-const CHUNK_CAPTURES = "ledger_compaction_captures";
+const COPIES = "ledger_compaction_copies";
 const IN_CHUNK: CompactionScope = Object.freeze({
   chain: (subject: string, kind: string) =>
     `(${subject}, ${kind}) IN (SELECT source_subject_id, record_kind FROM ${CHUNK_CHAINS})`,
-  capture: (column: string) => `${column} IN (SELECT capture_id FROM ${CHUNK_CAPTURES})`,
+  record: (subject: string, kind: string, occurrenceKey: string) =>
+    `(${subject}, ${kind}, ${occurrenceKey}) IN (SELECT source_subject_id, record_kind, occurrence_key FROM ${COPIES})`,
+  capture: (column: string) => `${column} IN (SELECT capture_id FROM ${COPIES})`,
 });
 
 /**
@@ -174,10 +178,14 @@ const IN_CHUNK: CompactionScope = Object.freeze({
  * each table's answer at every knowledge point, which keeping the first row
  * of a run preserves and keeping the last would not.
  *
- * The count and record readers take a scope. Each is keyed by a chain's
- * subject and record kind, or by capture, so its rows in a chunk's scope are
- * exactly the rows that chunk's deletes can change; the rest of its answer
- * reads none of the chunk's rows. The other readers are always read whole.
+ * The count and record readers take a scope. A count reader is keyed by a
+ * chain, a record reader by a record (a chain and an occurrence key), and
+ * the capture reader by capture. A chunk reads the count rows of its chains,
+ * the records it removes a copy of and the captures that own a removed copy.
+ * Those are the rows its deletes can change: no other record has a copy
+ * removed, and no other capture owns a removed copy or, as the cited guard
+ * has checked, lists one in a manifest, so the rest of each answer reads no
+ * row the chunk changes. The other readers are always read whole.
  */
 function compactionReaders(scope: CompactionScope) {
   return {
@@ -375,20 +383,28 @@ function compactionReaders(scope: CompactionScope) {
         LEFT JOIN assertion_provenance provenance ON provenance.source_record_id = record.source_record_id
         LEFT JOIN assertions assertion ON assertion.assertion_id = provenance.assertion_id
          AND assertion.origin = 'source' AND assertion.field_name = 'transaction_revision'
-       WHERE coverage.bucket_inventory_json IS NOT NULL AND ${scope.chain("record.source_subject_id", "record.record_kind")}
+       WHERE coverage.bucket_inventory_json IS NOT NULL
+         AND ${scope.record("record.source_subject_id", "record.record_kind", "record.occurrence_key")}
        ORDER BY record.source_subject_id, record.record_kind, record.occurrence_group_scope_key, coverage.contract_version,
                 record.occurrence_key, written.commit_sequence DESC, (assertion.transaction_id IS NULL), assertion.transaction_id,
                 record.source_record_id DESC`,
-    /** The reuse writer's latest copy of each record (`planSourceRecordReuse`), with what it compares. */
+    /**
+     * The reuse writer's latest copy of each record (`planSourceRecordReuse`), with what it compares. The latest
+     * copy is picked by id first, so only it is read in full, not every copy of a long chain.
+     */
     recordLatestCopy: `
-      SELECT DISTINCT ON (record.source_subject_id, record.record_kind, record.occurrence_key)
-             record.source_subject_id, record.record_kind, record.occurrence_key, ${recordContent}, owner.shape, backed.assertions
-        FROM source_records record
-        JOIN canonical_commits written ON written.commit_id = record.commit_id
+      SELECT record.source_subject_id, record.record_kind, record.occurrence_key, ${recordContent}, owner.shape, backed.assertions
+        FROM (
+          SELECT DISTINCT ON (copy.source_subject_id, copy.record_kind, copy.occurrence_key) copy.source_record_id
+            FROM source_records copy
+            JOIN canonical_commits written ON written.commit_id = copy.commit_id
+           WHERE copy.occurrence_key IS NOT NULL
+             AND ${scope.record("copy.source_subject_id", "copy.record_kind", "copy.occurrence_key")}
+           ORDER BY copy.source_subject_id, copy.record_kind, copy.occurrence_key, written.commit_sequence DESC, copy.source_record_id DESC
+        ) latest
+        JOIN source_records record ON record.source_record_id = latest.source_record_id
         ${OWNER_SHAPE}
-        ${BACKED_REVISIONS}
-       WHERE record.occurrence_key IS NOT NULL AND ${scope.chain("record.source_subject_id", "record.record_kind")}
-       ORDER BY record.source_subject_id, record.record_kind, record.occurrence_key, written.commit_sequence DESC, record.source_record_id DESC`,
+        ${BACKED_REVISIONS}`,
     /** The latest copy of each record at every knowledge point. */
     recordLatestCopyHistory: historySql(
       { source_subject_id: "record.source_subject_id", record_kind: "record.record_kind", occurrence_key: "record.occurrence_key" },
@@ -402,7 +418,8 @@ function compactionReaders(scope: CompactionScope) {
                JOIN canonical_commits written ON written.commit_id = record.commit_id
                ${OWNER_SHAPE}
                ${BACKED_REVISIONS}
-              WHERE record.occurrence_key IS NOT NULL AND ${scope.chain("record.source_subject_id", "record.record_kind")}) record`,
+              WHERE record.occurrence_key IS NOT NULL
+                AND ${scope.record("record.source_subject_id", "record.record_kind", "record.occurrence_key")}) record`,
       "record.source_record_id DESC",
     ),
     /**
@@ -541,7 +558,6 @@ export async function compactLedger(
     const before = await readCompactionReaders(transaction, step);
 
     const removed = zeroRemoved();
-    await createSelectionTables(transaction);
     if (domainAndCounts) {
       // Every selection is made before any delete: the e-invoice selections of
       // both tables read the observations, which the first delete changes.
@@ -604,6 +620,8 @@ export type CompactionChunkResult = Readonly<{
   manifests: number;
   /** The readers read before and after; empty when the chunk selected nothing. */
   readers: readonly CompactionReader[];
+  /** Each of those readers' answer, which the deletes left as it was: the rows of its scope in this chunk. */
+  digests: Readonly<Partial<Record<CompactionReader, ReaderDigest>>>;
 }>;
 
 /**
@@ -611,11 +629,12 @@ export type CompactionChunkResult = Readonly<{
  * the same selections narrowed to the chunk, the same guards on each removed
  * copy, replication mode and the purge guard for the deletes, and every
  * reader that names a table the chunk changes read before and after, the
- * count and record readers narrowed to the chunk's chains and captures. Any
- * difference throws a `LedgerCompactionError` and rolls the chunk back;
- * chunks committed before it stay. A chunk that selects nothing reads no
- * reader and changes nothing. Writes no marker: the job writes them once
- * every chunk is done.
+ * count and record readers narrowed to the chunk's chains, the records it
+ * removes a copy of and the captures that own one. Any difference throws a
+ * `LedgerCompactionError` and rolls the chunk back; chunks committed before
+ * it stay. A chunk that selects nothing reads no reader and changes nothing.
+ * Writes no marker and analyzes no table: the job does both once every chunk
+ * is done (`analyzeCompactedTables`).
  */
 export async function compactLedgerChunk(
   store: PGliteStore,
@@ -627,13 +646,12 @@ export async function compactLedgerChunk(
   return store.transaction(async (transaction) => {
     const columns = await refuseUnexpectedStore(transaction);
     const scope = chunk.kind === "domain" ? WHOLE_STORE : await enterChunk(transaction, chunk.chains);
-    await createSelectionTables(transaction);
     const tables: readonly DomainCountsTable[] = chunk.kind === "domain" ? chunk.tables : chunk.counts ? [COUNTS] : [];
     const selected = await selectRows(transaction, tables, scope, options, step);
     const copies = chunk.kind === "chains" && chunk.records ? await selectCopies(transaction, columns, scope, options, step) : 0;
     const removed = zeroRemoved();
     const changing = [...tables.filter((table) => selected[table] > 0), ...(copies > 0 ? [...RECORD_TABLES, MANIFEST] : [])];
-    if (changing.length === 0) return { removed, manifests: 0, readers: [] };
+    if (changing.length === 0) return { removed, manifests: 0, readers: [], digests: {} };
 
     if (scope !== WHOLE_STORE) await refuseOutsideChunk(transaction, scope, selected[COUNTS], copies);
     if (copies > 0) await checkCopies(transaction, columns, step);
@@ -641,9 +659,9 @@ export async function compactLedgerChunk(
     const before = await readCompactionReaders(transaction, step, { scope, readers });
     await deleteRows(transaction, tables, selected, options, removed, step);
     const manifests = copies > 0 ? await deleteCopies(transaction, copies, options, removed, step) : 0;
-    refuseChanged(before, await readCompactionReaders(transaction, step, { scope, readers }));
-    await analyzeTouched(transaction, removed, manifests);
-    return { removed, manifests, readers };
+    const digests = await readCompactionReaders(transaction, step, { scope, readers });
+    refuseChanged(before, digests);
+    return { removed, manifests, readers, digests };
   });
 }
 
@@ -678,7 +696,20 @@ async function analyzeTouched(transaction: PGliteTransaction, removed: Record<Co
   if (touched.length > 0) await transaction.query(`ANALYZE ${touched.join(", ")}`);
 }
 
-/** Fills the chunk's two scope tables: its chains, and the captures that hold their copies. */
+/**
+ * Fresh planner statistics for every table the job's chunks change, one
+ * table per step. The chunks analyze nothing: each plans its statements from
+ * the rows it stages, and a table's row estimate follows its size on disk,
+ * which a delete leaves as it was.
+ */
+export async function analyzeCompactedTables(
+  store: PGliteStore,
+  runStep: <T>(step: () => Promise<T>) => Promise<T> = (step) => step(),
+): Promise<void> {
+  for (const table of [...COMPACTED_TABLES, MANIFEST]) await runStep(() => store.query(`ANALYZE ${table}`));
+}
+
+/** Fills the chunk's chains table. */
 async function enterChunk(transaction: PGliteTransaction, chains: readonly CompactionChain[]): Promise<CompactionScope> {
   for (const { subject } of chains) if (!/^[0-9a-f]{32}$/u.test(subject)) throw new Error("A chunk's source subject must be 16 bytes of hex.");
   await transaction.query(`CREATE TEMP TABLE ${CHUNK_CHAINS}(
@@ -687,15 +718,15 @@ async function enterChunk(transaction: PGliteTransaction, chains: readonly Compa
     `INSERT INTO ${CHUNK_CHAINS} SELECT decode(subject, 'hex'), kind FROM unnest($1::text[], $2::text[]) AS chain(subject, kind)`,
     [chains.map(({ subject }) => subject), chains.map(({ recordKind }) => recordKind)],
   );
-  await transaction.query(`CREATE TEMP TABLE ${CHUNK_CAPTURES}(capture_id BYTEA PRIMARY KEY) ON COMMIT DROP`);
-  await transaction.query(`INSERT INTO ${CHUNK_CAPTURES}
-    SELECT DISTINCT record.capture_id FROM source_records record
-     WHERE ${IN_CHUNK.chain("record.source_subject_id", "record.record_kind")}`);
-  await transaction.query(`ANALYZE ${CHUNK_CHAINS}, ${CHUNK_CAPTURES}`);
+  await transaction.query(`ANALYZE ${CHUNK_CHAINS}`);
   return IN_CHUNK;
 }
 
-/** A selected count row or copy whose chain or capture is outside the chunk; `WHERE` alone would let a NULL through. */
+/**
+ * A selected count row or copy whose chain is outside the chunk, or a copy
+ * without an occurrence key, which no record reader's scope holds; `WHERE`
+ * alone would let a NULL through.
+ */
 async function refuseOutsideChunk(transaction: PGliteTransaction, scope: CompactionScope, counts: number, copies: number): Promise<void> {
   if (counts > 0) {
     const { rows: [outside] } = await transaction.query<{ rows: number }>(
@@ -709,9 +740,8 @@ async function refuseOutsideChunk(transaction: PGliteTransaction, scope: Compact
   }
   if (copies > 0) {
     const { rows: [outside] } = await transaction.query<{ rows: number }>(
-      `SELECT count(*)::int AS rows FROM ledger_compaction_copies copy
-         JOIN source_records record ON record.source_record_id = copy.source_record_id
-        WHERE (${scope.chain("record.source_subject_id", "record.record_kind")} AND ${scope.capture("copy.capture_id")}) IS NOT TRUE`,
+      `SELECT count(*)::int AS rows FROM ${COPIES} copy
+        WHERE (${scope.chain("copy.source_subject_id", "copy.record_kind")} AND copy.occurrence_key IS NOT NULL) IS NOT TRUE`,
     );
     if (outside!.rows > 0) throw new LedgerCompactionError({ reason: "outside-chunk", table: RECORDS, rows: outside!.rows });
   }
@@ -731,14 +761,6 @@ async function deleting<T>(transaction: PGliteTransaction, body: () => Promise<T
   return result;
 }
 
-async function createSelectionTables(transaction: PGliteTransaction): Promise<void> {
-  await transaction.query("CREATE TEMP TABLE ledger_compaction_removed(table_name TEXT NOT NULL, row_ctid TID NOT NULL) ON COMMIT DROP");
-  await transaction.query(`CREATE TEMP TABLE ledger_compaction_copies(
-      source_record_id BYTEA PRIMARY KEY, capture_id BYTEA NOT NULL, kept_id BYTEA NOT NULL) ON COMMIT DROP`);
-  await transaction.query(`CREATE TEMP TABLE ${SCOPE_RECORDS}(source_record_id BYTEA PRIMARY KEY, capture_id BYTEA NOT NULL) ON COMMIT DROP`);
-  await transaction.query(`CREATE TEMP TABLE ${SCOPE_CITED}(cited_id BYTEA PRIMARY KEY, pinned_by TEXT[] NOT NULL) ON COMMIT DROP`);
-}
-
 /** Phases A and C: records each table's selected rows; returns how many each has. Phase C is narrowed to `scope`. */
 async function selectRows(
   transaction: PGliteTransaction,
@@ -748,6 +770,8 @@ async function selectRows(
   step: () => void,
 ): Promise<Record<CompactedTable, number>> {
   const selected = zeroRemoved();
+  if (tables.length > 0)
+    await transaction.query("CREATE TEMP TABLE ledger_compaction_removed(table_name TEXT NOT NULL, row_ctid TID NOT NULL) ON COMMIT DROP");
   for (const table of tables) {
     step();
     const selection = options.selections?.[table]
@@ -793,9 +817,11 @@ const SCOPE_CITED = "ledger_compaction_scope_cited";
 
 /**
  * Phase B's selection, narrowed to `scope`: the removable copies with their
- * kept copies. Returns how many. The scope's copies, then their citations,
- * are stored and analyzed before the copies are classified, so each query is
- * planned with the true number of rows the one before it found.
+ * kept copies, each with its capture and its record's chain and occurrence
+ * key. Returns how many. The scope's copies, then their citations, are
+ * stored in tables of their own before the copies are classified, so each
+ * query is planned for the rows the one before it found: a table's size and
+ * its unique key tell the planner how many there are.
  */
 async function selectCopies(
   transaction: PGliteTransaction,
@@ -807,24 +833,28 @@ async function selectCopies(
   step();
   let selection = options.selections?.[RECORDS];
   if (selection === undefined) {
+    await transaction.query(`CREATE TEMP TABLE ${SCOPE_RECORDS}(source_record_id BYTEA PRIMARY KEY, capture_id BYTEA NOT NULL) ON COMMIT DROP`);
     await transaction.query(`INSERT INTO ${SCOPE_RECORDS}(source_record_id, capture_id)
       SELECT record.source_record_id, record.capture_id FROM source_records record
        WHERE ${scope.chain("record.source_subject_id", "record.record_kind")}`);
-    await transaction.query(`ANALYZE ${SCOPE_RECORDS}`);
     step();
     const inScope = (column: string) => `${column} IN (SELECT source_record_id FROM ${SCOPE_RECORDS})`;
+    await transaction.query(`CREATE TEMP TABLE ${SCOPE_CITED}(cited_id BYTEA PRIMARY KEY, pinned_by TEXT[] NOT NULL) ON COMMIT DROP`);
     await transaction.query(`INSERT INTO ${SCOPE_CITED}(cited_id, pinned_by) ${citedCopiesSql(columns, inScope, false)}`);
-    await transaction.query(`ANALYZE ${SCOPE_CITED}`);
     step();
     selection = `SELECT source_record_id, kept_id FROM (${stagedRecordCopiesSql(SCOPE_RECORDS, SCOPE_CITED)}) copy
                   WHERE copy.category = 'removable'`;
   }
+  await transaction.query(`CREATE TEMP TABLE ${COPIES}(
+      source_record_id BYTEA PRIMARY KEY, capture_id BYTEA NOT NULL, kept_id BYTEA NOT NULL,
+      source_subject_id BYTEA, record_kind TEXT NOT NULL, occurrence_key TEXT) ON COMMIT DROP`);
   const selected = (await transaction.query(
-    `INSERT INTO ledger_compaction_copies(source_record_id, capture_id, kept_id)
-     SELECT selection.source_record_id, record.capture_id, selection.kept_id
+    `INSERT INTO ${COPIES}(source_record_id, capture_id, kept_id, source_subject_id, record_kind, occurrence_key)
+     SELECT selection.source_record_id, record.capture_id, selection.kept_id, record.source_subject_id, record.record_kind, record.occurrence_key
        FROM (${selection}) selection JOIN source_records record ON record.source_record_id = selection.source_record_id`,
   )).affectedRows ?? 0;
-  if (selected > 0) await transaction.query("ANALYZE ledger_compaction_copies");
+  // The readers' scope and the guards join on these copies; analyzed, a few copies are looked up by index, not by scanning the records.
+  if (selected > 0) await transaction.query(`ANALYZE ${COPIES}`);
   return selected;
 }
 
@@ -832,7 +862,7 @@ async function selectCopies(
 async function checkCopies(transaction: PGliteTransaction, columns: CitingColumns, step: () => void): Promise<void> {
   // 1. Nothing cites a removed copy: no citing column, manifest or assertion row naming a run.
   step();
-  const removedCopy = (column: string) => `${column} IN (SELECT source_record_id FROM ledger_compaction_copies)`;
+  const removedCopy = (column: string) => `${column} IN (SELECT source_record_id FROM ${COPIES})`;
   const { rows: citing } = await transaction.query<{ citing_table: string }>(
     `SELECT DISTINCT citing_table FROM (${recordCitationsSql(columns, removedCopy, false)}) citation ORDER BY 1`,
   );
@@ -840,7 +870,7 @@ async function checkCopies(transaction: PGliteTransaction, columns: CitingColumn
     throw new LedgerCompactionError({ reason: "removed-copy-cited", tables: citing.map(({ citing_table }) => citing_table) });
   // 2. Its capture has no manifest yet.
   const { rows: [manifested] } = await transaction.query<{ copies: number }>(
-    `SELECT count(*)::int AS copies FROM ledger_compaction_copies copy
+    `SELECT count(*)::int AS copies FROM ${COPIES} copy
       WHERE EXISTS (SELECT 1 FROM ${MANIFEST} manifest WHERE manifest.capture_id = copy.capture_id)`,
   );
   if (manifested!.copies > 0) throw new LedgerCompactionError({ reason: "removed-copy-in-manifest-capture", copies: manifested!.copies });
@@ -855,10 +885,10 @@ async function checkCopies(transaction: PGliteTransaction, columns: CitingColumn
   const compared = stored.map(({ name }) => `record.${name}`).join(", ");
   const { rows: [differing] } = await transaction.query<{ copies: number }>(
     `SELECT count(*)::int AS copies FROM (
-       SELECT copy.source_record_id, ${compared} FROM ledger_compaction_copies copy
+       SELECT copy.source_record_id, ${compared} FROM ${COPIES} copy
          JOIN source_records record ON record.source_record_id = copy.source_record_id
        EXCEPT
-       SELECT copy.source_record_id, ${compared} FROM ledger_compaction_copies copy
+       SELECT copy.source_record_id, ${compared} FROM ${COPIES} copy
          JOIN source_records record ON record.source_record_id = copy.kept_id
      ) differing`,
   );
@@ -878,7 +908,7 @@ async function deleteCopies(
   const manifests = (await transaction.query(
     `INSERT INTO ${MANIFEST}(capture_id, source_record_ids, record_count, commit_id)
      SELECT copy.capture_id, string_agg(copy.kept_id, ''::bytea ORDER BY copy.kept_id), count(*)::int, capture.commit_id
-       FROM ledger_compaction_copies copy JOIN source_captures capture ON capture.capture_id = copy.capture_id
+       FROM ${COPIES} copy JOIN source_captures capture ON capture.capture_id = copy.capture_id
       GROUP BY copy.capture_id, capture.commit_id`,
   )).affectedRows ?? 0;
 
@@ -886,7 +916,7 @@ async function deleteCopies(
     for (const table of RECORD_TABLES) {
       step();
       removed[table] = (await transaction.query(
-        `DELETE FROM ${table} WHERE source_record_id IN (SELECT source_record_id FROM ledger_compaction_copies)`,
+        `DELETE FROM ${table} WHERE source_record_id IN (SELECT source_record_id FROM ${COPIES})`,
       )).affectedRows ?? 0;
       await options.onRemoved?.(table, removed[table]);
     }
