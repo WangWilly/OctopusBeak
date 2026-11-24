@@ -631,6 +631,49 @@ const STATEMENT_MUTATIONS: readonly Readonly<{
     },
     failure: { reason: "removed-count-mismatch", table: "source_record_provenance" },
   },
+  {
+    // As many rows as name a removed copy, but one of them traded for another record's row.
+    name: "a scope delete that keeps one removed copy's row and takes another record's instead",
+    statements: {
+      source_record_scopes: `DELETE FROM source_record_scopes WHERE ctid IN (
+          (SELECT ctid FROM source_record_scopes WHERE source_record_id IN (SELECT source_record_id FROM ${COPIES}) ORDER BY ctid OFFSET 1)
+          UNION ALL
+          (SELECT ctid FROM source_record_scopes WHERE source_record_id NOT IN (SELECT source_record_id FROM ${COPIES})
+             AND source_record_id NOT IN (SELECT kept_id FROM ${COPIES}) ORDER BY ctid LIMIT 1))`,
+    },
+    failure: { reason: "removed-count-mismatch", table: "source_record_scopes" },
+  },
+  {
+    name: "an assertion provenance delete that trades one removed copy's row for another record's",
+    statements: {
+      assertion_provenance: `DELETE FROM assertion_provenance WHERE ctid IN (
+          (SELECT ctid FROM assertion_provenance WHERE source_record_id IN (SELECT source_record_id FROM ${COPIES}) ORDER BY ctid OFFSET 1)
+          UNION ALL
+          (SELECT ctid FROM assertion_provenance WHERE source_record_id NOT IN (SELECT source_record_id FROM ${COPIES})
+             AND source_record_id NOT IN (SELECT kept_id FROM ${COPIES}) ORDER BY ctid LIMIT 1))`,
+    },
+    failure: { reason: "removed-count-mismatch", table: "assertion_provenance" },
+  },
+  {
+    // The row count matches, and every row stays.
+    name: "an update in place of the scope delete",
+    statements: {
+      source_record_scopes: `UPDATE source_record_scopes SET account_id = account_id
+        WHERE source_record_id IN (SELECT source_record_id FROM ${COPIES})`,
+    },
+    failure: { reason: "removed-count-mismatch", table: "source_record_scopes" },
+  },
+  {
+    // The append-only guard is off while the copies go.
+    name: "a scope delete that also deletes a manifest the chunk did not write",
+    statements: {
+      source_record_scopes: `WITH gone AS (
+          DELETE FROM ${MANIFESTS} WHERE capture_id = (SELECT capture_id FROM ${MANIFESTS}
+            WHERE capture_id NOT IN (SELECT capture_id FROM ${COPIES}) ORDER BY capture_id LIMIT 1) RETURNING 1)
+        DELETE FROM source_record_scopes WHERE source_record_id IN (SELECT source_record_id FROM ${COPIES})`,
+    },
+    failure: { reason: "manifest-mismatch" },
+  },
 ];
 
 const refusedAs = (failure: (typeof STATEMENT_MUTATIONS)[number]["failure"], name: string) => (error: unknown) => {

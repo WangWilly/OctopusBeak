@@ -929,13 +929,23 @@ async function deleteCopies(
     for (const table of RECORD_TABLES) {
       step();
       const naming = `${table} WHERE source_record_id IN (SELECT source_record_id FROM ${COPIES})`;
-      const { rows: [expected] } = await transaction.query<{ rows: number }>(`SELECT count(*)::int AS rows FROM ${naming}`);
+      const counted = `SELECT (SELECT count(*)::int FROM ${naming}) AS naming, (SELECT count(*)::int FROM ${table}) AS total`;
+      const { rows: [before] } = await transaction.query<{ naming: number; total: number }>(counted);
       removed[table] = (await transaction.query(options.statements?.[table] ?? `DELETE FROM ${naming}`)).affectedRows ?? 0;
-      if (removed[table] !== expected!.rows)
-        throw new LedgerCompactionError({ reason: "removed-count-mismatch", table, selected: expected!.rows, removed: removed[table] });
+      const { rows: [after] } = await transaction.query<{ naming: number; total: number }>(counted);
+      // Exactly the rows naming a removed copy went: as many as named one, none of them left, and the table that much smaller.
+      if (removed[table] !== before!.naming || after!.naming !== 0 || before!.total - after!.total !== before!.naming)
+        throw new LedgerCompactionError({ reason: "removed-count-mismatch", table, selected: before!.naming, removed: removed[table] });
       await options.onRemoved?.(table, removed[table]);
     }
   });
+  // A delete can reach the manifests too while the append-only guard is off; they must stand as written.
+  const { rows: [kept] } = await transaction.query<{ missing: number }>(
+    `SELECT (SELECT count(*)::int FROM ${MANIFESTS_BEFORE} WHERE capture_id NOT IN (SELECT capture_id FROM ${MANIFEST}))
+          + (SELECT count(DISTINCT capture_id)::int FROM ${COPIES})
+          - (SELECT count(*)::int FROM ${MANIFEST} WHERE capture_id NOT IN (SELECT capture_id FROM ${MANIFESTS_BEFORE})) AS missing`,
+  );
+  if (kept!.missing !== 0) throw new LedgerCompactionError({ reason: "manifest-mismatch", captures: manifests, inserted: manifests, grown: manifests - kept!.missing, outside: 0 });
   return manifests;
 }
 
