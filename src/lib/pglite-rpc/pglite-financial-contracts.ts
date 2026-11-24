@@ -62,7 +62,7 @@ import type { AccountIdentityContinuity, AccountIdentityContinuityRequest } from
 import type { SpendingPageVersion } from "../../ledger/pglite/spending-page.ts";
 import type { CompactionPlanResult } from "../../ledger/pglite/compaction-plan.ts";
 import type { LedgerReclaimEstimate, LedgerReclaimResult, LedgerReclaimStatus } from "../../ledger/pglite/reclaim.ts";
-import type { LedgerCompactionResult } from "../../ledger/pglite/compaction.ts";
+import type { LedgerCompactionJobResult, LedgerCompactionStatus } from "../../ledger/pglite/compaction-job.ts";
 import type {
   PGliteCanonicalLoanRelationResolutionRequest,
   PGliteCanonicalLoanRelationResolutionResult,
@@ -388,16 +388,25 @@ export const PGLITE_FINANCIAL_CONTRACTS = Object.freeze({
     { lane: "interactive" },
   ),
   /**
-   * Removes the domain-row repeats, record copies and count-row repeats a
-   * store written before ADR 0152 holds, phases A to C of the compaction (ADR
-   * 0154), in one verified transaction. Host-only: no renderer route and no workflow access. Do not
-   * wire it to the UI: the transaction holds the ledger for as long as it
-   * runs, and the chunked worker job that will run it from Settings, and
-   * return its space, does not exist yet.
+   * Ledger compaction (ADR 0154): removes the domain-row repeats, record
+   * copies and count-row repeats a store written before ADR 0152 holds, one
+   * verified chunk per step so other work runs between two, then rewrites the
+   * compacted tables to return their space. Host-only: no renderer route and
+   * no workflow access; one at a time.
    */
-  "financial.canonical.compactLedger": operation<[], LedgerCompactionResult>(
+  "financial.canonical.compact": operation<[], LedgerCompactionJobResult>(
     (args) => args.length === 0,
-    { lane: "background" },
+    { lane: "background-steps" },
+  ),
+  /** The running compaction's chunk, or how the last one ended. Host-only. */
+  "financial.canonical.compactionStatus": operation<[], LedgerCompactionStatus>(
+    (args) => args.length === 0,
+    { lane: "interactive" },
+  ),
+  /** Stops the running compaction; its running chunk rolls back. False when none runs. Host-only. */
+  "financial.canonical.compactionStop": operation<[], boolean>(
+    (args) => args.length === 0,
+    { lane: "interactive" },
   ),
 });
 

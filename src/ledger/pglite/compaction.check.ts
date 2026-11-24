@@ -23,7 +23,6 @@ import { captureOf, copyOf as copyIn, keyOf, legacyStore, MODES, ROWS, snapshot,
 import { canonicalState } from "./canonical-state-fixture.ts";
 import { commitResync } from "./resync-fixtures.ts";
 import { PGliteStore } from "./transaction.ts";
-import { PGLITE_FINANCIAL_CONTRACTS } from "../../lib/pglite-rpc/pglite-financial-contracts.ts";
 
 const RECORD_TABLES = ["source_record_scopes", "source_record_provenance", "assertion_provenance", "source_records"] as const;
 const COMPACTED_TABLES: readonly CompactedTable[] = [...(Object.keys(PHASE_A) as CompactedTable[]), COUNTS, ...RECORD_TABLES];
@@ -656,11 +655,4 @@ test("a copy named only by a record id kept as text is kept", async () => {
   } finally {
     await store.close();
   }
-});
-
-test("compaction is a host-only financial operation", () => {
-  const contract = PGLITE_FINANCIAL_CONTRACTS["financial.canonical.compactLedger"];
-  assert.equal("renderer" in contract, false);
-  assert.equal(contract.workflow, undefined);
-  assert.equal(contract.lane, "background");
 });
