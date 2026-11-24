@@ -924,28 +924,45 @@ async function deleteCopies(
   step: () => void,
 ): Promise<number> {
   step();
+  const naming = (table: string) => `${table} WHERE source_record_id IN (SELECT source_record_id FROM ${COPIES})`;
+  // Rows this transaction inserted or updated carry its id; a delete leaves none behind.
+  const writtenHere = "xmin::text = (pg_current_xact_id()::text::bigint % 4294967296)::text";
+  const counted = async () => Object.fromEntries(await Promise.all(RECORD_TABLES.map(async (table) => {
+    const { rows: [row] } = await transaction.query<{ naming: number; total: number; written: number }>(
+      `SELECT (SELECT count(*)::int FROM ${naming(table)}) AS naming, (SELECT count(*)::int FROM ${table}) AS total,
+              (SELECT count(*)::int FROM ${table} WHERE ${writtenHere}) AS written`);
+    return [table, row!] as const;
+  }))) as Record<(typeof RECORD_TABLES)[number], { naming: number; total: number; written: number }>;
+  const before = await counted();
   const manifests = await writeManifests(transaction, options);
   await deleting(transaction, async () => {
     for (const table of RECORD_TABLES) {
       step();
-      const naming = `${table} WHERE source_record_id IN (SELECT source_record_id FROM ${COPIES})`;
-      const counted = `SELECT (SELECT count(*)::int FROM ${naming}) AS naming, (SELECT count(*)::int FROM ${table}) AS total`;
-      const { rows: [before] } = await transaction.query<{ naming: number; total: number }>(counted);
-      removed[table] = (await transaction.query(options.statements?.[table] ?? `DELETE FROM ${naming}`)).affectedRows ?? 0;
-      const { rows: [after] } = await transaction.query<{ naming: number; total: number }>(counted);
-      // Exactly the rows naming a removed copy went: as many as named one, none of them left, and the table that much smaller.
-      if (removed[table] !== before!.naming || after!.naming !== 0 || before!.total - after!.total !== before!.naming)
-        throw new LedgerCompactionError({ reason: "removed-count-mismatch", table, selected: before!.naming, removed: removed[table] });
+      removed[table] = (await transaction.query(options.statements?.[table] ?? `DELETE FROM ${naming(table)}`)).affectedRows ?? 0;
+      if (removed[table] !== before[table].naming)
+        throw new LedgerCompactionError({ reason: "removed-count-mismatch", table, selected: before[table].naming, removed: removed[table] });
       await options.onRemoved?.(table, removed[table]);
     }
   });
-  // A delete can reach the manifests too while the append-only guard is off; they must stand as written.
-  const { rows: [kept] } = await transaction.query<{ missing: number }>(
+  // Checked once every statement has run, since one statement can reach another's table: in each table exactly the
+  // rows naming a removed copy went, none of them is left, and no row was written by this chunk.
+  const after = await counted();
+  for (const table of RECORD_TABLES) {
+    const { naming: selected, total } = before[table];
+    if (after[table].naming !== 0 || total - after[table].total !== selected || after[table].written !== before[table].written)
+      throw new LedgerCompactionError({ reason: "removed-count-mismatch", table, selected, removed: total - after[table].total });
+  }
+  // A delete can reach the manifests too while the append-only guard is off; they must stand as written,
+  // and the only manifest rows this chunk wrote are its own.
+  const { rows: [kept] } = await transaction.query<{ missing: number; written: number }>(
     `SELECT (SELECT count(*)::int FROM ${MANIFESTS_BEFORE} WHERE capture_id NOT IN (SELECT capture_id FROM ${MANIFEST}))
           + (SELECT count(DISTINCT capture_id)::int FROM ${COPIES})
-          - (SELECT count(*)::int FROM ${MANIFEST} WHERE capture_id NOT IN (SELECT capture_id FROM ${MANIFESTS_BEFORE})) AS missing`,
+          - (SELECT count(*)::int FROM ${MANIFEST} WHERE capture_id NOT IN (SELECT capture_id FROM ${MANIFESTS_BEFORE})) AS missing,
+            (SELECT count(*)::int FROM ${MANIFEST} WHERE ${writtenHere}
+               AND capture_id NOT IN (SELECT capture_id FROM ${COPIES})) AS written`,
   );
-  if (kept!.missing !== 0) throw new LedgerCompactionError({ reason: "manifest-mismatch", captures: manifests, inserted: manifests, grown: manifests - kept!.missing, outside: 0 });
+  if (kept!.missing !== 0 || kept!.written !== 0)
+    throw new LedgerCompactionError({ reason: "manifest-mismatch", captures: manifests, inserted: manifests, grown: manifests - kept!.missing, outside: kept!.written });
   return manifests;
 }
 

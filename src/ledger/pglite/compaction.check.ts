@@ -674,6 +674,61 @@ const STATEMENT_MUTATIONS: readonly Readonly<{
     },
     failure: { reason: "manifest-mismatch" },
   },
+  {
+    // The writes below reach rows of records the chunk's readers do not read.
+    name: "a scope delete that also updates another record's scope",
+    statements: {
+      source_record_scopes: `WITH changed AS (
+          UPDATE source_record_scopes SET account_id = NULL WHERE source_record_id = (SELECT source_record_id FROM source_records WHERE source_record_id NOT IN (SELECT source_record_id FROM ${COPIES}) AND source_record_id NOT IN (SELECT kept_id FROM ${COPIES}) ORDER BY source_record_id LIMIT 1) RETURNING 1)
+        DELETE FROM source_record_scopes WHERE source_record_id IN (SELECT source_record_id FROM ${COPIES})`,
+    },
+    failure: { reason: "removed-count-mismatch", table: "source_record_scopes" },
+  },
+  {
+    name: "a scope delete that also replaces another record's scope with a changed copy, keeping the count",
+    statements: {
+      source_record_scopes: `WITH gone AS (
+          DELETE FROM source_record_scopes WHERE ctid = (SELECT ctid FROM source_record_scopes WHERE source_record_id = (SELECT source_record_id FROM source_records WHERE source_record_id NOT IN (SELECT source_record_id FROM ${COPIES}) AND source_record_id NOT IN (SELECT kept_id FROM ${COPIES}) ORDER BY source_record_id LIMIT 1) LIMIT 1)
+          RETURNING *), back AS (
+          INSERT INTO source_record_scopes SELECT * FROM gone RETURNING 1)
+        DELETE FROM source_record_scopes WHERE source_record_id IN (SELECT source_record_id FROM ${COPIES})`,
+    },
+    failure: { reason: "removed-count-mismatch", table: "source_record_scopes" },
+  },
+  {
+    name: "a scope delete that also changes another record's payload",
+    statements: {
+      source_record_scopes: `WITH changed AS (
+          UPDATE source_records SET payload_json = payload_json || ' ' WHERE source_record_id = (SELECT source_record_id FROM source_records WHERE source_record_id NOT IN (SELECT source_record_id FROM ${COPIES}) AND source_record_id NOT IN (SELECT kept_id FROM ${COPIES}) ORDER BY source_record_id LIMIT 1) RETURNING 1)
+        DELETE FROM source_record_scopes WHERE source_record_id IN (SELECT source_record_id FROM ${COPIES})`,
+    },
+    failure: { reason: "removed-count-mismatch", table: "source_records" },
+  },
+  {
+    name: "a scope delete that also deletes another record's assertion provenance",
+    statements: {
+      source_record_scopes: `WITH gone AS (
+          DELETE FROM assertion_provenance WHERE ctid = (SELECT ctid FROM assertion_provenance
+            WHERE source_record_id NOT IN (SELECT source_record_id FROM ${COPIES}) ORDER BY ctid LIMIT 1) RETURNING 1)
+        DELETE FROM source_record_scopes WHERE source_record_id IN (SELECT source_record_id FROM ${COPIES})`,
+    },
+    failure: { reason: "removed-count-mismatch", table: "assertion_provenance" },
+  },
+  {
+    name: "a scope delete that swaps a manifest it did not write for a made-up one",
+    statements: {
+      source_record_scopes: `WITH gone AS (
+          DELETE FROM ${MANIFESTS} WHERE capture_id = (SELECT capture_id FROM ${MANIFESTS}
+            WHERE capture_id NOT IN (SELECT capture_id FROM ${COPIES}) ORDER BY capture_id LIMIT 1) RETURNING *), made AS (
+          INSERT INTO ${MANIFESTS}(capture_id, source_record_ids, record_count, commit_id)
+          SELECT capture.capture_id, gone.source_record_ids, gone.record_count, capture.commit_id FROM gone
+            CROSS JOIN LATERAL (SELECT capture_id, commit_id FROM source_captures
+              WHERE capture_id NOT IN (SELECT capture_id FROM ${MANIFESTS}) AND capture_id NOT IN (SELECT capture_id FROM ${COPIES})
+              ORDER BY capture_id LIMIT 1) capture RETURNING 1)
+        DELETE FROM source_record_scopes WHERE source_record_id IN (SELECT source_record_id FROM ${COPIES})`,
+    },
+    failure: { reason: "manifest-mismatch" },
+  },
 ];
 
 const refusedAs = (failure: (typeof STATEMENT_MUTATIONS)[number]["failure"], name: string) => (error: unknown) => {
