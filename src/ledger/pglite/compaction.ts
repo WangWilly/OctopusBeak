@@ -497,8 +497,14 @@ export type LedgerCompactionFailure =
   | Readonly<{ reason: "removed-copy-differs"; copies: number }>
   /** A chunk selected rows outside its chains, which its scoped readers would not see. */
   | Readonly<{ reason: "outside-chunk"; table: CompactedTable; rows: number }>
-  /** A delete removed another number of rows than were selected. */
+  /** A delete removed another number of rows than were selected, or than a satellite table holds for the removed copies. */
   | Readonly<{ reason: "removed-count-mismatch"; table: CompactedTable; selected: number; removed: number }>
+  /**
+   * Phase B's manifests are not one new manifest for each capture owning a
+   * removed copy: the insert wrote `inserted` rows, the table grew by
+   * `grown`, and `outside` of its new rows belong to another capture.
+   */
+  | Readonly<{ reason: "manifest-mismatch"; captures: number; inserted: number; grown: number; outside: number }>
   /** A reader answered differently after the delete. */
   | Readonly<{ reason: "reader-changed"; readers: readonly CompactionReader[] }>;
 
@@ -528,6 +534,12 @@ export type LedgerCompactionOptions = Readonly<{
    * `kept_id` for each copy to remove.
    */
   selections?: Readonly<Partial<Record<CompactionSelection, string>>>;
+  /**
+   * Replaces one of phase B's statements: the manifest insert, or a table's
+   * delete. Only checks use it, to prove the count guards refuse one that
+   * writes or deletes more than the selected copies'.
+   */
+  statements?: Readonly<Partial<Record<RecordTable | typeof MANIFEST, string>>>;
 }>;
 
 export const zeroRemoved = (): Record<CompactedTable, number> =>
@@ -570,7 +582,7 @@ export async function compactLedger(
       const copies = await selectCopies(transaction, columns, WHOLE_STORE, options, step);
       if (copies > 0) {
         await checkCopies(transaction, columns, step);
-        manifests = await deleteCopies(transaction, copies, options, removed, step);
+        manifests = await deleteCopies(transaction, options, removed, step);
       }
     }
 
@@ -658,7 +670,7 @@ export async function compactLedgerChunk(
     const readers = readersOf(changing);
     const before = await readCompactionReaders(transaction, step, { scope, readers });
     await deleteRows(transaction, tables, selected, options, removed, step);
-    const manifests = copies > 0 ? await deleteCopies(transaction, copies, options, removed, step) : 0;
+    const manifests = copies > 0 ? await deleteCopies(transaction, options, removed, step) : 0;
     const digests = await readCompactionReaders(transaction, step, { scope, readers });
     refuseChanged(before, digests);
     return { removed, manifests, readers, digests };
@@ -895,35 +907,61 @@ async function checkCopies(transaction: PGliteTransaction, columns: CitingColumn
   if (differing!.copies > 0) throw new LedgerCompactionError({ reason: "removed-copy-differs", copies: differing!.copies });
 }
 
-/** Gives each selected copy's capture a manifest listing its kept copy, then deletes the copies with their satellite rows. */
+const MANIFESTS_BEFORE = "ledger_compaction_manifests_before";
+
+/**
+ * Gives each selected copy's capture a manifest listing its kept copy, then
+ * deletes the copies with their satellite rows. The readers a chunk reads see
+ * only the removed copies' records and captures, so every statement is
+ * counted against them: each table must lose exactly its rows naming a
+ * removed copy, and the manifests must gain exactly one row for each capture
+ * owning one.
+ */
 async function deleteCopies(
   transaction: PGliteTransaction,
-  selected: number,
   options: LedgerCompactionOptions,
   removed: Record<CompactedTable, number>,
   step: () => void,
 ): Promise<number> {
-  // A capture's removed copies have distinct occurrence keys, so their kept copies are distinct too.
   step();
-  const manifests = (await transaction.query(
+  const manifests = await writeManifests(transaction, options);
+  await deleting(transaction, async () => {
+    for (const table of RECORD_TABLES) {
+      step();
+      const naming = `${table} WHERE source_record_id IN (SELECT source_record_id FROM ${COPIES})`;
+      const { rows: [expected] } = await transaction.query<{ rows: number }>(`SELECT count(*)::int AS rows FROM ${naming}`);
+      removed[table] = (await transaction.query(options.statements?.[table] ?? `DELETE FROM ${naming}`)).affectedRows ?? 0;
+      if (removed[table] !== expected!.rows)
+        throw new LedgerCompactionError({ reason: "removed-count-mismatch", table, selected: expected!.rows, removed: removed[table] });
+      await options.onRemoved?.(table, removed[table]);
+    }
+  });
+  return manifests;
+}
+
+/** The manifests, checked against the manifest table before and after: one new row for each capture owning a removed copy, and no other change. */
+async function writeManifests(transaction: PGliteTransaction, options: LedgerCompactionOptions): Promise<number> {
+  await transaction.query(`CREATE TEMP TABLE ${MANIFESTS_BEFORE}(capture_id BYTEA PRIMARY KEY) ON COMMIT DROP`);
+  await transaction.query(`INSERT INTO ${MANIFESTS_BEFORE} SELECT capture_id FROM ${MANIFEST}`);
+  // A capture's removed copies have distinct occurrence keys, so their kept copies are distinct too.
+  const inserted = (await transaction.query(options.statements?.[MANIFEST] ??
     `INSERT INTO ${MANIFEST}(capture_id, source_record_ids, record_count, commit_id)
      SELECT copy.capture_id, string_agg(copy.kept_id, ''::bytea ORDER BY copy.kept_id), count(*)::int, capture.commit_id
        FROM ${COPIES} copy JOIN source_captures capture ON capture.capture_id = copy.capture_id
       GROUP BY copy.capture_id, capture.commit_id`,
   )).affectedRows ?? 0;
-
-  await deleting(transaction, async () => {
-    for (const table of RECORD_TABLES) {
-      step();
-      removed[table] = (await transaction.query(
-        `DELETE FROM ${table} WHERE source_record_id IN (SELECT source_record_id FROM ${COPIES})`,
-      )).affectedRows ?? 0;
-      await options.onRemoved?.(table, removed[table]);
-    }
-  });
-  if (removed[RECORDS] !== selected)
-    throw new LedgerCompactionError({ reason: "removed-count-mismatch", table: RECORDS, selected, removed: removed[RECORDS] });
-  return manifests;
+  const { rows: [counts] } = await transaction.query<{ captures: number; grown: number; outside: number }>(
+    `SELECT (SELECT count(DISTINCT capture_id)::int FROM ${COPIES}) AS captures,
+            (SELECT count(*)::int FROM ${MANIFEST}) - (SELECT count(*)::int FROM ${MANIFESTS_BEFORE}) AS grown,
+            (SELECT count(*)::int FROM ${MANIFEST} manifest
+              WHERE manifest.capture_id NOT IN (SELECT capture_id FROM ${MANIFESTS_BEFORE})
+                AND manifest.capture_id NOT IN (SELECT capture_id FROM ${COPIES})) AS outside`,
+  );
+  const { captures, grown, outside } = counts!;
+  // The selected captures had no manifest (`checkCopies`). With every new row theirs and the table grown by their number, each got one and no other row came or went.
+  if (inserted !== captures || grown !== captures || outside !== 0)
+    throw new LedgerCompactionError({ reason: "manifest-mismatch", captures, inserted, grown, outside });
+  return inserted;
 }
 
 /**

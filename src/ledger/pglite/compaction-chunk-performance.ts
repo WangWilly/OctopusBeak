@@ -22,7 +22,8 @@
  *   which then took about 4.5 s. It takes about 0.8 s.
  *
  * It fails when the longest chunk takes more than
- * PGLITE_COMPACTION_CHUNK_BUDGET_MS (default 5000). `compaction.check.ts`
+ * PGLITE_COMPACTION_CHUNK_BUDGET_MS (default 2000), which the chunks of
+ * the whole-chain readers exceed. `compaction.check.ts`
  * counts the rows a chunk's readers read, which does not depend on timing.
  */
 import { addCaptureChain, addCitedChain, legacyStore } from "./compaction-fixtures.ts";
@@ -37,7 +38,7 @@ function positiveInteger(name: string, fallback: number): number {
 const CITED_COPIES = positiveInteger("PGLITE_COMPACTION_CITED_COPIES", 8000);
 const OTHER_RECORDS = positiveInteger("PGLITE_COMPACTION_OTHER_RECORDS", 30_000);
 const HISTORY_CAPTURES = positiveInteger("PGLITE_COMPACTION_HISTORY_CAPTURES", 1200);
-const CHUNK_BUDGET_MS = positiveInteger("PGLITE_COMPACTION_CHUNK_BUDGET_MS", 5000);
+const CHUNK_BUDGET_MS = positiveInteger("PGLITE_COMPACTION_CHUNK_BUDGET_MS", 2000);
 /** The copies the history chain's chunk removes: one record's copies after the first, in eight captures. */
 const HISTORY_REMOVED = 7;
 

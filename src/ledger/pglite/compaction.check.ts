@@ -576,6 +576,102 @@ test("a chunk refuses each of those phase B selections as the whole compaction d
   }
 });
 
+const COPIES = "ledger_compaction_copies";
+const MANIFEST_INSERT = `INSERT INTO ${MANIFESTS}(capture_id, source_record_ids, record_count, commit_id)
+  SELECT copy.capture_id, string_agg(copy.kept_id, ''::bytea ORDER BY copy.kept_id), count(*)::int, capture.commit_id
+    FROM ${COPIES} copy JOIN source_captures capture ON capture.capture_id = copy.capture_id
+   GROUP BY copy.capture_id, capture.commit_id`;
+
+/**
+ * Phase B statements that write or delete more than the selected copies'
+ * rows, beyond what a chunk's readers read: they read only the removed
+ * copies' records and the captures that own one. Only the count guards stop
+ * them.
+ */
+const STATEMENT_MUTATIONS: readonly Readonly<{
+  name: string;
+  statements: Readonly<Partial<Record<(typeof RECORD_TABLES)[number] | typeof MANIFESTS, string>>>;
+  failure: Pick<LedgerCompactionFailure, "reason"> & { table?: CompactedTable };
+}>[] = [
+  {
+    // Its membership shrinks to the one copy, yet it owns no removed copy, so no chunk reader reads it.
+    name: "a second manifest, on a kept copy's capture, listing only that copy",
+    statements: {
+      [MANIFESTS]: `WITH extra AS (
+        INSERT INTO ${MANIFESTS}(capture_id, source_record_ids, record_count, commit_id)
+        SELECT DISTINCT ON (kept.capture_id) kept.capture_id, kept.source_record_id, 1, capture.commit_id
+          FROM ${COPIES} copy JOIN source_records kept ON kept.source_record_id = copy.kept_id
+          JOIN source_captures capture ON capture.capture_id = kept.capture_id
+         WHERE kept.capture_id NOT IN (SELECT capture_id FROM ${COPIES})
+           AND NOT EXISTS (SELECT 1 FROM ${MANIFESTS} manifest WHERE manifest.capture_id = kept.capture_id)
+         ORDER BY kept.capture_id, kept.source_record_id
+        RETURNING 1)
+      ${MANIFEST_INSERT}`,
+    },
+    failure: { reason: "manifest-mismatch" },
+  },
+  {
+    name: "a scope delete that also takes the scope rows of the kept copies' captures' other records",
+    statements: {
+      source_record_scopes: `DELETE FROM source_record_scopes
+        WHERE source_record_id IN (SELECT source_record_id FROM ${COPIES})
+           OR source_record_id IN (SELECT record.source_record_id FROM source_records record
+               WHERE record.capture_id IN (SELECT kept.capture_id FROM source_records kept JOIN ${COPIES} copy ON kept.source_record_id = copy.kept_id)
+                 AND record.capture_id NOT IN (SELECT capture_id FROM ${COPIES})
+                 AND record.source_record_id NOT IN (SELECT kept_id FROM ${COPIES}))`,
+    },
+    failure: { reason: "removed-count-mismatch", table: "source_record_scopes" },
+  },
+  {
+    // No reader reads the record provenance.
+    name: "a provenance delete that takes every record of the chunk's chains",
+    statements: {
+      source_record_provenance: `DELETE FROM source_record_provenance
+        WHERE source_record_id IN (SELECT source_record_id FROM ledger_compaction_scope_records)`,
+    },
+    failure: { reason: "removed-count-mismatch", table: "source_record_provenance" },
+  },
+];
+
+const refusedAs = (failure: (typeof STATEMENT_MUTATIONS)[number]["failure"], name: string) => (error: unknown) => {
+  assert.ok(error instanceof LedgerCompactionError, String(error));
+  assert.equal(error.failure.reason, failure.reason, name);
+  if (failure.table) assert.equal((error.failure as { table?: string }).table, failure.table, name);
+  return true;
+};
+
+test("a phase B statement that writes or deletes more than its copies' rows rolls back, whole or in a chunk", async () => {
+  for (const mutation of STATEMENT_MUTATIONS) {
+    const { store } = await legacyStore();
+    try {
+      const before = await snapshot(store);
+      await assert.rejects(compactLedger(store, { statements: mutation.statements }), refusedAs(mutation.failure, mutation.name), mutation.name);
+      assert.deepEqual(await snapshot(store), before, `${mutation.name} changed nothing`);
+      assert.deepEqual(await markers(store), []);
+
+      // Each chunk the statement changes more than its copies in is refused; the rest commit as they would anyway.
+      const { chunks } = await planLedgerCompactionJob(store);
+      let refused = 0;
+      for (const chunk of chunks) {
+        if (chunk.kind === "chains") {
+          const unchanged = await snapshot(store);
+          try {
+            await compactLedgerChunk(store, chunk, { statements: mutation.statements });
+          } catch (error) {
+            refusedAs(mutation.failure, mutation.name)(error);
+            assert.deepEqual(await snapshot(store), unchanged, `${mutation.name} changed nothing in a chunk`);
+            refused += 1;
+          }
+        }
+        await compactLedgerChunk(store, chunk);
+      }
+      assert.ok(refused > 0, `a chunk refuses ${mutation.name}`);
+    } finally {
+      await store.close();
+    }
+  }
+});
+
 test("a chunk reads the records it removes a copy of and the captures that own one, not its whole chain", async () => {
   const { store } = await legacyStore();
   try {
