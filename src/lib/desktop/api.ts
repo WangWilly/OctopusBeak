@@ -142,6 +142,34 @@ export type SignInDataStatus = Readonly<{
   clearRequiresFinancialDataDeletion: boolean;
 }>;
 
+/** What Reclaim ledger space would free (ADR 0155). Bytes throughout. */
+export type LedgerReclaimEstimateDto = Readonly<{
+  reclaimableBytes: number;
+  tableCount: number;
+  /** The disk must have this much free before the reclaim starts. */
+  requiredFreeBytes: number;
+  /** null when the free space could not be read. */
+  freeBytes: number | null;
+}>;
+
+/** The running reclaim: table `index` of `count` is being rewritten. */
+export type LedgerReclaimProgressDto = Readonly<{ index: number; count: number }>;
+
+export type LedgerReclaimResultDto =
+  | Readonly<{ status: "nothing-to-reclaim" | "already-running" }>
+  | Readonly<{ status: "not-enough-space"; requiredFreeBytes: number; freeBytes: number }>
+  /**
+   * `stopped`: stopped between two tables; `failed`: a table could not be
+   * rewritten. Either way no data changed. `reclaimedBytes` is how much the
+   * ledger's folder shrank, or its tables when the folder could not be measured.
+   */
+  | Readonly<{ status: "reclaimed" | "stopped" | "failed"; tableCount: number; reclaimedBytes: number }>;
+
+/** A reclaim that is running, possibly started from an earlier visit to Settings, or how the last one ended. */
+export type LedgerReclaimStatusDto =
+  | Readonly<{ running: true; progress: LedgerReclaimProgressDto | null }>
+  | Readonly<{ running: false; last: LedgerReclaimResultDto | null }>;
+
 /** The part of Settings a notification or another page opens. */
 export type SettingsFocus = "financial-data-deletion" | "sign-in-data" | "app-updates";
 
@@ -252,6 +280,14 @@ export type OctopusBeakApi = {
     clearSignInData(): Promise<void>;
     /** Whether the stored Sign-in Details can be read, and whether clearing them would need a Canonical Reset (ADR 0149). */
     signInDataStatus(): Promise<SignInDataStatus>;
+    /** About how much Reclaim ledger space would free; reads every candidate table once. */
+    ledgerReclaimEstimate(): Promise<LedgerReclaimEstimateDto>;
+    /** Rewrites the bloated ledger tables with VACUUM FULL. Deletes no data; resolves when it ends. */
+    reclaimLedgerSpace(): Promise<LedgerReclaimResultDto>;
+    /** The running reclaim's progress, or how the last one ended. */
+    ledgerReclaimStatus(): Promise<LedgerReclaimStatusDto>;
+    /** Stops the running reclaim after its current table. */
+    stopLedgerReclaim(): Promise<boolean>;
     /** Starts every enabled source, as scheduled collection would. */
     collectAllSources(): Promise<AutomationRunManyResult>;
   };

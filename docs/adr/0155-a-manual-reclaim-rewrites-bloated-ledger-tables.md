@@ -1,0 +1,43 @@
+# A manual reclaim rewrites bloated ledger tables
+
+Status: accepted
+
+Amends [ADR 0153](./0153-projection-writes-only-changed-rows-and-the-worker-vacuums.md).
+
+ADR 0153 stopped the ledger from growing: the projection writes only changed rows, and the worker runs a plain VACUUM after open and on a dead-tuple threshold. A plain VACUUM frees a dead tuple's space for the table's next writes. It does not give that space back to the disk. A store written before ADR 0153 therefore keeps its peak size.
+
+One person's ledger measured 1,676 MB. The space sits in three places:
+
+- **The system catalogs, 583 MB.** Each live-view subscription creates and drops a temporary view, with its rule, type, columns and dependencies, so `pg_depend`, `pg_class`, `pg_type`, `pg_attribute` and `pg_rewrite` churn on every subscribe and unsubscribe. A catalog keeps few live rows, and plain VACUUM keeps its heap small. Its B-tree indexes keep every page they ever split into. In a synthetic store, 20,000 subscriptions left `pg_depend` at 7.97 MB, mostly index pages, for under 2,000 live rows.
+- **The projection tables, about 190 MB.** Before ADR 0153 every commit rewrote every row of its capture. `current_transaction_enrichment` held 80 MB for 582 rows.
+- **`automation_task_runs`, 60.8 MB for 294 rows.** Every stage event rewrites a run's whole record, which lives mostly in TOAST.
+
+**Settings has a "Reclaim ledger space" action that runs `VACUUM FULL` on the tables that need it.** `VACUUM FULL` writes a table's live rows, its TOAST and its indexes into new files, then deletes the old files. No row is deleted or changed. The action first shows about how much it can reclaim, then which table of how many it is rewriting, then how much the ledger's folder shrank. Settings left and opened again during a reclaim shows it still running, and then how it ended.
+
+- **Tables are picked by size.** A table, catalogs included, is picked when its rewrite would free at least 1 MiB and at least a quarter of its size. The estimate reads every live row of each table of 1 MiB or more: the rows' size, packed into pages, gives the heap and TOAST a rewrite would leave. One B-tree entry per row, built from the indexed columns' average sizes, gives each index. The reclaim measures again only the tables the confirmed estimate picked. Dead-tuple counts cannot pick the tables. PGlite keeps no table statistics across a close, so `n_dead_tup` reads 0 after every open, and the worker's plain VACUUM has already removed the dead tuples whose space is left. The counts never cover TOAST either. PGlite 0.5 does not ship `pgstattuple`.
+- **One table per step, smallest first.** Each estimate read and each rewrite is its own step on the worker's background lane (`scheduleStep`). PGlite runs one statement at a time, so every query waits while a table is rewritten, but a click, a page read or a commit queued meanwhile runs before the next table.
+- **Syncs and commits queue; nothing is cancelled.** A commit is one job on the same queue, and `VACUUM FULL` cannot run inside a transaction, so a rewrite never overlaps a commit. A sync running during a reclaim waits at most one table's rewrite for each commit. A reclaim does not pause schedules. Unlike the delete actions in the same section, it does not cancel running syncs, because it changes no data a sync would race with.
+- **The disk is checked first.** A rewrite writes a table's new copy before it deletes the old one. PGlite runs with `full_page_writes=on`, so the WAL records each new page whole: a rewrite of a 108 MB table of live rows wrote 196 MB of WAL, 1.8 copies. A WAL write that fails on a full disk stops the database, and its recovery then needs the same disk. The reclaim refuses before it starts unless the disk has three new copies of the largest table free, plus 64 MB. It reports the space it needs and the space that is free.
+- **A checkpoint follows each table,** so the WAL holds at most one table's rewrite, and a crash replays no more than that. Without it the WAL of every rewrite would wait for the end, or for the worker's next checkpoint, and add up. On the synthetic store below the WAL backlog peaked at 4 MB. After a checkpoint `pg_wal` keeps its segments for reuse, so the folder shrinks by less than the tables do when the WAL had grown; the result reports the folder's change.
+- **The folder is flushed to the disk after each catalog rewrite and at the end.** PGlite reports `fsync=off`, and its Node filesystem has no fsync, so a checkpoint reaches only the OS cache. A rewritten mapped catalog lives in a new file that the relation map names. A power loss that keeps the new map but not the file would leave a store that cannot open. The worker opens every file and directory in the folder and calls `fsync` on it, off the queue, before the next table starts. On the synthetic store one flush took 0.2–0.7 s. Node's `fsync` is not macOS's `F_FULLFSYNC`, so a drive's own cache can still lose the last writes.
+- **Stop works between tables.** The table being rewritten finishes first. A rewrite that fails stops the reclaim; the tables already rewritten stay reclaimed, and the result says how much they freed.
+- **Host-only.** The four worker operations have no renderer route and no workflow access. The renderer reaches them through the Settings desktop service, which forwards sizes and counts only.
+
+Catalog `VACUUM FULL` needs nothing special in PGlite 0.5.8. `pg_class`, `pg_attribute` and `pg_type` are mapped catalogs: the relation map, not `pg_class`, names their files, so a rewrite updates the map. It runs as a plain statement outside a transaction, like any other `VACUUM FULL`. A check rewrites every table and catalog of a churned store, reopens it, and finds every B-tree index clean with the check of [ADR 0147](./0147-one-process-owns-the-ledger-and-an-unclean-close-checks-every-index.md). Live queries still subscribe and still hear writes, and every table's rows hash the same.
+
+On a synthetic 381 MB store built like a pre-ADR 0153 ledger, the estimate took 0.3 s and picked 11 tables. The reclaim took 2.7 s, flushes included, left the database at 72 MB, and shrank the folder by 309 MB. The longest rewrite, `current_transaction_enrichment` from 100 MB to 1.1 MB, held the ledger for 164 ms. A rewrite's time follows the live rows it copies, not the table's size: a 108 MB table of live rows held the ledger for 3.8 s. The quarter-of-its-size floor keeps such a table out unless it is badly bloated. `npm run check:pglite-reclaim` rebuilds that store and reports the same figures.
+
+## Considered options
+
+- **Run `VACUUM FULL` automatically, after open or on a threshold.** Rejected. A rewrite locks the whole ledger for as long as it takes to copy the table's live rows, which grows with the store. The worker cannot know when the person is in the middle of something, and the waste is mostly a one-time cost of writes before ADR 0153. Live-view churn still bloats catalog indexes slowly, so the action stays useful and the person decides when.
+- **Rewrite the whole store in one step.** Rejected. Interactive work would wait for every table instead of one.
+- **Cancel running syncs first, as the delete actions do.** Rejected. A reclaim changes no data, and the queue already keeps a rewrite from overlapping a commit.
+- **Rebuild only the indexes, with `REINDEX`.** Not enough. It would shrink the catalogs' indexes but not the projection tables' heaps or the task runs' TOAST.
+
+## Consequences
+
+- A store written before ADR 0153 can return most of its size without deleting anything. The owner's ledger should shrink by about 750 MB.
+- During a reclaim the app pauses for the length of one table's rewrite at a time. The copy says so.
+- The estimate reads every row of each table of 1 MiB or more, one table per step, so opening the action on a large store takes a second or more.
+- Quitting during a reclaim stops it before its next table, but the worker gets 5 s to close. A single rewrite of a large table of live rows can outlast that, and the worker is then terminated mid-rewrite. That is safe: the rewrite is one transaction, so recovery discards it, and the next launch, finding no clean-shutdown record, checks every index (ADR 0147).
+- A store that cannot open at all, such as one whose catalog files a power loss cut, makes `PGlite.create` fail. That failure is not the index refusal of [ADR 0150](./0150-an-unusable-ledger-asks-to-retry-or-rebuild.md), so the App still exits instead of offering Retry or Back up and rebuild. Routing it there needs that dialog's copy to cover a store that does not open, which is left for a follow-up.

@@ -47,6 +47,10 @@ test("Settings offers onboarding start when none exists and restart only for com
         .map(([button]) => button)
         .find((button) => button.includes(label)) ?? null;
 
+    const reclaimButton = findButton(renderSettings("completed"), "Reclaim ledger space");
+    assert.ok(reclaimButton, "the data section offers Reclaim ledger space");
+    assert.match(text(renderSettings("completed")), /No data is deleted\./u);
+
     const completedButton = findButton(renderSettings("completed"), "Restart onboarding");
     assert.ok(completedButton, "completed onboarding should expose Restart onboarding");
     assert.ok(findButton(renderSettings("exited"), "Restart onboarding"), "exited onboarding should keep Restart onboarding");

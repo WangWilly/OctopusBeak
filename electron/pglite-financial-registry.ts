@@ -50,6 +50,7 @@ import type { PGliteCanonicalCommitOptions } from "../src/ledger/pglite/canonica
 import type { CardIdentitySecret } from "../src/lib/shared-identity/card-identity-secret.ts";
 import { cardAccountNamespaces } from "../src/ledger/pglite/card-identity-secret.ts";
 import { planLedgerCompaction } from "../src/ledger/pglite/compaction-plan.ts";
+import { createLedgerReclaimer } from "../src/ledger/pglite/reclaim.ts";
 import { compactLedgerDomainAndCounts } from "../src/ledger/pglite/compaction.ts";
 import {
   readAssetsPage,
@@ -86,6 +87,10 @@ export type PGliteFinancialRegistryOptions = Readonly<{
    * `scheduler.scheduleStep`, which refuses that call.
    */
   runBackgroundStep?: <T>(step: () => Promise<T>) => Promise<T>;
+  /** Free bytes on the disk that holds the ledger, which a space reclaim checks first (ADR 0155). */
+  freeDiskBytes?: () => Promise<number>;
+  /** The ledger's folder: its size, and a flush of its files to the disk, which a reclaim uses. */
+  ledgerFolder?: Readonly<{ bytes(): Promise<number>; sync(): Promise<void> }>;
 }>;
 
 export function createPGliteFinancialRegistry(
@@ -103,6 +108,12 @@ export function createPGliteFinancialRegistry(
   const spending = createPGliteSpendingQuery(store);
   const source = createPGliteCanonicalSourceStore(store);
   const previewVisibilityListeners = new Set<() => void>();
+  const reclaimer = createLedgerReclaimer(store, {
+    runStep: options.runBackgroundStep,
+    freeBytes: options.freeDiskBytes,
+    folderBytes: options.ledgerFolder?.bytes,
+    syncToDisk: options.ledgerFolder?.sync,
+  });
   return Object.freeze({
     "financial.overview.current": ([expectedSources = []]) =>
       store.transaction((transaction) => readOverviewPage(transaction, pageScope(expectedSources))),
@@ -168,6 +179,10 @@ export function createPGliteFinancialRegistry(
     // example by record kind or occurrence-key range (see planLedgerCompaction).
     "financial.canonical.compactionPlan": (_args, request) =>
       planLedgerCompaction(store, { runStep: options.runBackgroundStep, signal: request?.signal }),
+    "financial.ledger.reclaimEstimate": (_args, request) => reclaimer.estimate(request?.signal),
+    "financial.ledger.reclaim": (_args, request) => reclaimer.reclaim(request?.signal),
+    "financial.ledger.reclaimStatus": async () => reclaimer.status(),
+    "financial.ledger.reclaimStop": async () => reclaimer.stop(),
     // Not for the UI: one transaction that holds the ledger until it ends (ADR 0154).
     "financial.canonical.compactDomainAndCounts": (_args, request) =>
       compactLedgerDomainAndCounts(store, { signal: request?.signal }),
