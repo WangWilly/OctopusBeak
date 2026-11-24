@@ -435,9 +435,9 @@ test("a backup asked for is a consistent copy, taken as one step before the firs
     const compactor = createLedgerCompactor(store, {
       runStep: (step) => step(),
       reclaim: REWRITE_ALL,
-      backup: async () => {
+      backup: async (context) => {
         order.push("backup");
-        backupPath = await backUpLedger(store, dataDir, { freeBytes: async () => Number.MAX_SAFE_INTEGER, exists: existsSync });
+        backupPath = await backUpLedger(store, dataDir, { freeBytes: async () => Number.MAX_SAFE_INTEGER, exists: existsSync, ...context });
       },
     });
     const result = await compactor.compact(undefined, { backup: true });
@@ -483,6 +483,25 @@ test("the backup step comes after the plan and before every chunk, and its failu
     assert.deepEqual(unavailable.status === "failed" && unavailable.failure, { reason: "backup", backup: "unavailable" },
       "a worker without a folder of its own cannot back up, so it does not compact either");
     assert.deepEqual(await rowCounts(store), before);
+  } finally {
+    await store.close();
+  }
+});
+
+test("a stop during the backup, as when the app quits, ends the run as stopped before any chunk", async () => {
+  const { store } = await legacyStore();
+  try {
+    const before = await rowCounts(store);
+    const controller = new AbortController();
+    const result = await runLedgerCompaction(store, {
+      signal: controller.signal,
+      backup: async ({ signal }) => {
+        controller.abort();
+        signal?.throwIfAborted();
+      },
+    });
+    assert.equal(result.status, "stopped", JSON.stringify(result));
+    assert.deepEqual(await rowCounts(store), before, "nothing was compacted");
   } finally {
     await store.close();
   }

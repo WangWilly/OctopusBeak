@@ -238,7 +238,7 @@ test("the ledger compaction reaches the renderer as sizes, counts, phase and sta
         citingColumns: ["canonical_credit_card_transaction_details.source_record_id"],
         estimatedBytes: 390,
       }),
-      backupRoom: async () => ({ storeBytes: 1_000, freeBytes: 5_000 }),
+      backupRoom: async () => ({ storeBytes: 1_000, neededBytes: 1_200, freeBytes: 5_000 }),
       compact: async (request) => {
         requests.push(request);
         return {
@@ -262,7 +262,7 @@ test("the ledger compaction reaches the renderer as sizes, counts, phase and sta
   const version = dataVersions.snapshot();
   assert.deepEqual(
     await service.ledgerCompactionEstimate(),
-    { status: "planned", removableRows: 18, removableBytes: 390, storeBytes: 1_000, freeBytes: 5_000 },
+    { status: "planned", removableRows: 18, removableBytes: 390, storeBytes: 1_000, backupNeededBytes: 1_200, freeBytes: 5_000 },
   );
   assert.deepEqual(await service.ledgerCompactionStatus(), { running: true, progress: { phase: "compacting", index: 2, count: 3, removedRows: 40 } },
     "no subject, record kind or namespace");
@@ -279,6 +279,8 @@ test("the ledger compaction reaches the renderer as sizes, counts, phase and sta
   assert.deepEqual(requests, [{ backup: true }]);
   await assert.rejects(() => service.compactLedger({ backup: "yes" }), TypeError);
   await assert.rejects(() => service.compactLedger(undefined), TypeError);
+  await assert.rejects(() => service.compactLedger({ backup: true, path: "/elsewhere" }), TypeError, "no field but backup");
+  await assert.rejects(() => service.compactLedger(Object.assign([], { backup: true })), TypeError);
   assert.deepEqual(requests, [{ backup: true }], "a malformed request reaches no worker");
 
   status = {

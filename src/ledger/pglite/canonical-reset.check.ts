@@ -4,6 +4,7 @@ import { createPGliteFinancialRegistry } from "../../../electron/pglite-financia
 import { assertPgliteBaseline } from "./baseline.ts";
 import { createTestPGlite } from "./baseline-test-template.ts";
 import { resetPGliteCanonicalStore } from "./canonical-reset.ts";
+import { FAILURE_RECORD, readRecordedFailure } from "./compaction-job.ts";
 import { commitCathay } from "./direct-source-precedence-fixture.ts";
 import { createPgliteOperationalProvider } from "./operational.ts";
 import { PGliteStore } from "./transaction.ts";
@@ -91,5 +92,22 @@ test("a Canonical Reset empties financial state, keeps rates and run history, an
 
     await commitCathay(store);
     assert.ok((await rowCounts(store)).financial_accounts! > 0, "the same capture is admitted again after the reset");
+  });
+});
+
+test("a Canonical Reset removes a compaction's recorded failure and keeps its markers", async () => {
+  await withDesktopStore(async (store) => {
+    await store.query(
+      `INSERT INTO pglite_operational_migrations(migration_key, schema_signature)
+       VALUES ($1, '{"removedRows":12,"chunks":{"done":1,"count":3},"backup":false}'), ('ledger-compaction-kept-marker-check', 'x')`,
+      [FAILURE_RECORD],
+    );
+    assert.equal((await readRecordedFailure(store))?.removedRows, 12);
+
+    await resetPGliteCanonicalStore(store);
+
+    assert.equal(await readRecordedFailure(store), null, "Settings no longer reports rows of the emptied store");
+    const kept = await store.query("SELECT 1 FROM pglite_operational_migrations WHERE migration_key = 'ledger-compaction-kept-marker-check'");
+    assert.equal(kept.rows.length, 1, "every other operational row stays");
   });
 });

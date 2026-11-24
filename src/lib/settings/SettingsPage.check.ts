@@ -54,6 +54,8 @@ test("Settings offers onboarding start when none exists and restart only for com
     assert.ok(compactButton, "the data section offers Compact ledger");
     assert.doesNotMatch(compactButton, /\bdanger\b/u, "compacting changes no answer, so it is not styled as a delete");
     assert.match(text(renderSettings("completed")), /Every page shows the same data\./u);
+    assert.match(text(renderSettings("completed")), /Checking what can be freed may pause OctopusBeak/u,
+      "the pause is said before the estimate, which is the step that pauses");
     assert.doesNotMatch(renderSettings("completed"), /ledger-compaction-backup/u, "the backup choice waits for the estimate");
 
     const completedButton = findButton(renderSettings("completed"), "Restart onboarding");

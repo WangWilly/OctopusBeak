@@ -1145,9 +1145,10 @@
               <p id="ledger-compaction-estimate">{$t.settings.compactLedgerEstimate(megabytes(compactionView.removableBytes))}</p>
               {#if compactionView.backupOffered}
                 <label class="confirm-option">
-                  <input id="ledger-compaction-backup" type="checkbox" bind:checked={compactionBackup} />
+                  <input id="ledger-compaction-backup" type="checkbox" bind:checked={compactionBackup} aria-describedby="ledger-compaction-backup-hint" />
                   <span>{$t.settings.compactLedgerBackup}</span>
                 </label>
+                <small id="ledger-compaction-backup-hint" class="setting-hint">{$t.settings.compactLedgerBackupHint(megabytes(compactionView.storeBytes ?? 0))}</small>
               {/if}
               <div class="onboarding-setting-actions">
                 <button class="button" type="button" onclick={() => (compactionView = { kind: "idle" })}>{$t.common.cancel}</button>

@@ -51,7 +51,7 @@ import type { CardIdentitySecret } from "../src/lib/shared-identity/card-identit
 import { cardAccountNamespaces } from "../src/ledger/pglite/card-identity-secret.ts";
 import { planLedgerCompaction } from "../src/ledger/pglite/compaction-plan.ts";
 import { createLedgerReclaimer } from "../src/ledger/pglite/reclaim.ts";
-import { createLedgerCompactor } from "../src/ledger/pglite/compaction-job.ts";
+import { createLedgerCompactor, type LedgerCompactionBackup } from "../src/ledger/pglite/compaction-job.ts";
 import type { LedgerBackupRoom } from "../src/ledger/pglite/data-dir-backup.ts";
 import {
   readAssetsPage,
@@ -96,10 +96,10 @@ export type PGliteFinancialRegistryOptions = Readonly<{
   ledgerBackup?: LedgerBackupPort;
 }>;
 
-/** A compaction's backup: how much room it needs and has, and the copy, which runs as one background step. */
+/** A compaction's backup: how much room it needs and has, and the copy, whose locked part runs as one background step. */
 export type LedgerBackupPort = Readonly<{
   room(): Promise<LedgerBackupRoom>;
-  copy(): Promise<unknown>;
+  copy: LedgerCompactionBackup;
 }>;
 
 export function createPGliteFinancialRegistry(

@@ -4,12 +4,20 @@
  */
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { chmod, cp, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { PGlite } from "@electric-sql/pglite";
-import { backUpLedger, LedgerBackupError, ledgerBackupPath } from "./data-dir-backup.ts";
+import {
+  backUpLedger,
+  LEDGER_BACKUP_HEADROOM_BYTES,
+  LedgerBackupError,
+  ledgerBackupBytesNeeded,
+  ledgerBackupPath,
+  ledgerBackupRoom,
+  removePartialLedgerBackups,
+} from "./data-dir-backup.ts";
 import { PGliteStore } from "./transaction.ts";
 
 async function folderStore(): Promise<Readonly<{ store: PGliteStore; dataDir: string; root: string }>> {
@@ -95,4 +103,80 @@ test("a backup goes beside the folder and never over an earlier one", () => {
   const now = new Date("2026-11-24T08:00:00.123Z");
   const taken = new Set(["/data/ledger.before-compaction-2026-11-24T08-00-00Z"]);
   assert.equal(ledgerBackupPath("/data/ledger", now, (path) => taken.has(path)), "/data/ledger.before-compaction-2026-11-24T08-00-00Z-1");
+});
+
+test("a backup needs the folder's size plus a margin free, so the WAL after it still has room", async () => {
+  assert.equal(ledgerBackupBytesNeeded(0), LEDGER_BACKUP_HEADROOM_BYTES);
+  assert.equal(ledgerBackupBytesNeeded(1_000_000_000), 1_100_000_000 + LEDGER_BACKUP_HEADROOM_BYTES);
+
+  const { store, dataDir, root } = await folderStore();
+  try {
+    await store.query("CHECKPOINT");
+    const { neededBytes } = await ledgerBackupRoom(dataDir, async () => 0);
+    await assert.rejects(
+      () => backUpLedger(store, dataDir, { ...roomy, freeBytes: async () => neededBytes - 1 }),
+      (error) => error instanceof LedgerBackupError && error.reason === "no-room",
+      "a disk that fits the copy but not the margin refuses",
+    );
+    assert.deepEqual(await readdir(root), ["ledger"]);
+    const path = await backUpLedger(store, dataDir, { ...roomy, freeBytes: async () => neededBytes });
+    assert.ok(path.startsWith(`${dataDir}.before-compaction-`));
+  } finally {
+    await store.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a backup aborted during its copy, as when the app quits, leaves no folder named like a backup", async () => {
+  const { store, dataDir, root } = await folderStore();
+  try {
+    const controller = new AbortController();
+    await assert.rejects(
+      () => backUpLedger(store, dataDir, {
+        ...roomy,
+        signal: controller.signal,
+        copyFolder: async (from, to, signal) => {
+          await mkdir(to);
+          await writeFile(join(to, "PG_VERSION"), "17");
+          assert.match(to, /\.partial$/u, "the copy is written under a partial name");
+          controller.abort();
+          signal?.throwIfAborted();
+          await cp(from, to, { recursive: true });
+        },
+      }),
+      (error) => error instanceof Error && error.name === "AbortError",
+    );
+    assert.deepEqual(await readdir(root), ["ledger"], "the partial copy was removed");
+
+    // The default copy checks the signal too: aborted before it starts, it copies nothing.
+    const aborted = AbortSignal.abort();
+    await assert.rejects(() => backUpLedger(store, dataDir, { ...roomy, signal: aborted }));
+    assert.deepEqual(await readdir(root), ["ledger"]);
+  } finally {
+    await store.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a partial copy a killed backup left is removed by the next backup or on open, and a finished one is kept", async () => {
+  const { store, dataDir, root } = await folderStore();
+  try {
+    const finished = await backUpLedger(store, dataDir, { ...roomy, now: () => new Date("2026-11-24T08:00:00Z") });
+    const leftover = `${dataDir}.before-compaction-2026-11-24T09-00-00Z.partial`;
+    await mkdir(leftover);
+    await writeFile(join(leftover, "PG_VERSION"), "17");
+    const unrelated = join(root, "other.before-compaction-2026-11-24T09-00-00Z.partial");
+    await mkdir(unrelated);
+
+    await removePartialLedgerBackups(dataDir);
+    assert.deepEqual((await readdir(root)).sort(), ["ledger", finished.slice(root.length + 1), "other.before-compaction-2026-11-24T09-00-00Z.partial"].sort());
+
+    await mkdir(leftover);
+    const second = await backUpLedger(store, dataDir, { ...roomy, now: () => new Date("2026-11-24T10:00:00Z") });
+    assert.equal(existsSync(leftover), false, "the next backup removes it first");
+    assert.ok(existsSync(finished) && existsSync(second));
+  } finally {
+    await store.close();
+    await rm(root, { recursive: true, force: true });
+  }
 });

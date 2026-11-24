@@ -11,16 +11,18 @@ import {
 } from "./ledger-compaction.ts";
 
 const MiB = 1024 * 1024;
-const planned = (freeBytes: number | null, storeBytes: number | null = 500 * MiB) =>
-  ({ status: "planned", removableRows: 1_200, removableBytes: 300 * MiB, storeBytes, freeBytes }) as const;
+// A 500 MiB folder needs 806 MiB free: itself, 10% and 256 MiB (`ledgerBackupBytesNeeded`).
+const planned = (freeBytes: number | null, storeBytes: number | null = 500 * MiB, backupNeededBytes: number | null = 806 * MiB) =>
+  ({ status: "planned", removableRows: 1_200, removableBytes: 300 * MiB, storeBytes, backupNeededBytes, freeBytes }) as const;
+const estimated = (backupOffered: boolean, storeBytes: number | null = 500 * MiB) =>
+  ({ kind: "estimated", removableBytes: 300 * MiB, backupOffered, storeBytes });
 
-test("the estimate shows what can be freed, and offers a backup only when the disk has room for one", () => {
-  assert.deepEqual(compactionEstimateView(planned(800 * MiB)), { kind: "estimated", removableBytes: 300 * MiB, backupOffered: true });
-  assert.deepEqual(compactionEstimateView(planned(500 * MiB)), { kind: "estimated", removableBytes: 300 * MiB, backupOffered: true },
-    "exactly the store's size is enough");
-  assert.deepEqual(compactionEstimateView(planned(499 * MiB)), { kind: "estimated", removableBytes: 300 * MiB, backupOffered: false },
-    "less free than the store hides the backup");
-  assert.deepEqual(compactionEstimateView(planned(null, null)), { kind: "estimated", removableBytes: 300 * MiB, backupOffered: false },
+test("the estimate shows what can be freed, and offers a backup only when the disk has room for one and the margin", () => {
+  assert.deepEqual(compactionEstimateView(planned(900 * MiB)), estimated(true));
+  assert.deepEqual(compactionEstimateView(planned(806 * MiB)), estimated(true), "exactly the size and the margin is enough");
+  assert.deepEqual(compactionEstimateView(planned(806 * MiB - 1)), estimated(false), "one byte short of the margin hides the backup");
+  assert.deepEqual(compactionEstimateView(planned(500 * MiB)), estimated(false), "room for the copy alone leaves the WAL none");
+  assert.deepEqual(compactionEstimateView(planned(null, null, null)), estimated(false, null),
     "a ledger that cannot be backed up offers none");
   assert.deepEqual(compactionEstimateView({ ...planned(800 * MiB), removableRows: 0, removableBytes: 0 }), { kind: "nothing" });
   assert.deepEqual(compactionEstimateView({ status: "cannot-compact" }), { kind: "cannot" });

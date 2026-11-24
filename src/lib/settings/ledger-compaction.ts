@@ -8,8 +8,11 @@ import type {
 /** What the Compact ledger row shows (ADR 0154). */
 export type LedgerCompactionView =
   | Readonly<{ kind: "idle" | "checking" | "nothing" | "cannot" }>
-  /** `backupOffered`: the disk has room for a copy of the ledger, so Settings offers one first. */
-  | Readonly<{ kind: "estimated"; removableBytes: number; backupOffered: boolean }>
+  /**
+   * `backupOffered`: the disk has room for a copy of the ledger and the
+   * margin after it, so Settings offers one first; `storeBytes` is its size.
+   */
+  | Readonly<{ kind: "estimated"; removableBytes: number; backupOffered: boolean; storeBytes: number | null }>
   | Readonly<{ kind: "running"; progress: LedgerCompactionProgressDto | null }>
   /** `reclaimedBytes` null: the rows are gone but their space is not returned yet. */
   | Readonly<{ kind: "done"; removedRows: number; reclaimedBytes: number | null }>
@@ -32,8 +35,9 @@ const FAILED: LedgerCompactionView = { kind: "failed", removedRows: 0, backup: f
 export function compactionEstimateView(estimate: LedgerCompactionEstimateDto): LedgerCompactionView {
   if (estimate.status === "cannot-compact") return { kind: "cannot" };
   if (estimate.removableRows === 0) return { kind: "nothing" };
-  const backupOffered = estimate.storeBytes !== null && estimate.freeBytes !== null && estimate.freeBytes >= estimate.storeBytes;
-  return { kind: "estimated", removableBytes: estimate.removableBytes, backupOffered };
+  // The worker's `ledgerBackupBytesNeeded`, the same rule the backup checks again before it copies.
+  const backupOffered = estimate.backupNeededBytes !== null && estimate.freeBytes !== null && estimate.freeBytes >= estimate.backupNeededBytes;
+  return { kind: "estimated", removableBytes: estimate.removableBytes, backupOffered, storeBytes: estimate.storeBytes };
 }
 
 export function compactionResultView(result: LedgerCompactionResultDto): LedgerCompactionView {

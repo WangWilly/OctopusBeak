@@ -94,9 +94,11 @@ function compactionProgressDto(progress: LedgerCompactionProgress): LedgerCompac
   }
 }
 
+/** Only `backup`: the renderer names no path, folder or other option. */
 function compactionRequest(input: unknown): LedgerCompactionRequest {
-  if (typeof input !== "object" || input === null || typeof (input as { backup?: unknown }).backup !== "boolean") {
-    throw new TypeError("A compaction request must say whether to back up first.");
+  if (typeof input !== "object" || input === null || Array.isArray(input)
+    || Object.keys(input).some((key) => key !== "backup") || typeof (input as { backup?: unknown }).backup !== "boolean") {
+    throw new TypeError("A compaction request must say whether to back up first, and nothing else.");
   }
   return { backup: (input as { backup: boolean }).backup };
 }
@@ -177,6 +179,7 @@ export function createSettingsDesktopService(deps: SettingsDesktopServiceDeps) {
         removableRows: sum([...plan.phaseA, ...plan.phaseB.tables, plan.phaseC].map((table) => table.removable)),
         removableBytes: plan.estimatedBytes,
         storeBytes: room?.storeBytes ?? null,
+        backupNeededBytes: room?.neededBytes ?? null,
         freeBytes: room?.freeBytes ?? null,
       };
     },

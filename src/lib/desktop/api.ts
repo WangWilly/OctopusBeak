@@ -172,11 +172,13 @@ export type LedgerReclaimStatusDto =
 
 /**
  * What Compact ledger would free (ADR 0154), from its dry run. `storeBytes`
- * and `freeBytes` are what a backup first would need and have; null when the
- * ledger cannot be backed up.
+ * is the ledger folder's size, `backupNeededBytes` the free space a backup
+ * first needs (the size plus a margin) and `freeBytes` what the disk has;
+ * null when the ledger cannot be backed up.
  */
 export type LedgerCompactionEstimateDto =
-  | Readonly<{ status: "planned"; removableRows: number; removableBytes: number; storeBytes: number | null; freeBytes: number | null }>
+  | Readonly<{ status: "planned"; removableRows: number; removableBytes: number;
+    storeBytes: number | null; backupNeededBytes: number | null; freeBytes: number | null }>
   /** The ledger holds a reference the compaction does not know, so it would remove nothing. */
   | Readonly<{ status: "cannot-compact" }>;
 

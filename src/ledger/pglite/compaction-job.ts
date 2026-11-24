@@ -108,13 +108,22 @@ export type LedgerCompactionStatus =
 /** What the owner chose when starting a compaction. */
 export type LedgerCompactionRequest = Readonly<{ backup: boolean }>;
 
+export type LedgerCompactionBackup = (context: Readonly<{
+  runStep: <T>(step: () => Promise<T>) => Promise<T>;
+  signal: AbortSignal | undefined;
+}>) => Promise<unknown>;
+
 export type LedgerCompactionJobOptions = Readonly<{
   /** Queues one step on the worker's background lane; by default a step runs at once. */
   runStep?: <T>(step: () => Promise<T>) => Promise<T>;
   signal?: AbortSignal;
   onProgress?: (progress: LedgerCompactionProgress) => void;
-  /** Takes a backup as one step before the first chunk; a backup that throws ends the run as `failed`. */
-  backup?: () => Promise<unknown>;
+  /**
+   * Takes a backup before the first chunk, queuing its copy with `runStep`
+   * itself; a backup that throws ends the run as `failed`, or `stopped` when
+   * `signal` aborted it.
+   */
+  backup?: LedgerCompactionBackup;
   /** Passed to the reclaim, which rewrites the compacted tables. */
   reclaim?: Pick<LedgerReclaimOptions, "freeBytes" | "folderBytes" | "syncToDisk" | "minBytes" | "minShare">;
   /** Replaces a chunk's selections; only checks use it. */
@@ -352,8 +361,9 @@ export async function runLedgerCompaction(store: PGliteStore, options: LedgerCom
     if (options.signal?.aborted) return { status: "stopped", ...tally() };
     options.onProgress?.({ phase: "backing-up" });
     try {
-      await runStep(options.backup);
+      await options.backup({ runStep, signal: options.signal });
     } catch (error) {
+      if (options.signal?.aborted) return { status: "stopped", ...tally() };
       const backup = error instanceof LedgerBackupError ? error.reason : "copy-failed";
       return { status: "failed", chunk: null, failure: { reason: "backup", backup }, ...tally() };
     }

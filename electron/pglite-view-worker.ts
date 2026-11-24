@@ -15,7 +15,7 @@ import { isLedgerUnusable, LEDGER_UNUSABLE_CODE, LedgerUnusableError } from "./l
 import { installFinancialStore } from "../src/ledger/pglite/store-layout.ts";
 import type { PGliteStore } from "../src/ledger/pglite/transaction.ts";
 import { directoryBytes, fsyncDirectory } from "../src/ledger/pglite/data-dir-files.ts";
-import { backUpLedger, ledgerBackupRoom } from "../src/ledger/pglite/data-dir-backup.ts";
+import { backUpLedger, ledgerBackupRoom, removePartialLedgerBackups } from "../src/ledger/pglite/data-dir-backup.ts";
 import { startPgliteVacuums } from "../src/ledger/pglite/vacuum.ts";
 import { startPgliteWalCheckpoints } from "../src/ledger/pglite/wal-checkpoint.ts";
 import { createPGliteOperationalRpcServer } from "../src/lib/pglite-rpc/pglite-operational-rpc.ts";
@@ -109,6 +109,11 @@ export async function startPGliteViewWorker(
     if (ownsDataDir) await rm(ownedDataDir, { recursive: true, force: true });
     throw error;
   }
+  // A backup the app quit during left a `.partial` copy; no finished backup is touched.
+  if (!ownsDataDir) {
+    await removePartialLedgerBackups(ownedDataDir).catch((error: unknown) =>
+      console.error("pglite-partial-backup-cleanup-failed", error instanceof Error ? error.message : String(error)));
+  }
   const operationalProvider = createPgliteOperationalProvider(database);
   const freeDiskBytes = async () => {
     const disk = await statfs(ownedDataDir);
@@ -124,7 +129,7 @@ export async function startPGliteViewWorker(
     // A temporary ledger, removed when the worker closes, has nothing worth backing up.
     ledgerBackup: ownsDataDir ? undefined : {
       room: () => ledgerBackupRoom(ownedDataDir, freeDiskBytes),
-      copy: () => backUpLedger(database, ownedDataDir, { freeBytes: freeDiskBytes, exists: existsSync }),
+      copy: (context) => backUpLedger(database, ownedDataDir, { freeBytes: freeDiskBytes, exists: existsSync, ...context }),
     },
   });
   const walCheckpoints = startPgliteWalCheckpoints(database, {

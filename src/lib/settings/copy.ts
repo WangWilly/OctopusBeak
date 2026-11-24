@@ -143,13 +143,13 @@ const en = {
       `Ledger space could not be fully reclaimed. ${megabytes} MB was reclaimed before the error. No data was changed. Try again.`,
     compactLedger: "Compact ledger",
     compactLedgerHint:
-      "Removes the repeated copies earlier versions of OctopusBeak stored on every sync, then returns their space. Every page shows the same data.",
+      "Removes the repeated copies earlier versions of OctopusBeak stored on every sync, then returns their space. Every page shows the same data. Checking what can be freed may pause OctopusBeak for a few seconds.",
     compactLedgerChecking: "Checking...",
     compactLedgerEstimate: (megabytes: string) =>
       `About ${megabytes} MB can be freed. Only rows that repeat the row before them are removed, and every page shows the same data afterwards. On a large ledger this can take a few minutes, and OctopusBeak may pause briefly between steps; a running sync waits and then continues.`,
     compactLedgerBackup: "Back up the ledger first",
     compactLedgerBackupHint: (megabytes: string) =>
-      `Copies the ledger folder, about ${megabytes} MB, beside it before anything is removed.`,
+      `Copies the ledger folder, about ${megabytes} MB, before anything is removed. The copy is saved beside the ledger folder, under its name with "before-compaction" and the time. On a disk that cannot clone files, OctopusBeak pauses while the copy is made.`,
     compactLedgerAction: "Compact",
     compactLedgerNothing: "Nothing to compact",
     compactLedgerCannot: "This ledger cannot be compacted yet. No data was changed.",
@@ -347,12 +347,13 @@ const zh: typeof en = {
     reclaimLedgerSpaceFailedPartway: (megabytes: string) =>
       `無法完整回收帳本空間。發生錯誤前已回收 ${megabytes} MB。資料沒有任何變更，請再試一次。`,
     compactLedger: "壓縮帳本",
-    compactLedgerHint: "移除舊版 OctopusBeak 每次同步重複儲存的副本，再回收它們占用的空間。各頁面顯示的資料不變。",
+    compactLedgerHint: "移除舊版 OctopusBeak 每次同步重複儲存的副本，再回收它們占用的空間。各頁面顯示的資料不變。檢查可釋出的空間時，OctopusBeak 可能會暫停幾秒。",
     compactLedgerChecking: "檢查中...",
     compactLedgerEstimate: (megabytes: string) =>
       `約可釋出 ${megabytes} MB。只會移除與前一筆相同的重複資料，完成後各頁面顯示的資料不變。帳本較大時可能需要幾分鐘，步驟之間 OctopusBeak 可能會短暫停頓；進行中的同步會等待，之後繼續。`,
     compactLedgerBackup: "先備份帳本",
-    compactLedgerBackupHint: (megabytes: string) => `移除任何資料前，先把帳本資料夾（約 ${megabytes} MB）複製一份放在旁邊。`,
+    compactLedgerBackupHint: (megabytes: string) =>
+      `移除任何資料前，先把帳本資料夾（約 ${megabytes} MB）複製一份。備份存放在帳本資料夾旁，名稱是資料夾名稱加上「before-compaction」與備份時間。若磁碟無法快速複製（clone）檔案，複製期間 OctopusBeak 會暫停。`,
     compactLedgerAction: "壓縮",
     compactLedgerNothing: "沒有可壓縮的資料",
     compactLedgerCannot: "目前無法壓縮這個帳本。資料沒有任何變更。",

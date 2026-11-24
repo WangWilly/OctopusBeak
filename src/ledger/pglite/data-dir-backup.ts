@@ -1,4 +1,7 @@
-import { cp, rm } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { cp, open, readdir, rename, rm } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
+import { promisify } from "node:util";
 import { directoryBytes, fsyncDirectory } from "./data-dir-files.ts";
 import type { PGliteStore } from "./transaction.ts";
 
@@ -12,13 +15,34 @@ import type { PGliteStore } from "./transaction.ts";
  * the operational server included. So nothing writes to the folder while it
  * is copied, and the CHECKPOINT has written every dirty page to the data
  * files first. The copy opens as a store that stopped at that checkpoint.
- * On the worker the backup also runs as one step on the background lane, so
- * no scheduled job is between two of its queries either.
+ * On the worker that transaction also runs as one step on the background
+ * lane, so no scheduled job is between two of its queries either. The size
+ * walk before it and the flush after it run outside the step and the lock.
+ *
+ * The copy is written under a `.partial` name and renamed only once it is
+ * flushed, so a folder named like a backup is always a whole one.
  */
 
+/** Free space a backup leaves beyond its copy, for the WAL the compaction writes next. */
+export const LEDGER_BACKUP_HEADROOM_BYTES = 256 * 1024 * 1024;
+/** And this share of the folder on top, as the folder grows while the compaction runs. */
+export const LEDGER_BACKUP_HEADROOM_SHARE = 0.1;
+
+/**
+ * Free bytes a backup of a folder of `storeBytes` needs. A clone on APFS
+ * costs almost nothing when it is made, but it keeps the old blocks once the
+ * compaction rewrites the tables, so it ends up costing the folder's size
+ * too; the rule is the same whether the disk clones or not.
+ */
+export function ledgerBackupBytesNeeded(storeBytes: number): number {
+  return storeBytes + Math.ceil(storeBytes * LEDGER_BACKUP_HEADROOM_SHARE) + LEDGER_BACKUP_HEADROOM_BYTES;
+}
+
 export type LedgerBackupRoom = Readonly<{
-  /** What the ledger's folder takes now, WAL included; a backup needs this much free. */
+  /** What the ledger's folder takes now, WAL included. */
   storeBytes: number;
+  /** `ledgerBackupBytesNeeded(storeBytes)`: what a backup needs free. */
+  neededBytes: number;
   freeBytes: number;
 }>;
 
@@ -33,50 +57,127 @@ export class LedgerBackupError extends Error {
   }
 }
 
+const BACKUP_INFIX = ".before-compaction-";
+const PARTIAL_SUFFIX = ".partial";
+
 /** Where a backup goes: beside the folder, named by when it was taken, never over an earlier one. */
 export function ledgerBackupPath(dataDir: string, now: Date, exists: (path: string) => boolean): string {
   const stamp = now.toISOString().replaceAll(":", "-").replace(/\.\d+Z$/u, "Z");
   for (let attempt = 0; ; attempt += 1) {
-    const candidate = `${dataDir}.before-compaction-${stamp}${attempt === 0 ? "" : `-${attempt}`}`;
-    if (!exists(candidate)) return candidate;
+    const candidate = `${dataDir}${BACKUP_INFIX}${stamp}${attempt === 0 ? "" : `-${attempt}`}`;
+    if (!exists(candidate) && !exists(`${candidate}${PARTIAL_SUFFIX}`)) return candidate;
   }
 }
+
+/**
+ * Removes the `.partial` copies a backup cut short left beside `dataDir`,
+ * such as one the app quit during. Never touches a finished backup.
+ */
+export async function removePartialLedgerBackups(dataDir: string): Promise<void> {
+  const prefix = `${basename(dataDir)}${BACKUP_INFIX}`;
+  let names: string[];
+  try {
+    names = await readdir(dirname(dataDir));
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (name.startsWith(prefix) && name.endsWith(PARTIAL_SUFFIX)) {
+      await rm(join(dirname(dataDir), name), { recursive: true, force: true });
+    }
+  }
+}
+
+export type LedgerBackupCopy = (from: string, to: string, signal: AbortSignal | undefined) => Promise<void>;
 
 export type LedgerBackupOptions = Readonly<{
   freeBytes: () => Promise<number>;
   now?: () => Date;
   exists: (path: string) => boolean;
+  /** Runs the CHECKPOINT and the copy as one step; the worker passes its background lane's. */
+  runStep?: <T>(step: () => Promise<T>) => Promise<T>;
+  /** Aborts the copy between files and the flush; the partial copy is removed. */
+  signal?: AbortSignal;
   /** Copies the folder; checks replace it to write while it runs. */
-  copyFolder?: (from: string, to: string) => Promise<void>;
+  copyFolder?: LedgerBackupCopy;
 }>;
 
-const copyFolder = (from: string, to: string) => cp(from, to, { recursive: true, errorOnExist: true, force: false });
+const run = promisify(execFile);
+
+/** Copies byte by byte, checking `signal` before each file. */
+const byteCopy: LedgerBackupCopy = (from, to, signal) =>
+  cp(from, to, {
+    recursive: true,
+    errorOnExist: true,
+    force: false,
+    filter: () => { signal?.throwIfAborted(); return true; },
+  });
+
+/**
+ * On macOS, `cp -c` clones each file (clonefile(2)): on APFS a 1 GB file
+ * takes milliseconds and no space. Node's `fs.cp` and `copyFile` with
+ * `COPYFILE_FICLONE` still copy every byte there, and `COPYFILE_FICLONE_FORCE`
+ * fails with ENOSYS. On a disk that cannot clone, such as HFS+ or exFAT,
+ * `cp -c` copies the bytes itself. If it fails, the byte copy runs instead.
+ */
+const cloneOrCopy: LedgerBackupCopy = async (from, to, signal) => {
+  if (process.platform === "darwin") {
+    try {
+      await run("/bin/cp", ["-cR", from, to], { signal });
+      return;
+    } catch {
+      signal?.throwIfAborted();
+      await rm(to, { recursive: true, force: true });
+    }
+  }
+  await byteCopy(from, to, signal);
+};
+
+async function fsyncPath(path: string): Promise<void> {
+  const handle = await open(path, "r");
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
 
 export async function ledgerBackupRoom(dataDir: string, freeBytes: () => Promise<number>): Promise<LedgerBackupRoom> {
   const [storeBytes, free] = await Promise.all([directoryBytes(dataDir), freeBytes()]);
-  return { storeBytes, freeBytes: free };
+  return { storeBytes, neededBytes: ledgerBackupBytesNeeded(storeBytes), freeBytes: free };
 }
 
 /**
- * Copies `dataDir` beside itself while `store` writes nothing, then flushes
- * the copy to the disk. Refuses when the disk has less free than the folder
- * takes. A copy that fails is removed. Returns where the copy went, which
- * stays in the worker: the renderer is never told a path.
+ * Copies `dataDir` beside itself while `store` writes nothing, flushes the
+ * copy to the disk, then gives it its name. Refuses when the disk has less
+ * free than `ledgerBackupBytesNeeded`. A copy that fails or is aborted is
+ * removed. Returns where the copy went, which stays in the worker: the
+ * renderer is never told a path.
  */
 export async function backUpLedger(store: PGliteStore, dataDir: string, options: LedgerBackupOptions): Promise<string> {
+  const { signal } = options;
+  await removePartialLedgerBackups(dataDir);
   const room = await ledgerBackupRoom(dataDir, options.freeBytes);
-  if (room.freeBytes < room.storeBytes) {
-    throw new LedgerBackupError("no-room", `A backup needs ${room.storeBytes} bytes free; ${room.freeBytes} are free.`);
+  if (room.freeBytes < room.neededBytes) {
+    throw new LedgerBackupError("no-room", `A backup needs ${room.neededBytes} bytes free; ${room.freeBytes} are free.`);
   }
   const target = ledgerBackupPath(dataDir, (options.now ?? (() => new Date()))(), options.exists);
+  const partial = `${target}${PARTIAL_SUFFIX}`;
+  const copyFolder = options.copyFolder ?? cloneOrCopy;
   try {
-    await store.transaction(async (transaction) => {
+    await (options.runStep ?? ((step) => step()))(() => store.transaction(async (transaction) => {
+      signal?.throwIfAborted();
       await transaction.query("CHECKPOINT");
-      await (options.copyFolder ?? copyFolder)(dataDir, target);
-    });
-    await fsyncDirectory(target);
+      await copyFolder(dataDir, partial, signal);
+    }));
+    // The copy is already consistent, so its flush holds neither the lock nor the lane.
+    await fsyncDirectory(partial, undefined, signal);
+    signal?.throwIfAborted();
+    await rename(partial, target);
+    await fsyncPath(dirname(target));
   } catch (error) {
-    await rm(target, { recursive: true, force: true });
+    await rm(partial, { recursive: true, force: true });
+    if (signal?.aborted) throw error;
     throw new LedgerBackupError("copy-failed", error instanceof Error ? error.message : String(error));
   }
   return target;
