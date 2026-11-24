@@ -50,7 +50,7 @@ import type { PGliteCanonicalCommitOptions } from "../src/ledger/pglite/canonica
 import type { CardIdentitySecret } from "../src/lib/shared-identity/card-identity-secret.ts";
 import { cardAccountNamespaces } from "../src/ledger/pglite/card-identity-secret.ts";
 import { planLedgerCompaction } from "../src/ledger/pglite/compaction-plan.ts";
-import { compactLedgerDomainAndCounts } from "../src/ledger/pglite/compaction.ts";
+import { compactLedger } from "../src/ledger/pglite/compaction.ts";
 import {
   readAssetsPage,
   readLiabilitiesPage,
@@ -169,8 +169,8 @@ export function createPGliteFinancialRegistry(
     "financial.canonical.compactionPlan": (_args, request) =>
       planLedgerCompaction(store, { runStep: options.runBackgroundStep, signal: request?.signal }),
     // Not for the UI: one transaction that holds the ledger until it ends (ADR 0154).
-    "financial.canonical.compactDomainAndCounts": (_args, request) =>
-      compactLedgerDomainAndCounts(store, { signal: request?.signal }),
+    "financial.canonical.compactLedger": (_args, request) =>
+      compactLedger(store, { signal: request?.signal }),
   });
 }
 

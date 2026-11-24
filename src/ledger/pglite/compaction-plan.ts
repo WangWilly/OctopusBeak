@@ -5,7 +5,7 @@ import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
  * written before ADR 0152, without changing anything. ADR 0152 left the
  * copies stored before it in place, and ADR 0154 compacts them; this report
  * lets the owner measure a store first. `compaction.ts` removes the rows it
- * marks in phases A and C. Compaction is planned in three phases, and this
+ * marks. Compaction is planned in three phases, and this
  * reports each one:
  *
  * - A, domain rows: in each table a command now writes only on change, a row
@@ -171,7 +171,7 @@ export const PHASE_A = {
 
 export type PhaseATable = keyof typeof PHASE_A;
 
-const SATELLITES = ["source_record_scopes", "source_record_provenance", "assertion_provenance"] as const;
+export const SATELLITES = ["source_record_scopes", "source_record_provenance", "assertion_provenance"] as const;
 
 /** Every column known to cite `source_records`, as `table.column`. */
 const CITING_COLUMNS: ReadonlyMap<string, CitingColumn> = new Map<string, CitingColumn>([
@@ -204,7 +204,7 @@ const CITING_COLUMNS: ReadonlyMap<string, CitingColumn> = new Map<string, Citing
 ]);
 
 /** Pins a copy without a foreign key: a manifest lists it as reused. */
-const MANIFEST = "capture_source_record_manifests";
+export const MANIFEST = "capture_source_record_manifests";
 /** Pins a copy through a satellite: an assertion row that also names a run or coordinate. */
 const MIXED_PROVENANCE = "assertion_provenance (non-source)";
 
@@ -365,9 +365,9 @@ export async function planLedgerCompaction(store: PGliteStore, options: Compacti
   });
 }
 
-type FoundColumns = ReadonlyMap<string, Readonly<{ table: string; column: string; citing: CitingColumn }>>;
+export type FoundColumns = ReadonlyMap<string, Readonly<{ table: string; column: string; citing: CitingColumn }>>;
 
-async function readCitingColumns(transaction: PGliteTransaction): Promise<Readonly<{
+export async function readCitingColumns(transaction: PGliteTransaction): Promise<Readonly<{
   columns: FoundColumns;
   problems: readonly CompactionCitingColumnProblem[];
 }>> {
@@ -467,33 +467,49 @@ type CopyRow = Readonly<{
   assertions: number;
 }>;
 
-/** Phase B for one subject's copies, each classified once, grouped by namespace, kind and category. */
-async function planSubjectCopies(
-  transaction: PGliteTransaction,
-  subject: Subject,
-  columns: FoundColumns,
-  kept: readonly KeptCitation[],
-): Promise<readonly CopyRow[]> {
-  const ofSubject = (column: string) => `${column} IN (SELECT source_record_id FROM subject_records)`;
+/**
+ * Every row that cites a copy `within` admits, as `cited_id` and the citing
+ * table: the citing columns found in `pg_constraint`, the manifests, and the
+ * assertion rows that also name a run or coordinate. With `carried`, the
+ * phase A tables are left out and the rows phase A keeps come in as the
+ * parameters `$1` (record ids as hex) and `$2` (their tables); without it,
+ * phase A has already run, so those tables are read as they stand.
+ */
+export function recordCitationsSql(columns: FoundColumns, within: (column: string) => string, carried: boolean): string {
   const citations = [...columns.values()].flatMap(({ table, column, citing }) =>
-    citing.role === "cites" ? [`SELECT ${column} AS cited_id, '${table}' AS citing_table FROM ${table} WHERE ${ofSubject(column)}`] : []);
+    citing.role === "cites" || (citing.role === "compacted" && !carried)
+      ? [`SELECT ${column} AS cited_id, '${table}' AS citing_table FROM ${table} WHERE ${within(column)}`]
+      : []);
+  if (carried)
+    citations.push(`SELECT decode(kept.cited, 'hex') AS cited_id, kept.citing_table FROM unnest($1::text[], $2::text[]) AS kept(cited, citing_table)`);
   citations.push(
-    // Phase A ran once, before the subject steps; these are the rows it keeps.
-    `SELECT decode(kept.cited, 'hex') AS cited_id, kept.citing_table FROM unnest($1::text[], $2::text[]) AS kept(cited, citing_table)`,
     `SELECT member.cited_id, '${MANIFEST}' AS citing_table FROM (
        SELECT substring(manifest.source_record_ids FROM slot * 16 + 1 FOR 16) AS cited_id
          FROM ${MANIFEST} manifest CROSS JOIN generate_series(0, manifest.record_count - 1) AS slot
-     ) member WHERE ${ofSubject("member.cited_id")}`,
+     ) member WHERE ${within("member.cited_id")}`,
     `SELECT source_record_id AS cited_id, '${MIXED_PROVENANCE}' AS citing_table FROM assertion_provenance
-      WHERE ${ofSubject("source_record_id")} AND (run_id IS NOT NULL OR enrichment_run_id IS NOT NULL OR coordinate_id IS NOT NULL)`,
+      WHERE ${within("source_record_id")} AND (run_id IS NOT NULL OR enrichment_run_id IS NOT NULL OR coordinate_id IS NOT NULL)`,
   );
-  const { rows } = await transaction.query<CopyRow>(`
+  return citations.join("\nUNION ALL\n");
+}
+
+/**
+ * Phase B, one row per copy whose `source_records` row (`record`) matches
+ * `where`: its category, the tables that pin it, its satellite rows, and for
+ * a removable copy `kept_id`, the nearest earlier copy of its chain that is
+ * kept. A removable copy equals the copy before it in every compared value
+ * and its sequence lexeme, so it equals that kept copy too. The dry run
+ * counts these rows; the compaction removes the removable ones.
+ */
+export function recordCopiesSql(where: string, columns: FoundColumns, carried: boolean): string {
+  const ofSubject = (column: string) => `${column} IN (SELECT source_record_id FROM subject_records)`;
+  return `
     WITH subject_records AS MATERIALIZED (
-      SELECT source_record_id, capture_id FROM source_records WHERE ${subjectIs("source_subject_id", subject)}
+      SELECT record.source_record_id, record.capture_id FROM source_records record WHERE ${where}
     ),
     cited AS (
       SELECT cited_id, array_agg(DISTINCT citing_table ORDER BY citing_table) AS pinned_by
-        FROM (${citations.join("\nUNION ALL\n")}) citation
+        FROM (${recordCitationsSql(columns, ofSubject, carried)}) citation
        GROUP BY cited_id
     ),
     shape AS (
@@ -516,7 +532,7 @@ async function planSubjectCopies(
        WHERE ${ofSubject("source_record_id")} GROUP BY source_record_id
     ),
     copy AS (
-      SELECT record.source_record_id, connection.integration_namespace, record.record_kind,
+      SELECT record.source_record_id, record.capture_id, connection.integration_namespace, record.record_kind,
              record.source_subject_id, record.occurrence_key, written.commit_sequence, record.sequence_lexeme,
              record.occurrence_key IS NOT NULL AND record.source_subject_id IS NOT NULL AS chained,
              md5(ROW(record.provider_key, record.content_hash, record.collision_key, record.description, record.payload_json,
@@ -535,7 +551,7 @@ async function planSubjectCopies(
         LEFT JOIN provenance ON provenance.source_record_id = record.source_record_id
         LEFT JOIN backed ON backed.source_record_id = record.source_record_id
         LEFT JOIN cited ON cited.cited_id = record.source_record_id
-       WHERE ${subjectIs("record.source_subject_id", subject)}
+       WHERE ${where}
     ),
     chained AS (
       SELECT copy.*, ROW_NUMBER() OVER chain AS position,
@@ -545,7 +561,7 @@ async function planSubjectCopies(
                        ORDER BY copy.commit_sequence, copy.source_record_id)
     ),
     classified AS (
-      SELECT integration_namespace, record_kind, pinned_by, scopes, provenance, assertions,
+      SELECT chained.*,
              CASE WHEN position = 1 THEN 'first'
                   WHEN content IS DISTINCT FROM previous_content THEN 'changed'
                   WHEN manifest_capture THEN 'manifestCapture'
@@ -553,14 +569,35 @@ async function planSubjectCopies(
                   WHEN sequence_lexeme IS DISTINCT FROM previous_lexeme THEN 'lexemeOnly'
                   ELSE 'removable' END AS category
         FROM chained
-      UNION ALL
-      SELECT integration_namespace, record_kind, pinned_by, scopes, provenance, assertions, 'unchained' AS category
-        FROM copy WHERE NOT copy.chained
+    ),
+    -- Each kept copy starts a run; the removable copies after it are its repeats.
+    runs AS (
+      SELECT classified.*, count(*) FILTER (WHERE category <> 'removable') OVER chain AS run
+        FROM classified
+      WINDOW chain AS (PARTITION BY source_subject_id, record_kind, occurrence_key ORDER BY commit_sequence, source_record_id)
     )
+    SELECT source_record_id, capture_id, integration_namespace, record_kind, category, pinned_by, scopes, provenance, assertions,
+           CASE WHEN category = 'removable' THEN FIRST_VALUE(source_record_id) OVER (
+             PARTITION BY source_subject_id, record_kind, occurrence_key, run ORDER BY commit_sequence, source_record_id) END AS kept_id
+      FROM runs
+    UNION ALL
+    SELECT source_record_id, capture_id, integration_namespace, record_kind, 'unchained' AS category, pinned_by, scopes, provenance, assertions,
+           NULL AS kept_id
+      FROM copy WHERE NOT copy.chained`;
+}
+
+/** Phase B for one subject's copies, each classified once, grouped by namespace, kind and category. */
+async function planSubjectCopies(
+  transaction: PGliteTransaction,
+  subject: Subject,
+  columns: FoundColumns,
+  kept: readonly KeptCitation[],
+): Promise<readonly CopyRow[]> {
+  const { rows } = await transaction.query<CopyRow>(`
     SELECT integration_namespace, record_kind, category,
            CASE WHEN category = 'pinned' THEN pinned_by END AS pinned_by,
            count(*)::int AS copies, sum(scopes)::int AS scopes, sum(provenance)::int AS provenance, sum(assertions)::int AS assertions
-      FROM classified
+      FROM (${recordCopiesSql(subjectIs("record.source_subject_id", subject), columns, true)}) classified
      GROUP BY 1, 2, 3, 4`, [kept.map(({ cited }) => cited), kept.map(({ table }) => table)]);
   return rows;
 }
