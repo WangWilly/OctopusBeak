@@ -18,6 +18,7 @@
     RotateCcw,
   } from "@lucide/svelte";
   import { isMacPlatform } from "$lib/desktop/platform.ts";
+  import { estimateView, megabytes, runLedgerReclaim, type LedgerReclaimView } from "$lib/settings/ledger-reclaim.ts";
   import { locale, localeLabels, locales, setLocale, t, type Locale } from "$lib/i18n/i18n.ts";
   import {
     DISPLAY_SCALE_DEFAULT,
@@ -123,7 +124,10 @@
   $: signInGuidance = signInDataGuidance(signInStatus);
   let collectStatus: "idle" | "pending" | "started" | "error" = "idle";
   let manualDeleteStatus: DataActionStatus = "idle";
-  $: dataActionPending = financialDeleteStatus === "pending" || signInClearStatus === "pending" || manualDeleteStatus === "pending";
+  let reclaimView: LedgerReclaimView = { kind: "idle" };
+  let reclaimStopping = false;
+  $: reclaimBusy = reclaimView.kind === "checking" || reclaimView.kind === "running";
+  $: dataActionPending = financialDeleteStatus === "pending" || signInClearStatus === "pending" || manualDeleteStatus === "pending" || reclaimBusy;
   let saveStatus: "idle" | "pending" | "success" | "error" = "idle";
   let saveError = "";
   let saveVersion = 0;
@@ -393,6 +397,29 @@
       financialDeleteStatus = "done";
     } catch {
       financialDeleteStatus = "error";
+    }
+  }
+
+  async function estimateLedgerReclaim() {
+    reclaimView = { kind: "checking" };
+    try {
+      reclaimView = estimateView(await window.octopusBeak.settings.ledgerReclaimEstimate());
+    } catch {
+      reclaimView = { kind: "failed" };
+    }
+  }
+
+  async function reclaimLedgerSpace() {
+    reclaimStopping = false;
+    await runLedgerReclaim(window.octopusBeak.settings, (view) => (reclaimView = view));
+  }
+
+  async function stopLedgerReclaim() {
+    reclaimStopping = true;
+    try {
+      await window.octopusBeak.settings.stopLedgerReclaim();
+    } catch {
+      reclaimStopping = false;
     }
   }
 
@@ -961,6 +988,69 @@
             <div class="settings-error" role="alert">
               <CircleAlert size={16} strokeWidth={2.25} aria-hidden="true" />
               <span>{$t.manualAssets.failed}</span>
+            </div>
+          {/if}
+          <div class="setting-row">
+            <div class="setting-label-group">
+              <span class="setting-label">{$t.settings.reclaimLedgerSpace}</span>
+              <small class="setting-hint">{$t.settings.reclaimLedgerSpaceHint}</small>
+            </div>
+            <div class="onboarding-setting-actions">
+              {#if reclaimView.kind === "done" || reclaimView.kind === "stopped"}
+                <span class="chip status-chip good" role="status">
+                  <Check size={13} strokeWidth={2.5} aria-hidden="true" />
+                  {reclaimView.kind === "done"
+                    ? $t.settings.reclaimLedgerSpaceDone(megabytes(reclaimView.reclaimedBytes))
+                    : $t.settings.reclaimLedgerSpaceStopped(megabytes(reclaimView.reclaimedBytes))}
+                </span>
+              {:else if reclaimView.kind === "nothing"}
+                <span class="chip status-chip good" role="status">
+                  <Check size={13} strokeWidth={2.5} aria-hidden="true" />
+                  {$t.settings.reclaimLedgerSpaceNothing}
+                </span>
+              {:else if reclaimView.kind === "running"}
+                <button
+                  id="stop-ledger-reclaim"
+                  class="button"
+                  type="button"
+                  disabled={reclaimStopping}
+                  onclick={stopLedgerReclaim}
+                >{$t.settings.reclaimLedgerSpaceStop}</button>
+              {:else if reclaimView.kind !== "estimated"}
+                <button
+                  id="reclaim-ledger-space"
+                  class="button"
+                  type="button"
+                  disabled={dataActionPending}
+                  aria-busy={reclaimView.kind === "checking"}
+                  onclick={estimateLedgerReclaim}
+                >{reclaimView.kind === "checking" ? $t.settings.reclaimLedgerSpaceChecking : $t.settings.reclaimLedgerSpace}</button>
+              {/if}
+            </div>
+          </div>
+          {#if reclaimView.kind === "estimated"}
+            <div class="restart-confirm" role="group" aria-labelledby="ledger-reclaim-estimate">
+              <p id="ledger-reclaim-estimate">{$t.settings.reclaimLedgerSpaceEstimate(megabytes(reclaimView.reclaimableBytes))}</p>
+              <div class="onboarding-setting-actions">
+                <button class="button" type="button" onclick={() => (reclaimView = { kind: "idle" })}>{$t.common.cancel}</button>
+                <button id="confirm-reclaim-ledger-space" class="button primary" type="button" disabled={dataActionPending} onclick={reclaimLedgerSpace}>{$t.settings.reclaimLedgerSpaceAction}</button>
+              </div>
+            </div>
+          {:else if reclaimView.kind === "running"}
+            <p id="ledger-reclaim-progress" class="setting-hint" role="status" aria-live="polite">
+              {reclaimView.progress
+                ? $t.settings.reclaimLedgerSpaceProgress(reclaimView.progress.index, reclaimView.progress.count, megabytes(reclaimView.progress.reclaimedBytes))
+                : $t.settings.reclaimLedgerSpaceChecking}
+            </p>
+          {:else if reclaimView.kind === "no-room"}
+            <div class="settings-error" role="alert">
+              <CircleAlert size={16} strokeWidth={2.25} aria-hidden="true" />
+              <span>{$t.settings.reclaimLedgerSpaceNoRoom(megabytes(reclaimView.requiredFreeBytes), megabytes(reclaimView.freeBytes))}</span>
+            </div>
+          {:else if reclaimView.kind === "failed"}
+            <div class="settings-error" role="alert">
+              <CircleAlert size={16} strokeWidth={2.25} aria-hidden="true" />
+              <span>{$t.settings.reclaimLedgerSpaceFailed}</span>
             </div>
           {/if}
           <div class="setting-row">

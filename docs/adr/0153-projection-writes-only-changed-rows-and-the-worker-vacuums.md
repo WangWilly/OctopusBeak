@@ -25,7 +25,7 @@ Each commit refreshed the current projection for every transaction in its captur
 ## Considered options
 
 - **Refresh only the transactions whose canonical state changed.** Rejected. A transaction's Kind reads relations outside its own revision: credit-card statements, loan settlement groups and investment funding. Re-deriving every transaction in a capture is what lets a re-sync pick up a relation that changed elsewhere. Narrowing the set would need every such dependency to name the transactions it affects, and a missed one would leave a Kind stale with no error.
-- **VACUUM FULL.** Not needed. Plain VACUUM keeps the tables at their working size. VACUUM FULL rewrites each table under an exclusive lock that blocks every read; on a 330 MB store it took about 4 seconds.
+- **VACUUM FULL.** Not needed. Plain VACUUM keeps the tables at their working size. VACUUM FULL rewrites each table under an exclusive lock that blocks every read; on a 330 MB store it took about 4 seconds. [ADR 0155](./0155-a-manual-reclaim-rewrites-bloated-ledger-tables.md) adds it as a manual Settings action, one table at a time, to return space lost before this decision.
 - **Vacuum after each sync run, or after a number of commits.** Not needed. A dead-tuple threshold read every minute covers both, and also catches writes that come from neither.
 - **Vacuum in `close()`, before the clean-shutdown marker.** Rejected. It would lengthen every quit, and a crash would skip it. The pass after open also covers a store that last closed uncleanly.
 

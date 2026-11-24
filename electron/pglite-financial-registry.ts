@@ -50,6 +50,7 @@ import type { PGliteCanonicalCommitOptions } from "../src/ledger/pglite/canonica
 import type { CardIdentitySecret } from "../src/lib/shared-identity/card-identity-secret.ts";
 import { cardAccountNamespaces } from "../src/ledger/pglite/card-identity-secret.ts";
 import { planLedgerCompaction } from "../src/ledger/pglite/compaction-plan.ts";
+import { createLedgerReclaimer } from "../src/ledger/pglite/reclaim.ts";
 import {
   readAssetsPage,
   readLiabilitiesPage,
@@ -85,6 +86,8 @@ export type PGliteFinancialRegistryOptions = Readonly<{
    * `scheduler.scheduleStep`, which refuses that call.
    */
   runBackgroundStep?: <T>(step: () => Promise<T>) => Promise<T>;
+  /** Free bytes on the disk that holds the ledger, which a space reclaim checks first (ADR 0155). */
+  freeDiskBytes?: () => Promise<number>;
 }>;
 
 export function createPGliteFinancialRegistry(
@@ -102,6 +105,7 @@ export function createPGliteFinancialRegistry(
   const spending = createPGliteSpendingQuery(store);
   const source = createPGliteCanonicalSourceStore(store);
   const previewVisibilityListeners = new Set<() => void>();
+  const reclaimer = createLedgerReclaimer(store, { runStep: options.runBackgroundStep, freeBytes: options.freeDiskBytes });
   return Object.freeze({
     "financial.overview.current": ([expectedSources = []]) =>
       store.transaction((transaction) => readOverviewPage(transaction, pageScope(expectedSources))),
@@ -167,6 +171,10 @@ export function createPGliteFinancialRegistry(
     // example by record kind or occurrence-key range (see planLedgerCompaction).
     "financial.canonical.compactionPlan": (_args, request) =>
       planLedgerCompaction(store, { runStep: options.runBackgroundStep, signal: request?.signal }),
+    "financial.ledger.reclaimEstimate": (_args, request) => reclaimer.estimate(request?.signal),
+    "financial.ledger.reclaim": (_args, request) => reclaimer.reclaim(request?.signal),
+    "financial.ledger.reclaimProgress": async () => reclaimer.progress(),
+    "financial.ledger.reclaimStop": async () => reclaimer.stop(),
   });
 }
 

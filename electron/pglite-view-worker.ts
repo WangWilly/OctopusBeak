@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, statfs, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parentPort, workerData, type MessagePort } from "node:worker_threads";
@@ -112,6 +112,10 @@ export async function startPGliteViewWorker(
     previewVisibility: () => currentPreviewVisibility(readSettings()),
     expectedSources: () => configuredOverviewSources(readSettings()),
     cardIdentitySecret,
+    freeDiskBytes: async () => {
+      const disk = await statfs(ownedDataDir);
+      return disk.bavail * disk.bsize;
+    },
   });
   const walCheckpoints = startPgliteWalCheckpoints(database, {
     run: (task) => host.scheduler.schedule("background", task),

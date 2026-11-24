@@ -112,6 +112,10 @@ export const SETTINGS_SERVICE_CHANNELS = {
   "settings:answerUsageStatistics": "answerUsageStatistics",
   "settings:deletePreviewData": "deletePreviewData",
   "settings:deleteFinancialData": "deleteFinancialData",
+  "settings:ledgerReclaimEstimate": "ledgerReclaimEstimate",
+  "settings:reclaimLedgerSpace": "reclaimLedgerSpace",
+  "settings:ledgerReclaimProgress": "ledgerReclaimProgress",
+  "settings:stopLedgerReclaim": "stopLedgerReclaim",
   "data:getVersion": "getVersion",
   "data:acknowledgeVersion": "acknowledgeVersion",
 } as const satisfies { readonly [Channel in InvokeChannel]?: ChannelMethod<Channel> };

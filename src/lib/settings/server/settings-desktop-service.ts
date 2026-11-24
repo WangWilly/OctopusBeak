@@ -3,6 +3,12 @@ import { automationFlagEnabled } from "../../automation/statement-selection.ts";
 import type { PGlitePreviewFinancialDataPort } from "../../../ledger/pglite/preview-financial-data.ts";
 import type { deleteAllPreviewData } from "../../preview-sources/delete-preview-data.ts";
 import type { DataVersionStore } from "../../shared-shell/data-version.ts";
+import type {
+  LedgerReclaimEstimate,
+  LedgerReclaimProgress,
+  LedgerReclaimResult,
+} from "../../../ledger/pglite/reclaim.ts";
+import type { LedgerReclaimEstimateDto, LedgerReclaimProgressDto, LedgerReclaimResultDto } from "../../desktop/api.ts";
 import type { CollectionControl, deleteAllFinancialData } from "../data-erasure.ts";
 import {
   systemSettings,
@@ -27,7 +33,30 @@ export type SettingsDesktopServiceDeps = Readonly<{
   financial: Readonly<{ reset(): Promise<void> }>;
   deleteAllPreviewData: typeof deleteAllPreviewData;
   deleteAllFinancialData: typeof deleteAllFinancialData;
+  /** The ledger worker's space reclaim (ADR 0155). */
+  ledgerReclaim: Readonly<{
+    estimate(): Promise<LedgerReclaimEstimate>;
+    reclaim(): Promise<LedgerReclaimResult>;
+    progress(): Promise<LedgerReclaimProgress | null>;
+    stop(): Promise<boolean>;
+  }>;
 }>;
+
+function reclaimResultDto(result: LedgerReclaimResult): LedgerReclaimResultDto {
+  switch (result.status) {
+    case "nothing-to-reclaim":
+    case "already-running":
+      return { status: result.status };
+    case "not-enough-space":
+      return { status: result.status, requiredFreeBytes: result.requiredFreeBytes, freeBytes: result.freeBytes };
+    default:
+      return {
+        status: result.status,
+        tableCount: result.tables.length,
+        reclaimedBytes: Math.max(0, result.bytesBefore - result.bytesAfter),
+      };
+  }
+}
 
 export type SettingsDesktopService = ReturnType<typeof createSettingsDesktopService>;
 
@@ -58,6 +87,26 @@ export function createSettingsDesktopService(deps: SettingsDesktopServiceDeps) {
     },
     deletePreviewData: () => deps.deleteAllPreviewData(deps.preview, dataVersions),
     deleteFinancialData: () => deps.deleteAllFinancialData(deps.collection, deps.financial, dataVersions),
+    async ledgerReclaimEstimate(): Promise<LedgerReclaimEstimateDto> {
+      const estimate = await deps.ledgerReclaim.estimate();
+      return {
+        reclaimableBytes: estimate.reclaimableBytes,
+        tableCount: estimate.tables.length,
+        requiredFreeBytes: estimate.requiredFreeBytes,
+        freeBytes: estimate.freeBytes,
+      };
+    },
+    // Changes no row, so no data version moves and no view reloads.
+    reclaimLedgerSpace: async () => reclaimResultDto(await deps.ledgerReclaim.reclaim()),
+    async ledgerReclaimProgress(): Promise<LedgerReclaimProgressDto | null> {
+      const progress = await deps.ledgerReclaim.progress();
+      return progress && {
+        index: progress.index,
+        count: progress.count,
+        reclaimedBytes: Math.max(0, progress.bytesBefore - progress.bytesAfter),
+      };
+    },
+    stopLedgerReclaim: () => deps.ledgerReclaim.stop(),
     getVersion: () => dataVersions.snapshot(),
     acknowledgeVersion(version: unknown) {
       if (typeof version !== "number" || !Number.isSafeInteger(version) || version < 0) {
