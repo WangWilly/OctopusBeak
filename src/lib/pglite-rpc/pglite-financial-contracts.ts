@@ -60,6 +60,7 @@ import type {
 import type { TdccAdmittedFundAccount } from "../../ledger/canonical/tdcc-investment-admission.ts";
 import type { AccountIdentityContinuity, AccountIdentityContinuityRequest } from "../../ledger/pglite/account-identity-continuity.ts";
 import type { SpendingPageVersion } from "../../ledger/pglite/spending-page.ts";
+import type { CompactionPlanResult } from "../../ledger/pglite/compaction-plan.ts";
 import type {
   PGliteCanonicalLoanRelationResolutionRequest,
   PGliteCanonicalLoanRelationResolutionResult,
@@ -345,6 +346,15 @@ export const PGLITE_FINANCIAL_CONTRACTS = Object.freeze({
   ),
   /** Integration namespaces holding a credit-card account, which a new Card identity secret would split (ADR 0149). */
   "financial.canonical.cardAccountNamespaces": operation<[], readonly string[]>(
+    (args) => args.length === 0,
+    { lane: "background" },
+  ),
+  /**
+   * What a ledger compaction would remove, read without changing anything.
+   * Host-only until the Settings action that shows it: no renderer route and
+   * no workflow access.
+   */
+  "financial.canonical.compactionPlan": operation<[], CompactionPlanResult>(
     (args) => args.length === 0,
     { lane: "background" },
   ),
