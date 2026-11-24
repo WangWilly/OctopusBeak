@@ -50,6 +50,11 @@ test("Settings offers onboarding start when none exists and restart only for com
     const reclaimButton = findButton(renderSettings("completed"), "Reclaim ledger space");
     assert.ok(reclaimButton, "the data section offers Reclaim ledger space");
     assert.match(text(renderSettings("completed")), /No data is deleted\./u);
+    const compactButton = findButton(renderSettings("completed"), "Compact ledger");
+    assert.ok(compactButton, "the data section offers Compact ledger");
+    assert.doesNotMatch(compactButton, /\bdanger\b/u, "compacting changes no answer, so it is not styled as a delete");
+    assert.match(text(renderSettings("completed")), /Every page shows the same data\./u);
+    assert.doesNotMatch(renderSettings("completed"), /ledger-compaction-backup/u, "the backup choice waits for the estimate");
 
     const completedButton = findButton(renderSettings("completed"), "Restart onboarding");
     assert.ok(completedButton, "completed onboarding should expose Restart onboarding");

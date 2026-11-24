@@ -8,7 +8,7 @@ import type { CardIdentitySecret } from "../src/lib/shared-identity/card-identit
 import type { PGliteFinancialExpectedSources } from "../src/lib/pglite-rpc/pglite-financial-contracts.ts";
 import { createPGliteLiveViewDependencies, type LocalDateClock } from "./pglite-financial-live-dependencies.ts";
 import { createPGliteFinancialLiveViews } from "./pglite-financial-live-views.ts";
-import { createPGliteFinancialRegistry, type PGliteLedgerRegistry } from "./pglite-financial-registry.ts";
+import { createPGliteFinancialRegistry, type LedgerBackupPort, type PGliteLedgerRegistry } from "./pglite-financial-registry.ts";
 import { createPGliteWorkScheduler, type PGliteWorkScheduler } from "./pglite-financial-rpc-server.ts";
 
 /** What the ledger reads from the person's settings and clock. */
@@ -20,6 +20,7 @@ export type PGliteLedgerHostReaders = Readonly<{
   /** Free bytes on the disk that holds the ledger. */
   freeDiskBytes?: () => Promise<number>;
   ledgerFolder?: Readonly<{ bytes(): Promise<number>; sync(): Promise<void> }>;
+  ledgerBackup?: LedgerBackupPort;
 }>;
 
 /** The parts of the ledger that financial calls and live views share (ADR 0120). */
@@ -36,7 +37,7 @@ export type PGliteLedgerHost = Readonly<{
 export function createPGliteLedgerHost(
   db: PGliteWithLive,
   store: PGliteStore,
-  { clock, previewVisibility, expectedSources, cardIdentitySecret, freeDiskBytes, ledgerFolder }: PGliteLedgerHostReaders,
+  { clock, previewVisibility, expectedSources, cardIdentitySecret, freeDiskBytes, ledgerFolder, ledgerBackup }: PGliteLedgerHostReaders,
 ): PGliteLedgerHost {
   // One queue lets a Pairing click start before view refreshes that are still waiting.
   const scheduler = createPGliteWorkScheduler();
@@ -46,6 +47,7 @@ export function createPGliteLedgerHost(
     cardIdentitySecret,
     freeDiskBytes,
     ledgerFolder,
+    ledgerBackup,
     runBackgroundStep: (step) => scheduler.scheduleStep(step),
   });
   const views = createPGliteFinancialLiveViews(

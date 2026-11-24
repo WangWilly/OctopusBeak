@@ -116,6 +116,10 @@ export const SETTINGS_SERVICE_CHANNELS = {
   "settings:reclaimLedgerSpace": "reclaimLedgerSpace",
   "settings:ledgerReclaimStatus": "ledgerReclaimStatus",
   "settings:stopLedgerReclaim": "stopLedgerReclaim",
+  "settings:ledgerCompactionEstimate": "ledgerCompactionEstimate",
+  "settings:compactLedger": "compactLedger",
+  "settings:ledgerCompactionStatus": "ledgerCompactionStatus",
+  "settings:stopLedgerCompaction": "stopLedgerCompaction",
   "data:getVersion": "getVersion",
   "data:acknowledgeVersion": "acknowledgeVersion",
 } as const satisfies { readonly [Channel in InvokeChannel]?: ChannelMethod<Channel> };

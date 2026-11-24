@@ -5,6 +5,10 @@
  * queued work run between chunks, and finds nothing the second time.
  */
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { PGlite } from "@electric-sql/pglite";
 import { createPGliteWorkScheduler } from "../../../electron/pglite-financial-rpc-server.ts";
@@ -20,6 +24,7 @@ import {
 import {
   createLedgerCompactor,
   domainChunks,
+  FAILURE_RECORD,
   planLedgerCompactionJob,
   runLedgerCompaction,
   SPACE_MARKER,
@@ -30,6 +35,7 @@ import { MANIFEST, PHASE_A, phaseCMarkedSql, type PhaseATable } from "./compacti
 import { legacyStore, snapshot } from "./compaction-fixtures.ts";
 import { canonicalState } from "./canonical-state-fixture.ts";
 import { PGliteStore } from "./transaction.ts";
+import { backUpLedger } from "./data-dir-backup.ts";
 import {
   PGLITE_FINANCIAL_CONTRACTS,
   RENDERER_FINANCIAL_OPERATIONS,
@@ -332,37 +338,215 @@ test("the compactor runs one compaction at a time, and reports, stops and rememb
     let steps = 0;
     const compactor = createLedgerCompactor(store, {
       runStep: async (step) => {
-        if ((steps += 1) === 2) await held;
+        // Step 1 clears a recorded failure and step 2 plans; step 3 is the first chunk.
+        if ((steps += 1) === 3) await held;
         return step();
       },
     });
-    assert.deepEqual(compactor.status(), { running: false, last: null });
+    assert.deepEqual(await compactor.status(), { running: false, last: null });
     assert.equal(compactor.stop(), false, "nothing to stop");
     const running = compactor.compact();
-    const progress = () => {
-      const status = compactor.status();
+    const progress = async () => {
+      const status = await compactor.status();
       return status.running ? status.progress : null;
     };
-    while (progress() === null) await new Promise((resolve) => setTimeout(resolve, 5));
-    const first = progress()!;
+    while (await progress() === null) await new Promise((resolve) => setTimeout(resolve, 5));
+    const first = (await progress())!;
     assert.deepEqual(first.phase === "compacting" && [first.index, first.removedRows], [1, 0]);
     assert.deepEqual(await compactor.compact(), { status: "already-running" });
     assert.equal(compactor.stop(), true);
     release();
     const result = await running;
     assert.equal(result.status, "stopped", JSON.stringify(result));
-    assert.deepEqual(compactor.status(), { running: false, last: result }, "how it ended stays for a page opened later");
+    assert.deepEqual(await compactor.status(), { running: false, last: result }, "how it ended stays for a page opened later");
   } finally {
     await store.close();
   }
 });
 
+test("a stop while the space returns reports the run stopped, not compacted", async () => {
+  const { store } = await legacyStore();
+  try {
+    const controller = new AbortController();
+    const result = await runLedgerCompaction(store, {
+      signal: controller.signal,
+      reclaim: REWRITE_ALL,
+      onProgress: (progress) => { if (progress.phase === "reclaiming") controller.abort(); },
+    });
+    assert.equal(result.status, "stopped", JSON.stringify(result));
+    assert.ok(result.status === "stopped" && sum(result.removed) > 0, "the chunks committed before the stop");
+    assert.deepEqual(await markers(store), COMPACTION_MARKERS, "the space marker waits for a reclaim that ends");
+    const resumed = finished(await runLedgerCompaction(store, { reclaim: REWRITE_ALL }));
+    assert.deepEqual(resumed.chunks, { done: 0, count: 0 }, "the next run only returns the space");
+  } finally {
+    await store.close();
+  }
+});
+
+test("a chunk that fails its own verification fails, even when a stop came meanwhile", async () => {
+  const { store } = await legacyStore();
+  try {
+    const controller = new AbortController();
+    const result = await runLedgerCompaction(store, {
+      signal: controller.signal,
+      selections: { canonical_credit_card_transaction_lifecycle: LATEST_LIFECYCLE },
+      // Stop is pressed while the lifecycle chunk runs, after its own last abort check.
+      runStep: async (step) => {
+        const value = await step();
+        controller.abort();
+        return value;
+      },
+    });
+    assert.equal(result.status, "stopped", "an abort before the chunk throws is a stop");
+    const late = new AbortController();
+    const failed = await runLedgerCompaction(store, {
+      signal: late.signal,
+      selections: { canonical_credit_card_transaction_lifecycle: LATEST_LIFECYCLE },
+      runStep: async (step) => {
+        try {
+          return await step();
+        } catch (error) {
+          late.abort();
+          throw error;
+        }
+      },
+    });
+    assert.equal(failed.status, "failed", JSON.stringify(failed));
+    assert.equal(failed.status === "failed" && failed.failure.reason, "reader-changed");
+  } finally {
+    await store.close();
+  }
+});
+
+/** A store in a folder of its own, as the worker's is, with its folder. */
+async function legacyStoreInFolder(): Promise<Readonly<{ store: PGliteStore; dataDir: string; root: string }>> {
+  const root = await mkdtemp(join(tmpdir(), "octopus-beak-compaction-job-check-"));
+  const dataDir = join(root, "ledger");
+  const { store } = await legacyStore(await PGlite.create(dataDir));
+  return { store, dataDir, root };
+}
+
+test("a backup asked for is a consistent copy, taken as one step before the first chunk", async () => {
+  const { store, dataDir, root } = await legacyStoreInFolder();
+  try {
+    const before = await rowCounts(store);
+    const order: string[] = [];
+    let backupPath: string | undefined;
+    const compactor = createLedgerCompactor(store, {
+      runStep: (step) => step(),
+      reclaim: REWRITE_ALL,
+      backup: async () => {
+        order.push("backup");
+        backupPath = await backUpLedger(store, dataDir, { freeBytes: async () => Number.MAX_SAFE_INTEGER, exists: existsSync });
+      },
+    });
+    const result = await compactor.compact(undefined, { backup: true });
+    assert.equal(result.status, "compacted", JSON.stringify(result));
+    order.push("done");
+    assert.deepEqual(order, ["backup", "done"]);
+    assert.ok(backupPath?.startsWith(`${dataDir}.before-compaction-`), "the copy sits beside the folder");
+    assert.deepEqual((await readdir(root)).sort(), ["ledger", backupPath!.slice(root.length + 1)].sort());
+
+    const copy = new PGliteStore(await PGlite.create(backupPath!));
+    try {
+      assert.deepEqual(await rowCounts(copy), before, "the copy holds every row as it was before the first chunk");
+      assert.deepEqual(await markers(copy), []);
+    } finally {
+      await copy.close();
+    }
+    assert.notDeepEqual(await rowCounts(store), before, "the ledger itself was compacted");
+  } finally {
+    await store.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("the backup step comes after the plan and before every chunk, and its failure stops the run there", async () => {
+  const { store } = await legacyStore();
+  try {
+    const before = await rowCounts(store);
+    const seen: string[] = [];
+    const result = await runLedgerCompaction(store, {
+      onProgress: (progress) => seen.push(progress.phase),
+      backup: async () => {
+        assert.deepEqual(await rowCounts(store), before, "no chunk ran before the backup");
+        throw new Error("The disk is full.");
+      },
+    });
+    assert.equal(result.status, "failed", JSON.stringify(result));
+    assert.deepEqual(result.status === "failed" && result.failure, { reason: "backup", backup: "copy-failed" });
+    assert.deepEqual(seen, ["backing-up"]);
+    assert.deepEqual(await rowCounts(store), before, "nothing was compacted");
+
+    const compactor = createLedgerCompactor(store);
+    const unavailable = await compactor.compact(undefined, { backup: true });
+    assert.deepEqual(unavailable.status === "failed" && unavailable.failure, { reason: "backup", backup: "unavailable" },
+      "a worker without a folder of its own cannot back up, so it does not compact either");
+    assert.deepEqual(await rowCounts(store), before);
+  } finally {
+    await store.close();
+  }
+});
+
+test("a failed run is recorded in the ledger and shown after a restart, until the owner starts again", async () => {
+  const root = await mkdtemp(join(tmpdir(), "octopus-beak-compaction-job-check-"));
+  const dataDir = join(root, "ledger");
+  try {
+    const { store } = await legacyStore(await PGlite.create(dataDir));
+    let steps = 0;
+    const failing = createLedgerCompactor(store, {
+      // The app's worker fails the second chunk's step.
+      runStep: (step) => (steps += 1) === 4 ? Promise.reject(new Error("The worker stopped.")) : step(),
+    });
+    const failed = await failing.compact();
+    assert.equal(failed.status, "failed", JSON.stringify(failed));
+    await store.close();
+
+    // A restart: a new worker opens the same folder, with a compactor that has run nothing.
+    const reopened = new PGliteStore(await PGlite.create(dataDir));
+    try {
+      const compactor = createLedgerCompactor(reopened, { reclaim: REWRITE_ALL });
+      const status = await compactor.status();
+      assert.equal(status.running, false);
+      const last = !status.running ? status.last : null;
+      assert.equal(last?.status, "failed-earlier");
+      assert.deepEqual(last?.status === "failed-earlier" && [last.removedRows > 0, last.chunks.done, last.backup], [true, 1, false]);
+      const { rows: [row] } = await reopened.query<{ schema_signature: string }>(
+        `SELECT schema_signature FROM ${MARKERS} WHERE migration_key = $1`, [FAILURE_RECORD]);
+      assert.doesNotMatch(row!.schema_signature, /canonical_|source_|worker stopped/u, "the record keeps counts, no table names or messages");
+      // Clear, plan, two chunks, then the record of the failure; nothing retried it.
+      assert.equal(steps, 5);
+
+      finished(await compactor.compact());
+      assert.equal((await reopened.query(`SELECT 1 FROM ${MARKERS} WHERE migration_key = $1`, [FAILURE_RECORD])).rows.length, 0,
+        "starting again cleared it");
+      const after = await compactor.status();
+      assert.equal(!after.running && after.last?.status, "compacted");
+    } finally {
+      await reopened.close();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("the compaction operations are host-only, and the compaction queues its own steps", () => {
-  const operations = ["financial.canonical.compact", "financial.canonical.compactionStatus", "financial.canonical.compactionStop"] as const;
+  const operations = [
+    "financial.canonical.compact",
+    "financial.canonical.compactionStatus",
+    "financial.canonical.compactionStop",
+    "financial.canonical.compactionBackupRoom",
+    "financial.canonical.compactionPlan",
+  ] as const;
   for (const operation of operations) {
     assert.equal((RENDERER_FINANCIAL_OPERATIONS as readonly string[]).includes(operation), false, `${operation} has no renderer route`);
     assert.equal(WORKFLOW_FINANCIAL_OPERATIONS.has(operation), false, `${operation} is closed to workflows`);
   }
   assert.equal(PGLITE_FINANCIAL_CONTRACTS["financial.canonical.compact"].lane, "background-steps");
+  const compact = PGLITE_FINANCIAL_CONTRACTS["financial.canonical.compact"].accepts;
+  assert.equal(compact([]), true);
+  assert.equal(compact([{ backup: true }]), true);
+  assert.equal(compact([{ backup: "yes" }]), false);
+  assert.equal(compact([{ backup: true, path: "/elsewhere" }]), false, "the renderer cannot name where a backup goes");
   assert.equal("financial.canonical.compactLedger" in PGLITE_FINANCIAL_CONTRACTS, false, "the one-transaction compaction is not an operation");
 });

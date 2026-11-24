@@ -52,6 +52,7 @@ import { cardAccountNamespaces } from "../src/ledger/pglite/card-identity-secret
 import { planLedgerCompaction } from "../src/ledger/pglite/compaction-plan.ts";
 import { createLedgerReclaimer } from "../src/ledger/pglite/reclaim.ts";
 import { createLedgerCompactor } from "../src/ledger/pglite/compaction-job.ts";
+import type { LedgerBackupRoom } from "../src/ledger/pglite/data-dir-backup.ts";
 import {
   readAssetsPage,
   readLiabilitiesPage,
@@ -91,6 +92,14 @@ export type PGliteFinancialRegistryOptions = Readonly<{
   freeDiskBytes?: () => Promise<number>;
   /** The ledger's folder: its size, and a flush of its files to the disk, which a reclaim uses. */
   ledgerFolder?: Readonly<{ bytes(): Promise<number>; sync(): Promise<void> }>;
+  /** The opt-in backup before a compaction (ADR 0154); absent when the ledger has no folder of its own. */
+  ledgerBackup?: LedgerBackupPort;
+}>;
+
+/** A compaction's backup: how much room it needs and has, and the copy, which runs as one background step. */
+export type LedgerBackupPort = Readonly<{
+  room(): Promise<LedgerBackupRoom>;
+  copy(): Promise<unknown>;
 }>;
 
 export function createPGliteFinancialRegistry(
@@ -117,6 +126,7 @@ export function createPGliteFinancialRegistry(
   const compactor = createLedgerCompactor(store, {
     runStep: options.runBackgroundStep,
     reclaim: { freeBytes: options.freeDiskBytes, folderBytes: options.ledgerFolder?.bytes, syncToDisk: options.ledgerFolder?.sync },
+    backup: options.ledgerBackup?.copy,
   });
   return Object.freeze({
     "financial.overview.current": ([expectedSources = []]) =>
@@ -178,17 +188,17 @@ export function createPGliteFinancialRegistry(
     "financial.canonical.resetRequired": () =>
       canonicalResetRequiredNamespaces(store, options.cardIdentitySecret?.()),
     "financial.canonical.cardAccountNamespaces": () => cardAccountNamespaces(store),
-    // Not yet for the UI or the live worker: one subject step can hold the
-    // ledger for seconds to tens of seconds until it is split further, for
-    // example by record kind or occurrence-key range (see planLedgerCompaction).
+    // Settings' estimate before a compaction. One large subject's step can
+    // hold the ledger for seconds (see planLedgerCompaction).
     "financial.canonical.compactionPlan": (_args, request) =>
       planLedgerCompaction(store, { runStep: options.runBackgroundStep, signal: request?.signal }),
     "financial.ledger.reclaimEstimate": (_args, request) => reclaimer.estimate(request?.signal),
     "financial.ledger.reclaim": (_args, request) => reclaimer.reclaim(request?.signal),
     "financial.ledger.reclaimStatus": async () => reclaimer.status(),
     "financial.ledger.reclaimStop": async () => reclaimer.stop(),
-    "financial.canonical.compact": (_args, request) => compactor.compact(request?.signal),
-    "financial.canonical.compactionStatus": async () => compactor.status(),
+    "financial.canonical.compact": ([compaction], request) => compactor.compact(request?.signal, compaction),
+    "financial.canonical.compactionStatus": () => compactor.status(),
+    "financial.canonical.compactionBackupRoom": async () => (options.ledgerBackup ? options.ledgerBackup.room() : null),
     "financial.canonical.compactionStop": async () => compactor.stop(),
   });
 }

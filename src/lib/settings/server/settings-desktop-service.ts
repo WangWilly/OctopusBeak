@@ -8,7 +8,24 @@ import type {
   LedgerReclaimResult,
   LedgerReclaimStatus,
 } from "../../../ledger/pglite/reclaim.ts";
-import type { LedgerReclaimEstimateDto, LedgerReclaimResultDto, LedgerReclaimStatusDto } from "../../desktop/api.ts";
+import type { CompactionPlanResult } from "../../../ledger/pglite/compaction-plan.ts";
+import type {
+  LedgerCompactionJobResult,
+  LedgerCompactionProgress,
+  LedgerCompactionRecordedFailure,
+  LedgerCompactionRequest,
+  LedgerCompactionStatus,
+} from "../../../ledger/pglite/compaction-job.ts";
+import type { LedgerBackupRoom } from "../../../ledger/pglite/data-dir-backup.ts";
+import type {
+  LedgerCompactionEstimateDto,
+  LedgerCompactionProgressDto,
+  LedgerCompactionResultDto,
+  LedgerCompactionStatusDto,
+  LedgerReclaimEstimateDto,
+  LedgerReclaimResultDto,
+  LedgerReclaimStatusDto,
+} from "../../desktop/api.ts";
 import type { CollectionControl, deleteAllFinancialData } from "../data-erasure.ts";
 import {
   systemSettings,
@@ -40,7 +57,49 @@ export type SettingsDesktopServiceDeps = Readonly<{
     status(): Promise<LedgerReclaimStatus>;
     stop(): Promise<boolean>;
   }>;
+  /** The ledger worker's compaction (ADR 0154) and its dry run. */
+  ledgerCompaction: Readonly<{
+    plan(): Promise<CompactionPlanResult>;
+    backupRoom(): Promise<LedgerBackupRoom | null>;
+    compact(request: LedgerCompactionRequest): Promise<LedgerCompactionJobResult>;
+    status(): Promise<LedgerCompactionStatus>;
+    stop(): Promise<boolean>;
+  }>;
 }>;
+
+const sum = (values: readonly number[]) => values.reduce((total, value) => total + value, 0);
+
+function compactionResultDto(result: LedgerCompactionJobResult | LedgerCompactionRecordedFailure): LedgerCompactionResultDto {
+  if (result.status === "already-compacted" || result.status === "already-running") return { status: result.status };
+  if (result.status === "failed-earlier") return { status: "failed", removedRows: result.removedRows, backup: result.backup };
+  const removedRows = sum(Object.values(result.removed));
+  switch (result.status) {
+    case "stopped": return { status: "stopped", removedRows };
+    case "failed": return { status: "failed", removedRows, backup: result.failure.reason === "backup" };
+    case "compacted": {
+      const reclaim = reclaimResultDto(result.reclaim);
+      // A reclaim that found too little room or failed left the space for Reclaim ledger space.
+      const reclaimedBytes = reclaim.status === "nothing-to-reclaim" ? 0 : reclaim.status === "reclaimed" ? reclaim.reclaimedBytes : null;
+      return { status: "compacted", removedRows, reclaimedBytes };
+    }
+  }
+}
+
+function compactionProgressDto(progress: LedgerCompactionProgress): LedgerCompactionProgressDto {
+  switch (progress.phase) {
+    case "backing-up": return { phase: "backing-up" };
+    case "compacting": return { phase: "compacting", index: progress.index, count: progress.count, removedRows: progress.removedRows };
+    case "reclaiming":
+      return { phase: "reclaiming", index: progress.reclaim.index, count: progress.reclaim.count, removedRows: progress.removedRows };
+  }
+}
+
+function compactionRequest(input: unknown): LedgerCompactionRequest {
+  if (typeof input !== "object" || input === null || typeof (input as { backup?: unknown }).backup !== "boolean") {
+    throw new TypeError("A compaction request must say whether to back up first.");
+  }
+  return { backup: (input as { backup: boolean }).backup };
+}
 
 function reclaimResultDto(result: LedgerReclaimResult): LedgerReclaimResultDto {
   switch (result.status) {
@@ -110,6 +169,25 @@ export function createSettingsDesktopService(deps: SettingsDesktopServiceDeps) {
       return { running: false, last: status.last && reclaimResultDto(status.last) };
     },
     stopLedgerReclaim: () => deps.ledgerReclaim.stop(),
+    async ledgerCompactionEstimate(): Promise<LedgerCompactionEstimateDto> {
+      const [plan, room] = await Promise.all([deps.ledgerCompaction.plan(), deps.ledgerCompaction.backupRoom()]);
+      if (plan.status !== "planned") return { status: "cannot-compact" };
+      return {
+        status: "planned",
+        removableRows: sum([...plan.phaseA, ...plan.phaseB.tables, plan.phaseC].map((table) => table.removable)),
+        removableBytes: plan.estimatedBytes,
+        storeBytes: room?.storeBytes ?? null,
+        freeBytes: room?.freeBytes ?? null,
+      };
+    },
+    // Removes only rows no reader answers differently without, so no data version moves and no view reloads.
+    compactLedger: async (request: unknown) => compactionResultDto(await deps.ledgerCompaction.compact(compactionRequest(request))),
+    async ledgerCompactionStatus(): Promise<LedgerCompactionStatusDto> {
+      const status = await deps.ledgerCompaction.status();
+      if (status.running) return { running: true, progress: status.progress && compactionProgressDto(status.progress) };
+      return { running: false, last: status.last && compactionResultDto(status.last) };
+    },
+    stopLedgerCompaction: () => deps.ledgerCompaction.stop(),
     getVersion: () => dataVersions.snapshot(),
     acknowledgeVersion(version: unknown) {
       if (typeof version !== "number" || !Number.isSafeInteger(version) || version < 0) {

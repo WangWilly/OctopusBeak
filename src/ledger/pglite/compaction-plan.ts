@@ -298,12 +298,13 @@ type Subject = string | null;
 /**
  * Plan the compaction of `store` without changing it.
  *
- * Not ready for the live worker: one source subject is one step, and on a
- * real store one large subject dominates, so a step can hold the ledger for
- * seconds, and for tens of seconds on a store of several GB. Do not wire it
- * to the UI or call it on the live worker until a subject step is split
- * further, for example by record kind or occurrence-key range. The npm
- * script plans on a copy and is unaffected.
+ * One source subject is one step, and on a real store one large subject
+ * dominates, so a step can hold the ledger for seconds, and for tens of
+ * seconds on a store of several GB. The live worker runs it only when the
+ * owner asks Settings for a compaction's estimate (ADR 0154), and the copy
+ * there says it may take a while. Splitting a subject's step further, for
+ * example by record kind or occurrence-key range, would shorten that pause.
+ * The npm script plans on a copy and is unaffected.
  */
 export async function planLedgerCompaction(store: PGliteStore, options: CompactionPlanOptions = {}): Promise<CompactionPlanResult> {
   const runStep = options.runStep ?? (<T>(step: () => Promise<T>) => step());

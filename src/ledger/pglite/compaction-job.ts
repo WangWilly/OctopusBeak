@@ -15,6 +15,7 @@ import {
   type LedgerCompactionOptions,
 } from "./compaction.ts";
 import { MANIFEST, PHASE_A, type PhaseATable } from "./compaction-plan.ts";
+import { LedgerBackupError } from "./data-dir-backup.ts";
 import { reclaimLedgerSpace, type LedgerReclaimOptions, type LedgerReclaimProgress, type LedgerReclaimResult } from "./reclaim.ts";
 import type { PGliteStore } from "./transaction.ts";
 
@@ -30,13 +31,17 @@ import type { PGliteStore } from "./transaction.ts";
  *    kind) that share a capture. A capture's manifest is written once, by the
  *    chunk that removes its copies, so its other copies must be removed in
  *    the same chunk.
+ * 0. When the owner asked for one, a backup of the data folder, as one
+ *    step before the first chunk (`backUpLedger` in `data-dir-backup.ts`).
  * 3. The markers, once every chunk is done.
  * 4. `reclaimLedgerSpace` on the compacted tables, then the space marker.
  *
  * Progress is the data itself: a committed chunk's selection finds nothing
  * the next time, so a stop, crash or quit resumes by planning again and
  * running every chunk, and the done ones commit nothing. A chunk that fails
- * rolls back alone and ends the run as `failed`; nothing retries it.
+ * rolls back alone and ends the run as `failed`; nothing retries it. The
+ * compactor records a failed run in the ledger, so Settings still shows it
+ * after a restart, and clears the record when the owner starts again.
  */
 
 /** Recorded once the compacted tables are rewritten, so a run that stops before then rewrites them next time. */
@@ -46,6 +51,7 @@ export const SPACE_MARKER = "ledger-compaction-space-v1";
 const RECLAIMED_TABLES = [...COMPACTED_TABLES, MANIFEST].map((table) => `public.${table}`);
 
 export type LedgerCompactionProgress =
+  | Readonly<{ phase: "backing-up" }>
   | Readonly<{
     phase: "compacting";
     /** 1-based: chunk `index` of `count` is running. */
@@ -67,7 +73,11 @@ type Tally = Readonly<{
   durationMs: number;
 }>;
 
-export type LedgerCompactionJobFailure = LedgerCompactionFailure | Readonly<{ reason: "error"; message: string }>;
+export type LedgerCompactionJobFailure =
+  | LedgerCompactionFailure
+  | Readonly<{ reason: "error"; message: string }>
+  /** The backup was not made, so no chunk ran. */
+  | Readonly<{ reason: "backup"; backup: LedgerBackupError["reason"] }>;
 
 export type LedgerCompactionJobResult =
   /** Every marker was already written; nothing was read or removed. */
@@ -75,20 +85,36 @@ export type LedgerCompactionJobResult =
   | Readonly<{ status: "already-running" }>
   /** Every chunk committed and the markers are written. `reclaim` says whether the space returned too. */
   | Readonly<{ status: "compacted"; reclaim: LedgerReclaimResult } & Tally>
-  /** The signal aborted; the running chunk, if any, rolled back. */
+  /** The signal aborted; the running chunk, if any, rolled back. A stop during the reclaim leaves every chunk committed but the space not yet returned. */
   | Readonly<{ status: "stopped" } & Tally>
   /** `chunk` rolled back (null: the plan or the markers failed); the chunks before it stay committed. */
   | Readonly<{ status: "failed"; chunk: CompactionChunk | null; failure: LedgerCompactionJobFailure } & Tally>;
 
+/** A failed run recorded in the ledger, as read back after a restart. */
+export type LedgerCompactionRecordedFailure = Readonly<{
+  status: "failed-earlier";
+  removedRows: number;
+  chunks: Readonly<{ done: number; count: number }>;
+  /** The backup failed, so no chunk ran. */
+  backup: boolean;
+  failedAt: string;
+}>;
+
 export type LedgerCompactionStatus =
   | Readonly<{ running: true; progress: LedgerCompactionProgress | null }>
-  | Readonly<{ running: false; last: LedgerCompactionJobResult | null }>;
+  /** `last` is this process's last run, or else the failed run the ledger recorded. */
+  | Readonly<{ running: false; last: LedgerCompactionJobResult | LedgerCompactionRecordedFailure | null }>;
+
+/** What the owner chose when starting a compaction. */
+export type LedgerCompactionRequest = Readonly<{ backup: boolean }>;
 
 export type LedgerCompactionJobOptions = Readonly<{
   /** Queues one step on the worker's background lane; by default a step runs at once. */
   runStep?: <T>(step: () => Promise<T>) => Promise<T>;
   signal?: AbortSignal;
   onProgress?: (progress: LedgerCompactionProgress) => void;
+  /** Takes a backup as one step before the first chunk; a backup that throws ends the run as `failed`. */
+  backup?: () => Promise<unknown>;
   /** Passed to the reclaim, which rewrites the compacted tables. */
   reclaim?: Pick<LedgerReclaimOptions, "freeBytes" | "folderBytes" | "syncToDisk" | "minBytes" | "minShare">;
   /** Replaces a chunk's selections; only checks use it. */
@@ -238,6 +264,52 @@ async function writeMarkers(store: PGliteStore, markers: readonly string[]): Pro
 const failureOf = (error: unknown): LedgerCompactionJobFailure =>
   error instanceof LedgerCompactionError ? error.failure : { reason: "error", message: error instanceof Error ? error.message : String(error) };
 
+/** The key of the one row that records the last failed run, in the markers' table. Not a marker: no run skips anything for it. */
+export const FAILURE_RECORD = "ledger-compaction-last-failure";
+
+type RecordedFailureJson = Readonly<{ removedRows: number; chunks: Readonly<{ done: number; count: number }>; backup: boolean }>;
+
+async function recordFailure(store: PGliteStore, failed: Extract<LedgerCompactionJobResult, { status: "failed" }>): Promise<void> {
+  const recorded: RecordedFailureJson = {
+    removedRows: Object.values(failed.removed).reduce((sum, rows) => sum + rows, 0),
+    chunks: failed.chunks,
+    backup: failed.failure.reason === "backup",
+  };
+  // The signature column holds the record; only this module reads it.
+  await store.query(
+    `INSERT INTO pglite_operational_migrations(migration_key, schema_signature) VALUES ($1, $2)
+     ON CONFLICT (migration_key) DO UPDATE SET schema_signature = EXCLUDED.schema_signature, applied_at = CURRENT_TIMESTAMP`,
+    [FAILURE_RECORD, JSON.stringify(recorded)],
+  );
+}
+
+async function clearRecordedFailure(store: PGliteStore): Promise<void> {
+  await store.query("DELETE FROM pglite_operational_migrations WHERE migration_key = $1", [FAILURE_RECORD]);
+}
+
+/** The failed run the ledger recorded, or null when the last run did not fail or none ran. */
+export async function readRecordedFailure(store: PGliteStore): Promise<LedgerCompactionRecordedFailure | null> {
+  const { rows: [row] } = await store.query<{ schema_signature: string; applied_at: Date | string }>(
+    "SELECT schema_signature, applied_at FROM pglite_operational_migrations WHERE migration_key = $1",
+    [FAILURE_RECORD],
+  );
+  if (!row) return null;
+  let recorded: Partial<RecordedFailureJson> = {};
+  try {
+    recorded = JSON.parse(row.schema_signature) as Partial<RecordedFailureJson>;
+  } catch {
+    // An unreadable record still says a run failed.
+  }
+  const count = (value: unknown) => (typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0);
+  return {
+    status: "failed-earlier",
+    removedRows: count(recorded.removedRows),
+    chunks: { done: count(recorded.chunks?.done), count: count(recorded.chunks?.count) },
+    backup: recorded.backup === true,
+    failedAt: new Date(row.applied_at).toISOString(),
+  };
+}
+
 /**
  * Compact `store` chunk by chunk, then return the space. Never rejects: a
  * stop ends the run as `stopped`, and a chunk, plan or marker that fails
@@ -260,8 +332,11 @@ export async function runLedgerCompaction(store: PGliteStore, options: LedgerCom
     longestChunkMs: Math.round(longestChunkMs),
     durationMs: Math.round(performance.now() - started),
   });
+  // A chunk that rolled back on its own verification failed, even when a stop came meanwhile.
   const ended = (error: unknown, chunk: CompactionChunk | null): LedgerCompactionJobResult =>
-    options.signal?.aborted ? { status: "stopped", ...tally() } : { status: "failed", chunk, failure: failureOf(error), ...tally() };
+    options.signal?.aborted && !(error instanceof LedgerCompactionError)
+      ? { status: "stopped", ...tally() }
+      : { status: "failed", chunk, failure: failureOf(error), ...tally() };
 
   let plan: LedgerCompactionJobPlan;
   try {
@@ -272,6 +347,17 @@ export async function runLedgerCompaction(store: PGliteStore, options: LedgerCom
   }
   const compacted = plan.markers.has(DOMAIN_COUNTS_MARKER) && plan.markers.has(RECORDS_MARKER);
   if (compacted && plan.markers.has(SPACE_MARKER)) return { status: "already-compacted" };
+
+  if (options.backup) {
+    if (options.signal?.aborted) return { status: "stopped", ...tally() };
+    options.onProgress?.({ phase: "backing-up" });
+    try {
+      await runStep(options.backup);
+    } catch (error) {
+      const backup = error instanceof LedgerBackupError ? error.reason : "copy-failed";
+      return { status: "failed", chunk: null, failure: { reason: "backup", backup }, ...tally() };
+    }
+  }
 
   count = plan.chunks.length;
   for (const [position, chunk] of plan.chunks.entries()) {
@@ -313,13 +399,16 @@ export async function runLedgerCompaction(store: PGliteStore, options: LedgerCom
       return ended(error, null);
     }
   }
+  // Every chunk committed, but the person pressed Stop before the space returned; the next run reclaims it.
+  if (reclaim.status === "stopped") return { status: "stopped", ...tally() };
   return { status: "compacted", reclaim, ...tally() };
 }
 
 export type LedgerCompactor = Readonly<{
   /** Runs a compaction; refuses with `already-running` while another runs. */
-  compact(signal?: AbortSignal): Promise<LedgerCompactionJobResult>;
-  status(): LedgerCompactionStatus;
+  compact(signal?: AbortSignal, request?: LedgerCompactionRequest): Promise<LedgerCompactionJobResult>;
+  /** Reads the ledger only when this process has run none: for the failure a run before a restart recorded. */
+  status(): Promise<LedgerCompactionStatus>;
   /** Stops the running compaction: its running chunk rolls back, and no other starts. False when none runs. */
   stop(): boolean;
 }>;
@@ -327,30 +416,43 @@ export type LedgerCompactor = Readonly<{
 /** The worker's one compaction at a time, whose status and stop other requests reach, as `createLedgerReclaimer`. */
 export function createLedgerCompactor(
   store: PGliteStore,
-  options: Pick<LedgerCompactionJobOptions, "runStep" | "reclaim"> = {},
+  options: Pick<LedgerCompactionJobOptions, "runStep" | "reclaim" | "backup"> = {},
 ): LedgerCompactor {
+  const runStep = options.runStep ?? runAtOnce;
+  const unavailable = async () => { throw new LedgerBackupError("unavailable", "This ledger has no folder to back up."); };
   let running: { readonly controller: AbortController; progress: LedgerCompactionProgress | null } | null = null;
   let last: LedgerCompactionJobResult | null = null;
   return Object.freeze({
-    async compact(signal?: AbortSignal) {
+    async compact(signal?: AbortSignal, request: LedgerCompactionRequest = { backup: false }) {
       if (running) return { status: "already-running" } as const;
       const run = { controller: new AbortController(), progress: null as LedgerCompactionProgress | null };
       const stopOnAbort = () => run.controller.abort();
       signal?.addEventListener("abort", stopOnAbort, { once: true });
       running = run;
       try {
-        last = await runLedgerCompaction(store, {
-          ...options,
+        // Starting again is the owner's answer to a recorded failure. A store
+        // that cannot delete it fails the run's plan too, which records it again.
+        await runStep(() => clearRecordedFailure(store)).catch(() => undefined);
+        const result = await runLedgerCompaction(store, {
+          runStep: options.runStep,
+          reclaim: options.reclaim,
+          backup: request.backup ? options.backup ?? unavailable : undefined,
           signal: run.controller.signal,
           onProgress: (progress) => { run.progress = progress; },
         });
-        return last;
+        last = result;
+        // Kept in memory regardless, so this process still shows it if the write fails.
+        if (result.status === "failed") await runStep(() => recordFailure(store, result)).catch(() => undefined);
+        return result;
       } finally {
         signal?.removeEventListener("abort", stopOnAbort);
         running = null;
       }
     },
-    status: (): LedgerCompactionStatus => running ? { running: true, progress: running.progress } : { running: false, last },
+    async status(): Promise<LedgerCompactionStatus> {
+      if (running) return { running: true, progress: running.progress };
+      return { running: false, last: last ?? await readRecordedFailure(store) };
+    },
     stop() {
       if (!running) return false;
       running.controller.abort();
