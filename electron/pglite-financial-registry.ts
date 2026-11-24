@@ -51,6 +51,7 @@ import type { CardIdentitySecret } from "../src/lib/shared-identity/card-identit
 import { cardAccountNamespaces } from "../src/ledger/pglite/card-identity-secret.ts";
 import { planLedgerCompaction } from "../src/ledger/pglite/compaction-plan.ts";
 import { createLedgerReclaimer } from "../src/ledger/pglite/reclaim.ts";
+import { compactLedgerDomainAndCounts } from "../src/ledger/pglite/compaction.ts";
 import {
   readAssetsPage,
   readLiabilitiesPage,
@@ -182,6 +183,9 @@ export function createPGliteFinancialRegistry(
     "financial.ledger.reclaim": (_args, request) => reclaimer.reclaim(request?.signal),
     "financial.ledger.reclaimStatus": async () => reclaimer.status(),
     "financial.ledger.reclaimStop": async () => reclaimer.stop(),
+    // Not for the UI: one transaction that holds the ledger until it ends (ADR 0154).
+    "financial.canonical.compactDomainAndCounts": (_args, request) =>
+      compactLedgerDomainAndCounts(store, { signal: request?.signal }),
   });
 }
 

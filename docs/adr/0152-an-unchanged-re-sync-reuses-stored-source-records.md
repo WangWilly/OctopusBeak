@@ -50,7 +50,7 @@ Dead tuples from the projection refresh are a separate source of growth, handled
 
 `npm run check:pglite-resync-growth` measures this through the generic commit, on a deposit route and on a credit-card route, through the credit-card command with an instrument, statements and each purchase's card rows, and through the e-invoice, investment and loan commands. Its investment capture holds two holdings, whose two records and observations are new on every sync by the rule above. Its loan payments keep their source sequence index from sync to sync. Some of its occurrence groups have two members, and each sync's window starts and ends a day later than the one before, so the oldest rows age out. It fails while any table gains more than eight rows per unchanged re-sync, or the store grows by more than 256 bytes per record. It passes in every mode, and CI runs it in the performance lane (`resync-growth-performance.check.ts`).
 
-Copies already stored stay as they are. A compaction of existing duplicates will be decided after measuring real stores.
+Copies already stored stay as they are. [ADR 0154](./0154-compaction-removes-the-copies-and-repeats-an-unchanged-re-sync-no-longer-writes.md) decides their compaction.
 
 ## Considered options
 
@@ -69,7 +69,7 @@ Copies already stored stay as they are. A compaction of existing duplicates will
   5. the other domain commands.
 - The Fubon and Yuanta loan adapters number rows by their position in the response, so a row that ages out of the window renumbers the rows after it. A loan record therefore takes its occurrence key as its sequence lexeme, not that position, as investment records do. Its transaction identity and occurrence and collision keys already ignore the position (ADR 0026), so a store written before this change reads as before: its next sync stores each loan record once more under the new lexeme, and later syncs reuse them. The adapters still report the position on the capture input, where the Yuanta command reads it in memory to anchor mandate evidence on the first row, but no loan record stores it any more.
 - `financial_account_identifier_observations` keeps one row per account, identifier, evidence version and source field: the first capture admitted with it. Account identity continuity (ADR 0049) asks only whether one exists. Rows written per capture before this change stay.
-- Copies stored before this change stay as they are; compacting them is still open.
+- Copies stored before this change stay as they are until the owner compacts the store ([ADR 0154](./0154-compaction-removes-the-copies-and-repeats-an-unchanged-re-sync-no-longer-writes.md)).
 - Loan counterparty evidence on a reused record finds its transaction through the revision that record created. On a copy it matches the capture's account and the fact's source sequence instead. Both name the same transaction when a fact is keyed by its occurrence, as deposit facts are.
 - Loan counterparty evidence is the one new row that may cite a reused record. Its row names the record and the capture that sighted it, which is not the capture that owns the record. This is safe because its readers join that capture only to read when it was observed, and no reader matches it to the record's owner.
 - A standalone source admission, with no financial facts, stores every record and reuses none. Its caller may write rows that cite the records after the admission's transaction ends, and the commit cannot check those rows.
