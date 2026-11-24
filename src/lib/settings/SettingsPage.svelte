@@ -18,7 +18,7 @@
     RotateCcw,
   } from "@lucide/svelte";
   import { isMacPlatform } from "$lib/desktop/platform.ts";
-  import { estimateView, megabytes, runLedgerReclaim, type LedgerReclaimView } from "$lib/settings/ledger-reclaim.ts";
+  import { estimateView, megabytes, resumeLedgerReclaim, runLedgerReclaim, type LedgerReclaimView } from "$lib/settings/ledger-reclaim.ts";
   import { locale, localeLabels, locales, setLocale, t, type Locale } from "$lib/i18n/i18n.ts";
   import {
     DISPLAY_SCALE_DEFAULT,
@@ -126,6 +126,8 @@
   let manualDeleteStatus: DataActionStatus = "idle";
   let reclaimView: LedgerReclaimView = { kind: "idle" };
   let reclaimStopping = false;
+  // Stops following a reclaim once Settings closes; the reclaim itself goes on.
+  const reclaimFollow = new AbortController();
   $: reclaimBusy = reclaimView.kind === "checking" || reclaimView.kind === "running";
   $: dataActionPending = financialDeleteStatus === "pending" || signInClearStatus === "pending" || manualDeleteStatus === "pending" || reclaimBusy;
   let saveStatus: "idle" | "pending" | "success" | "error" = "idle";
@@ -163,6 +165,8 @@
   onMount(() => {
     displayScaleAvailable = supportsDisplayScale(window.octopusBeak);
     void readSignInStatus();
+    // A reclaim started before Settings was left is still running in the worker.
+    void resumeLedgerReclaim(window.octopusBeak.settings, (view) => (reclaimView = view), { signal: reclaimFollow.signal });
     shortcutModifier = isMacPlatform(navigator) ? "⌘" : "Ctrl";
     const clock = setInterval(() => (now = new Date()), 60_000);
     // Every scroll re-reads every section, so a section still in view is never
@@ -188,6 +192,7 @@
     for (const type of ["wheel", "touchmove", "keydown"] as const) window.addEventListener(type, releaseChoice, { passive: true });
     window.addEventListener("pointerdown", releaseOnPress, { passive: true });
     return () => {
+      reclaimFollow.abort();
       clearInterval(clock);
       window.removeEventListener("scroll", followScroll, { capture: true });
       window.removeEventListener("resize", followScroll);
@@ -405,13 +410,13 @@
     try {
       reclaimView = estimateView(await window.octopusBeak.settings.ledgerReclaimEstimate());
     } catch {
-      reclaimView = { kind: "failed" };
+      reclaimView = { kind: "failed", reclaimedBytes: 0 };
     }
   }
 
   async function reclaimLedgerSpace() {
     reclaimStopping = false;
-    await runLedgerReclaim(window.octopusBeak.settings, (view) => (reclaimView = view));
+    await runLedgerReclaim(window.octopusBeak.settings, (view) => (reclaimView = view), { signal: reclaimFollow.signal });
   }
 
   async function stopLedgerReclaim() {
@@ -1039,8 +1044,8 @@
           {:else if reclaimView.kind === "running"}
             <p id="ledger-reclaim-progress" class="setting-hint" role="status" aria-live="polite">
               {reclaimView.progress
-                ? $t.settings.reclaimLedgerSpaceProgress(reclaimView.progress.index, reclaimView.progress.count, megabytes(reclaimView.progress.reclaimedBytes))
-                : $t.settings.reclaimLedgerSpaceChecking}
+                ? $t.settings.reclaimLedgerSpaceProgress(reclaimView.progress.index, reclaimView.progress.count)
+                : $t.settings.reclaimLedgerSpaceStarting}
             </p>
           {:else if reclaimView.kind === "no-room"}
             <div class="settings-error" role="alert">
@@ -1050,7 +1055,9 @@
           {:else if reclaimView.kind === "failed"}
             <div class="settings-error" role="alert">
               <CircleAlert size={16} strokeWidth={2.25} aria-hidden="true" />
-              <span>{$t.settings.reclaimLedgerSpaceFailed}</span>
+              <span>{reclaimView.reclaimedBytes > 0
+                ? $t.settings.reclaimLedgerSpaceFailedPartway(megabytes(reclaimView.reclaimedBytes))
+                : $t.settings.reclaimLedgerSpaceFailed}</span>
             </div>
           {/if}
           <div class="setting-row">

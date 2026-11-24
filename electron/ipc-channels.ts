@@ -114,7 +114,7 @@ export const SETTINGS_SERVICE_CHANNELS = {
   "settings:deleteFinancialData": "deleteFinancialData",
   "settings:ledgerReclaimEstimate": "ledgerReclaimEstimate",
   "settings:reclaimLedgerSpace": "reclaimLedgerSpace",
-  "settings:ledgerReclaimProgress": "ledgerReclaimProgress",
+  "settings:ledgerReclaimStatus": "ledgerReclaimStatus",
   "settings:stopLedgerReclaim": "stopLedgerReclaim",
   "data:getVersion": "getVersion",
   "data:acknowledgeVersion": "acknowledgeVersion",

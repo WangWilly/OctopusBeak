@@ -13,6 +13,7 @@ import { repairCorruptIndexes, type IndexRepair } from "../src/ledger/pglite/cat
 import { isLedgerUnusable, LEDGER_UNUSABLE_CODE, LedgerUnusableError } from "./ledger-unusable.ts";
 import { installFinancialStore } from "../src/ledger/pglite/store-layout.ts";
 import type { PGliteStore } from "../src/ledger/pglite/transaction.ts";
+import { directoryBytes, fsyncDirectory } from "../src/ledger/pglite/data-dir-files.ts";
 import { startPgliteVacuums } from "../src/ledger/pglite/vacuum.ts";
 import { startPgliteWalCheckpoints } from "../src/ledger/pglite/wal-checkpoint.ts";
 import { createPGliteOperationalRpcServer } from "../src/lib/pglite-rpc/pglite-operational-rpc.ts";
@@ -116,6 +117,7 @@ export async function startPGliteViewWorker(
       const disk = await statfs(ownedDataDir);
       return disk.bavail * disk.bsize;
     },
+    ledgerFolder: { bytes: () => directoryBytes(ownedDataDir), sync: () => fsyncDirectory(ownedDataDir) },
   });
   const walCheckpoints = startPgliteWalCheckpoints(database, {
     run: (task) => host.scheduler.schedule("background", task),

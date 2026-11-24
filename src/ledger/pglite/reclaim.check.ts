@@ -13,15 +13,39 @@ import {
   WORKFLOW_FINANCIAL_OPERATIONS,
 } from "../../lib/pglite-rpc/pglite-financial-contracts.ts";
 import { repairCorruptIndexes } from "./catalog-repair.ts";
-import { createLedgerReclaimer, estimateLedgerReclaim, reclaimLedgerSpace } from "./reclaim.ts";
+import { directoryBytes, fsyncDirectory } from "./data-dir-files.ts";
+import {
+  createLedgerReclaimer,
+  estimateLedgerReclaim,
+  LEDGER_RECLAIM_COPIES_NEEDED,
+  LEDGER_RECLAIM_HEADROOM_BYTES,
+  reclaimLedgerSpace,
+} from "./reclaim.ts";
 import { PGliteStore } from "./transaction.ts";
 import { vacuumPgliteTable } from "./vacuum.ts";
 
 const MiB = 1024 * 1024;
 
-async function openStore(dataDir?: string): Promise<{ db: PGliteWithLive; store: PGliteStore }> {
+/** Records every statement `exec` runs, and anything else the test logs beside them. */
+class RecordingStore extends PGliteStore {
+  readonly log: string[] = [];
+  override async exec(query: string) {
+    this.log.push(query);
+    return super.exec(query);
+  }
+}
+
+async function openStore(dataDir?: string): Promise<{ db: PGliteWithLive; store: RecordingStore }> {
   const db = await PGlite.create(dataDir, { extensions: { live, amcheck } }) as unknown as PGliteWithLive;
-  return { db, store: new PGliteStore(db as unknown as PGlite) };
+  return { db, store: new RecordingStore(db as unknown as PGlite) };
+}
+
+/** Resolves once `ready` holds, polling, or fails after two seconds. */
+async function eventually(ready: () => boolean, message: string): Promise<void> {
+  for (let waited = 0; !ready(); waited += 10) {
+    if (waited > 2000) assert.fail(message);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
 }
 
 /**
@@ -111,7 +135,15 @@ test("a reclaim refuses before it starts when the disk cannot hold the largest n
     const before = await digest(store, "public.rewritten");
     const result = await reclaimLedgerSpace(store, { freeBytes: async () => MiB });
     assert.equal(result.status, "not-enough-space");
-    if (result.status === "not-enough-space") assert.ok(result.requiredFreeBytes > result.freeBytes);
+    const estimate = await estimateLedgerReclaim(store);
+    const largestCopy = Math.max(...estimate.tables.map(({ bytes, reclaimableBytes }) => bytes - reclaimableBytes));
+    // The new copy beside the old files, and about two copies of WAL under full_page_writes.
+    assert.equal(LEDGER_RECLAIM_COPIES_NEEDED, 3);
+    assert.deepEqual(result, {
+      status: "not-enough-space",
+      requiredFreeBytes: 3 * largestCopy + LEDGER_RECLAIM_HEADROOM_BYTES,
+      freeBytes: MiB,
+    });
     assert.equal((await estimateLedgerReclaim(store)).tables.length, 2, "nothing was rewritten");
     assert.equal(await digest(store, "public.rewritten"), before);
   } finally {
@@ -141,23 +173,24 @@ test("queued interactive work runs between two tables of a reclaim on the worker
   try {
     await bloat(store);
     const scheduler = createPGliteWorkScheduler();
-    const order: string[] = [];
     let interactive: Promise<unknown> | undefined;
+    store.log.length = 0;
     const result = await reclaimLedgerSpace(store, {
-      runStep: (step) => scheduler.scheduleStep(step),
-      onProgress: ({ index, table }) => {
-        order.push(`rewrite ${index} ${table}`);
-        // A click arriving while the first table is rewritten.
-        interactive ??= scheduler.schedule("interactive", async () => {
-          order.push("interactive");
-          return store.query("SELECT count(*) FROM compact");
-        });
-      },
+      runStep: (step) => scheduler.scheduleStep(async () => {
+        const value = await step();
+        // A click arriving while the first table's rewrite still holds the queue.
+        if (!interactive && store.log.at(-1)?.startsWith("VACUUM")) {
+          interactive = scheduler.schedule("interactive", async () => { store.log.push("interactive"); });
+        }
+        return value;
+      }),
+      onProgress: () => {},
     });
     await interactive;
     assert.equal(result.status, "reclaimed");
-    assert.equal(order.length, 3);
-    assert.equal(order[1], "interactive", "the click ran before the second table's rewrite");
+    const rewrites = store.log.filter((entry) => entry.startsWith("VACUUM") || entry === "interactive");
+    assert.equal(rewrites.length, 3);
+    assert.equal(rewrites[1], "interactive", "the click ran before the second table's rewrite");
   } finally {
     await store.close();
   }
@@ -208,32 +241,122 @@ test("the worker runs one reclaim at a time, and its progress and stop reach the
     const reclaimer = createLedgerReclaimer(store, {
       // Holds the first rewrite, which starts once progress is reported, until the test has looked at it.
       runStep: async (step) => {
-        if (reclaimer.progress() !== null) await held;
+        steps += 1;
+        if (progress() !== null) await held;
         return step();
       },
     });
-    assert.equal(reclaimer.progress(), null);
+    let steps = 0;
+    const progress = () => {
+      const status = reclaimer.status();
+      return status.running ? status.progress : null;
+    };
+    assert.deepEqual(reclaimer.status(), { running: false, last: null });
     assert.equal(reclaimer.stop(), false, "nothing to stop");
+    const picked = (await reclaimer.estimate()).tables.length;
+    steps = 0;
     const running = reclaimer.reclaim();
-    while (reclaimer.progress() === null) await new Promise((resolve) => setTimeout(resolve, 5));
-    assert.deepEqual({ ...reclaimer.progress(), table: undefined }, { index: 1, count: 2, table: undefined, bytesBefore: 0, bytesAfter: 0 });
+    while (progress() === null) await new Promise((resolve) => setTimeout(resolve, 5));
+    // The table list, one read per picked table, and the first rewrite, now held.
+    assert.equal(steps, 1 + picked + 1, "the reclaim measures again only the tables the estimate picked");
+    assert.deepEqual({ ...progress(), table: undefined }, { index: 1, count: 2, table: undefined, bytesBefore: 0, bytesAfter: 0 });
     assert.deepEqual(await reclaimer.reclaim(), { status: "already-running" });
     assert.equal(reclaimer.stop(), true);
     release();
     const result = await running;
     assert.equal(result.status, "stopped");
-    assert.equal(reclaimer.progress(), null);
+    assert.deepEqual(reclaimer.status(), { running: false, last: result }, "how it ended stays for a page opened later");
   } finally {
     await store.close();
   }
 });
 
 test("the reclaim operations are host-only, and the reclaim itself queues its own steps", () => {
-  const operations = ["financial.ledger.reclaimEstimate", "financial.ledger.reclaim", "financial.ledger.reclaimProgress", "financial.ledger.reclaimStop"] as const;
+  const operations = ["financial.ledger.reclaimEstimate", "financial.ledger.reclaim", "financial.ledger.reclaimStatus", "financial.ledger.reclaimStop"] as const;
   for (const operation of operations) {
     assert.equal((RENDERER_FINANCIAL_OPERATIONS as readonly string[]).includes(operation), false, `${operation} has no renderer route`);
     assert.equal(WORKFLOW_FINANCIAL_OPERATIONS.has(operation), false, `${operation} is closed to workflows`);
   }
   assert.equal(PGLITE_FINANCIAL_CONTRACTS["financial.ledger.reclaim"].lane, "background-steps");
   assert.equal(PGLITE_FINANCIAL_CONTRACTS["financial.ledger.reclaimEstimate"].lane, "background-steps");
+});
+
+test("each rewrite is checkpointed, and the folder is flushed after each catalog and at the end", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "octopus-beak-reclaim-check-"));
+  try {
+    const { db, store } = await openStore(dataDir);
+    try {
+      await bloat(store);
+      for (let cycle = 0; cycle < 50; cycle += 1) {
+        const query = await db.live.query("SELECT id FROM compact LIMIT 1", [], () => {});
+        await query.unsubscribe();
+      }
+      store.log.length = 0;
+      const result = await reclaimLedgerSpace(store, {
+        minBytes: 0,
+        minShare: 0,
+        folderBytes: () => directoryBytes(dataDir),
+        syncToDisk: async () => {
+          store.log.push("sync");
+          await fsyncDirectory(dataDir);
+        },
+      });
+      assert.equal(result.status, "reclaimed");
+      if (result.status !== "reclaimed") return;
+      const steps = store.log.map((entry) => entry === "sync" ? "sync" : entry.split(" ").slice(0, entry.startsWith("VACUUM (") ? 3 : 2).join(" "));
+      for (const [at, entry] of steps.entries()) {
+        if (!entry.startsWith("VACUUM")) continue;
+        assert.equal(steps[at + 1], "CHECKPOINT", `${store.log[at]} is checkpointed before the next table`);
+        if (entry.startsWith("VACUUM FULL pg_catalog.")) assert.equal(steps[at + 2], "sync", `${store.log[at]} is flushed to the disk`);
+      }
+      assert.equal(steps.at(-1), "sync", "the last checkpoint is flushed too");
+      assert.ok(result.folderBytesBefore !== null && result.folderBytesBefore > 0);
+      assert.ok(result.folderBytesAfter !== null && result.folderBytesAfter > 0);
+    } finally {
+      await store.close();
+    }
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("a live query subscribed across the catalog rewrites hears commits during and after the reclaim", async () => {
+  const { db, store } = await openStore();
+  try {
+    await bloat(store);
+    const counts: number[] = [];
+    const query = await db.live.query<{ count: number }>(
+      "SELECT count(*)::int AS count FROM compact",
+      [],
+      (results) => { counts.push(results.rows[0]!.count); },
+    );
+    let next = 5001;
+    const commitAndHear = async (when: string) => {
+      const id = next++;
+      await store.exec(`INSERT INTO compact VALUES (${id}, 'new')`);
+      await eventually(() => counts.at(-1) === id, `the live query republished ${when}`);
+    };
+    let rewritten = 0;
+    const result = await reclaimLedgerSpace(store, {
+      minBytes: 0,
+      minShare: 0,
+      runStep: async (step) => {
+        const value = await step();
+        // Between two tables, once pg_class, pg_attribute and pg_depend have new files.
+        const log = store.log.join("\n");
+        if (rewritten < 3 && store.log.at(-1) === "CHECKPOINT"
+          && ["pg_class", "pg_attribute", "pg_depend"].every((catalog) => log.includes(`VACUUM FULL pg_catalog.${catalog}`))) {
+          rewritten += 1;
+          await commitAndHear("between two tables");
+        }
+        return value;
+      },
+    });
+    assert.equal(result.status, "reclaimed");
+    assert.ok(rewritten > 0, "a commit ran after the main catalogs were rewritten");
+    await commitAndHear("after the reclaim");
+    await query.unsubscribe();
+  } finally {
+    await store.close();
+  }
 });

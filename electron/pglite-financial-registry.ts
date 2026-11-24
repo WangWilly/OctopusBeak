@@ -88,6 +88,8 @@ export type PGliteFinancialRegistryOptions = Readonly<{
   runBackgroundStep?: <T>(step: () => Promise<T>) => Promise<T>;
   /** Free bytes on the disk that holds the ledger, which a space reclaim checks first (ADR 0155). */
   freeDiskBytes?: () => Promise<number>;
+  /** The ledger's folder: its size, and a flush of its files to the disk, which a reclaim uses. */
+  ledgerFolder?: Readonly<{ bytes(): Promise<number>; sync(): Promise<void> }>;
 }>;
 
 export function createPGliteFinancialRegistry(
@@ -105,7 +107,12 @@ export function createPGliteFinancialRegistry(
   const spending = createPGliteSpendingQuery(store);
   const source = createPGliteCanonicalSourceStore(store);
   const previewVisibilityListeners = new Set<() => void>();
-  const reclaimer = createLedgerReclaimer(store, { runStep: options.runBackgroundStep, freeBytes: options.freeDiskBytes });
+  const reclaimer = createLedgerReclaimer(store, {
+    runStep: options.runBackgroundStep,
+    freeBytes: options.freeDiskBytes,
+    folderBytes: options.ledgerFolder?.bytes,
+    syncToDisk: options.ledgerFolder?.sync,
+  });
   return Object.freeze({
     "financial.overview.current": ([expectedSources = []]) =>
       store.transaction((transaction) => readOverviewPage(transaction, pageScope(expectedSources))),
@@ -173,7 +180,7 @@ export function createPGliteFinancialRegistry(
       planLedgerCompaction(store, { runStep: options.runBackgroundStep, signal: request?.signal }),
     "financial.ledger.reclaimEstimate": (_args, request) => reclaimer.estimate(request?.signal),
     "financial.ledger.reclaim": (_args, request) => reclaimer.reclaim(request?.signal),
-    "financial.ledger.reclaimProgress": async () => reclaimer.progress(),
+    "financial.ledger.reclaimStatus": async () => reclaimer.status(),
     "financial.ledger.reclaimStop": async () => reclaimer.stop(),
   });
 }

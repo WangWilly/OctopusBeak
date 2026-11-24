@@ -53,7 +53,7 @@ function harness(stored: AutomationSettingsFile = {}, overrides: Partial<Setting
     ledgerReclaim: {
       estimate: async () => ({ tables: [], reclaimableBytes: 0, requiredFreeBytes: 0, freeBytes: null }),
       reclaim: async () => ({ status: "nothing-to-reclaim" }),
-      progress: async () => null,
+      status: async () => ({ running: false, last: null }),
       stop: async () => false,
     },
     ...overrides,
@@ -144,6 +144,7 @@ test("deleting data hands the injected ports to the erasure functions", async ()
 });
 
 test("the ledger reclaim reaches the renderer as sizes and counts only, and moves no data version", async () => {
+  let running = true;
   const table = (name: string, bytesBefore: number, bytesAfter: number) => ({ table: name, bytesBefore, bytesAfter, milliseconds: 5 });
   const { service, dataVersions } = harness({}, {
     ledgerReclaim: {
@@ -158,16 +159,26 @@ test("the ledger reclaim reaches the renderer as sizes and counts only, and move
         tables: [table("public.a", 10, 2), table("pg_catalog.pg_depend", 30, 10)],
         bytesBefore: 40,
         bytesAfter: 12,
+        folderBytesBefore: 100,
+        folderBytesAfter: 80,
         longestMilliseconds: 5,
       }),
-      progress: async () => ({ index: 2, count: 2, table: "pg_catalog.pg_depend", bytesBefore: 10, bytesAfter: 2 }),
+      status: async () => running
+        ? { running: true, progress: { index: 2, count: 2, table: "pg_catalog.pg_depend", bytesBefore: 10, bytesAfter: 2 } }
+        : { running: false, last: { status: "failed", tables: [], bytesBefore: 0, bytesAfter: 0, folderBytesBefore: null, folderBytesAfter: null, longestMilliseconds: 0 } },
       stop: async () => true,
     },
   });
   const version = dataVersions.snapshot();
   assert.deepEqual(await service.ledgerReclaimEstimate(), { reclaimableBytes: 28, tableCount: 2, requiredFreeBytes: 100, freeBytes: 500 });
-  assert.deepEqual(await service.ledgerReclaimProgress(), { index: 2, count: 2, reclaimedBytes: 8 });
-  assert.deepEqual(await service.reclaimLedgerSpace(), { status: "reclaimed", tableCount: 2, reclaimedBytes: 28 });
+  assert.deepEqual(await service.ledgerReclaimStatus(), { running: true, progress: { index: 2, count: 2 } });
+  assert.deepEqual(
+    await service.reclaimLedgerSpace(),
+    { status: "reclaimed", tableCount: 2, reclaimedBytes: 20 },
+    "what the folder shrank, WAL included, not the tables' 28 bytes",
+  );
+  running = false;
+  assert.deepEqual(await service.ledgerReclaimStatus(), { running: false, last: { status: "failed", tableCount: 0, reclaimedBytes: 0 } });
   assert.equal(await service.stopLedgerReclaim(), true);
   assert.deepEqual(dataVersions.snapshot(), version, "a reclaim changes no row");
 });

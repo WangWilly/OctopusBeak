@@ -131,14 +131,16 @@ const en = {
       `About ${megabytes} MB can be reclaimed. No data is deleted. OctopusBeak may pause briefly while each table is rewritten; a running sync waits and then continues.`,
     reclaimLedgerSpaceAction: "Reclaim",
     reclaimLedgerSpaceNothing: "Nothing to reclaim",
-    reclaimLedgerSpaceProgress: (table: number, tables: number, megabytes: string) =>
-      `Reclaiming table ${table} of ${tables}, ${megabytes} MB so far`,
+    reclaimLedgerSpaceStarting: "Starting...",
+    reclaimLedgerSpaceProgress: (table: number, tables: number) => `Reclaiming table ${table} of ${tables}`,
     reclaimLedgerSpaceStop: "Stop",
     reclaimLedgerSpaceDone: (megabytes: string) => `Reclaimed ${megabytes} MB`,
     reclaimLedgerSpaceStopped: (megabytes: string) => `Stopped. Reclaimed ${megabytes} MB`,
     reclaimLedgerSpaceNoRoom: (required: string, free: string) =>
       `Not enough free disk space. Reclaiming needs about ${required} MB free, and ${free} MB is free. Free up space and try again.`,
     reclaimLedgerSpaceFailed: "Ledger space could not be reclaimed. No data was changed. Try again.",
+    reclaimLedgerSpaceFailedPartway: (megabytes: string) =>
+      `Ledger space could not be fully reclaimed. ${megabytes} MB was reclaimed before the error. No data was changed. Try again.`,
     collectAllSources: "Collect every source now",
     collectAllSourcesStarted: "Collection started",
     collectAllSourcesFailed: "Collection could not start. Start it from Automation.",
@@ -308,14 +310,16 @@ const zh: typeof en = {
       `約可回收 ${megabytes} MB。不會刪除任何資料。重寫每個資料表時，OctopusBeak 可能會短暫停頓；進行中的同步會等待，之後繼續。`,
     reclaimLedgerSpaceAction: "回收",
     reclaimLedgerSpaceNothing: "沒有可回收的空間",
-    reclaimLedgerSpaceProgress: (table: number, tables: number, megabytes: string) =>
-      `正在回收第 ${table} 個資料表，共 ${tables} 個，目前已回收 ${megabytes} MB`,
+    reclaimLedgerSpaceStarting: "準備中...",
+    reclaimLedgerSpaceProgress: (table: number, tables: number) => `正在回收第 ${table} 個資料表，共 ${tables} 個`,
     reclaimLedgerSpaceStop: "停止",
     reclaimLedgerSpaceDone: (megabytes: string) => `已回收 ${megabytes} MB`,
     reclaimLedgerSpaceStopped: (megabytes: string) => `已停止，已回收 ${megabytes} MB`,
     reclaimLedgerSpaceNoRoom: (required: string, free: string) =>
       `磁碟可用空間不足。回收需要約 ${required} MB 可用空間，目前只有 ${free} MB。請釋出空間後再試一次。`,
     reclaimLedgerSpaceFailed: "無法回收帳本空間。資料沒有任何變更，請再試一次。",
+    reclaimLedgerSpaceFailedPartway: (megabytes: string) =>
+      `無法完整回收帳本空間。發生錯誤前已回收 ${megabytes} MB。資料沒有任何變更，請再試一次。`,
     collectAllSources: "立即收集所有來源",
     collectAllSourcesStarted: "已開始收集",
     collectAllSourcesFailed: "無法開始收集，請到自動化頁面開始。",

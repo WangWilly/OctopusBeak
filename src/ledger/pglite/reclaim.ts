@@ -24,8 +24,15 @@ import type { PGliteStore } from "./transaction.ts";
 export const LEDGER_RECLAIM_MIN_BYTES = 1024 * 1024;
 /** Nor is a table whose rewrite would free less than this share of its size. */
 export const LEDGER_RECLAIM_MIN_SHARE = 0.25;
-/** Free space kept beyond the largest rewrite, for the WAL and other writes meanwhile. */
+/** Free space kept beyond the largest rewrite, for other writes meanwhile. */
 export const LEDGER_RECLAIM_HEADROOM_BYTES = 64 * 1024 * 1024;
+/**
+ * Free space a rewrite needs, in new copies of its table: the copy itself,
+ * written before the old files go, and the WAL that records it. PGlite runs
+ * with `full_page_writes=on`, and one rewrite measured about 1.9 copies of
+ * WAL. A WAL write that fails on a full disk stops the database.
+ */
+export const LEDGER_RECLAIM_COPIES_NEEDED = 3;
 
 const PAGE_BYTES = 8192;
 // Page headers, line pointers' alignment and the space a page leaves when the next row does not fit.
@@ -47,7 +54,7 @@ export type LedgerReclaimEstimate = Readonly<{
   /** Smallest first, the order a reclaim rewrites them. */
   tables: readonly LedgerReclaimTable[];
   reclaimableBytes: number;
-  /** A rewrite writes its table's new copy before it deletes the old one. */
+  /** `LEDGER_RECLAIM_COPIES_NEEDED` new copies of the largest table, plus the headroom. */
   requiredFreeBytes: number;
   /** Free space on the ledger's disk; null when it could not be read. */
   freeBytes: number | null;
@@ -73,8 +80,16 @@ export type LedgerReclaimProgress = Readonly<{
 
 export type LedgerReclaimSummary = Readonly<{
   tables: readonly LedgerReclaimedTable[];
+  /** What the rewritten tables took before and take now. */
   bytesBefore: number;
   bytesAfter: number;
+  /**
+   * The ledger's folder before and after, WAL included; null without
+   * `folderBytes`. The tables can shrink by more than the folder: the WAL
+   * keeps its segments for reuse after a checkpoint.
+   */
+  folderBytesBefore: number | null;
+  folderBytesAfter: number | null;
   /** The longest time one rewrite held the ledger. */
   longestMilliseconds: number;
 }>;
@@ -86,12 +101,23 @@ export type LedgerReclaimResult =
   /** `stopped`: the signal aborted between two tables; `failed`: a rewrite failed and the rest were not started. */
   | Readonly<{ status: "reclaimed" | "stopped" | "failed" } & LedgerReclaimSummary>;
 
+/** What a reclaimer reports when asked: the running reclaim, or how the last one ended. */
+export type LedgerReclaimStatus =
+  | Readonly<{ running: true; progress: LedgerReclaimProgress | null }>
+  | Readonly<{ running: false; last: LedgerReclaimResult | null }>;
+
 export type LedgerReclaimOptions = Readonly<{
   /** Queues one step on the worker's background lane; by default a step runs at once. */
   runStep?: <T>(step: () => Promise<T>) => Promise<T>;
   signal?: AbortSignal;
   /** Free bytes on the disk that holds the ledger. */
   freeBytes?: () => Promise<number>;
+  /** Bytes the ledger's folder takes. */
+  folderBytes?: () => Promise<number>;
+  /** Flushes the ledger's folder to the disk; called after each checkpoint that follows a catalog rewrite, and at the end. */
+  syncToDisk?: () => Promise<void>;
+  /** Measures only these tables, as an estimate the person confirmed named them. */
+  tables?: readonly string[];
   onProgress?: (progress: LedgerReclaimProgress) => void;
   minBytes?: number;
   minShare?: number;
@@ -101,7 +127,7 @@ type TableSize = Readonly<{ table: string; total: number; heap: number; indexes:
 
 const runAtOnce = <T>(step: () => Promise<T>) => step();
 
-async function tableSizes(store: PGliteStore, minBytes: number): Promise<TableSize[]> {
+async function tableSizes(store: PGliteStore, minBytes: number, only: readonly string[] | undefined): Promise<TableSize[]> {
   // Shared catalogs belong to every database and are tiny here; TOAST tables
   // are rewritten with their owners, and temporary tables belong to a session.
   const result = await store.query<{ table_name: string; total: number | string; heap: number | string; indexes: number | string }>(
@@ -116,8 +142,9 @@ async function tableSizes(store: PGliteStore, minBytes: number): Promise<TableSi
         AND NOT c.relisshared
         AND n.nspname <> 'pg_toast'
         AND pg_total_relation_size(c.oid) >= $1::bigint
+        AND ($2::text[] IS NULL OR format('%I.%I', n.nspname, c.relname) = ANY($2::text[]))
       ORDER BY pg_total_relation_size(c.oid), n.nspname, c.relname`,
-    [minBytes],
+    [minBytes, only === undefined ? null : [...only]],
   );
   return result.rows.map((row) => ({
     table: row.table_name,
@@ -187,7 +214,7 @@ export async function estimateLedgerReclaim(store: PGliteStore, options: LedgerR
   const minBytes = options.minBytes ?? LEDGER_RECLAIM_MIN_BYTES;
   const minShare = options.minShare ?? LEDGER_RECLAIM_MIN_SHARE;
   const tables: LedgerReclaimTable[] = [];
-  for (const size of await runStep(() => tableSizes(store, minBytes))) {
+  for (const size of await runStep(() => tableSizes(store, minBytes, options.tables))) {
     options.signal?.throwIfAborted();
     const compact = await runStep(() => compactBytes(store, size));
     const reclaimableBytes = Math.max(0, size.total - compact);
@@ -195,12 +222,11 @@ export async function estimateLedgerReclaim(store: PGliteStore, options: LedgerR
       tables.push({ table: size.table, bytes: size.total, reclaimableBytes });
     }
   }
-  // The new copy is written beside the old one, and the WAL records it once more.
   const largest = Math.max(0, ...tables.map(({ bytes, reclaimableBytes }) => bytes - reclaimableBytes));
   return {
     tables,
     reclaimableBytes: tables.reduce((sum, { reclaimableBytes }) => sum + reclaimableBytes, 0),
-    requiredFreeBytes: tables.length === 0 ? 0 : 2 * largest + LEDGER_RECLAIM_HEADROOM_BYTES,
+    requiredFreeBytes: tables.length === 0 ? 0 : LEDGER_RECLAIM_COPIES_NEEDED * largest + LEDGER_RECLAIM_HEADROOM_BYTES,
     freeBytes: await readFreeBytes(options),
   };
 }
@@ -226,23 +252,39 @@ async function rewrite(store: PGliteStore, table: string): Promise<LedgerReclaim
   return { table, bytesBefore, bytesAfter: await totalBytes(store, table), milliseconds };
 }
 
+async function readFolderBytes(options: LedgerReclaimOptions): Promise<number | null> {
+  if (!options.folderBytes) return null;
+  try {
+    return await options.folderBytes();
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Rewrites every table the estimate picks, smallest first, one step per
- * table. Refuses before it starts when the disk cannot hold the largest new
- * copy. The signal is honoured between tables; a table being rewritten
- * finishes first.
+ * table, and checkpoints after each, so the WAL holds one table's rewrite at
+ * most and a crash replays no more. After a catalog's checkpoint the folder
+ * is flushed to the disk: the relation map then names the catalog's new
+ * file, and a power loss before that file is on the disk would leave a store
+ * that cannot open. Refuses before it starts when the disk cannot hold the
+ * largest rewrite. The signal is honoured between tables; a table being
+ * rewritten finishes first.
  */
 export async function reclaimLedgerSpace(store: PGliteStore, options: LedgerReclaimOptions = {}): Promise<LedgerReclaimResult> {
   const runStep = options.runStep ?? runAtOnce;
   const done: LedgerReclaimedTable[] = [];
+  let folderBytesBefore: number | null = null;
   const bytes = () => ({
     bytesBefore: done.reduce((sum, { bytesBefore }) => sum + bytesBefore, 0),
     bytesAfter: done.reduce((sum, { bytesAfter }) => sum + bytesAfter, 0),
   });
-  const summary = (status: "reclaimed" | "stopped" | "failed"): LedgerReclaimResult => ({
+  const summary = async (status: "reclaimed" | "stopped" | "failed"): Promise<LedgerReclaimResult> => ({
     status,
     tables: done,
     ...bytes(),
+    folderBytesBefore,
+    folderBytesAfter: done.length === 0 ? folderBytesBefore : await readFolderBytes(options),
     longestMilliseconds: Math.max(0, ...done.map(({ milliseconds }) => milliseconds)),
   });
   let estimate: LedgerReclaimEstimate;
@@ -256,57 +298,77 @@ export async function reclaimLedgerSpace(store: PGliteStore, options: LedgerRecl
   if (estimate.freeBytes !== null && estimate.freeBytes < estimate.requiredFreeBytes) {
     return { status: "not-enough-space", requiredFreeBytes: estimate.requiredFreeBytes, freeBytes: estimate.freeBytes };
   }
+  folderBytesBefore = await readFolderBytes(options);
   const count = estimate.tables.length;
-  for (const [position, { table }] of estimate.tables.entries()) {
-    if (options.signal?.aborted) return summary("stopped");
-    options.onProgress?.({ index: position + 1, count, table, ...bytes() });
-    try {
-      done.push(await runStep(() => rewrite(store, table)));
-    } catch {
-      return summary("failed");
+  let unsynced = false;
+  try {
+    for (const [position, { table }] of estimate.tables.entries()) {
+      if (options.signal?.aborted) return await summary("stopped");
+      options.onProgress?.({ index: position + 1, count, table, ...bytes() });
+      try {
+        done.push(await runStep(() => rewrite(store, table)));
+      } catch {
+        return await summary("failed");
+      }
+      const catalog = table.startsWith("pg_catalog.");
+      await runStep(() => store.exec("CHECKPOINT"));
+      // Off the queue: a flush can take seconds and needs no lock. The next table waits for it.
+      if (catalog) await options.syncToDisk?.();
+      unsynced = !catalog;
     }
+  } finally {
+    // A store table's checkpoint reaches only the OS cache; however the reclaim ends, flush it too.
+    if (unsynced && options.syncToDisk) await options.syncToDisk().catch(() => undefined);
   }
-  // The rewrites' WAL would otherwise wait for the worker's next checkpoint, and a crash would replay it.
-  await runStep(() => store.exec("CHECKPOINT")).catch(() => undefined);
   return summary("reclaimed");
 }
 
 export type LedgerReclaimer = Readonly<{
+  /** Remembers the tables it picks; the next reclaim measures only those again. */
   estimate(signal?: AbortSignal): Promise<LedgerReclaimEstimate>;
   /** Refuses with `already-running` while another reclaim runs. */
   reclaim(signal?: AbortSignal): Promise<LedgerReclaimResult>;
-  /** The table being rewritten, or null when no reclaim runs. */
-  progress(): LedgerReclaimProgress | null;
+  status(): LedgerReclaimStatus;
   /** Stops the running reclaim before its next table; false when none runs. */
   stop(): boolean;
 }>;
 
-/** The worker's one reclaim at a time, whose progress and stop other requests reach. */
+/** The worker's one reclaim at a time, whose status and stop other requests reach. */
 export function createLedgerReclaimer(
   store: PGliteStore,
-  options: Pick<LedgerReclaimOptions, "runStep" | "freeBytes" | "minBytes" | "minShare"> = {},
+  options: Pick<LedgerReclaimOptions, "runStep" | "freeBytes" | "folderBytes" | "syncToDisk" | "minBytes" | "minShare"> = {},
 ): LedgerReclaimer {
   let running: { readonly controller: AbortController; progress: LedgerReclaimProgress | null } | null = null;
+  let last: LedgerReclaimResult | null = null;
+  let confirmed: readonly string[] | undefined;
   return Object.freeze({
-    estimate: (signal?: AbortSignal) => estimateLedgerReclaim(store, { ...options, signal }),
+    async estimate(signal?: AbortSignal) {
+      const estimate = await estimateLedgerReclaim(store, { ...options, signal });
+      confirmed = estimate.tables.map(({ table }) => table);
+      return estimate;
+    },
     async reclaim(signal?: AbortSignal) {
       if (running) return { status: "already-running" } as const;
       const run = { controller: new AbortController(), progress: null as LedgerReclaimProgress | null };
       const stopOnAbort = () => run.controller.abort();
       signal?.addEventListener("abort", stopOnAbort, { once: true });
       running = run;
+      const tables = confirmed;
+      confirmed = undefined;
       try {
-        return await reclaimLedgerSpace(store, {
+        last = await reclaimLedgerSpace(store, {
           ...options,
+          tables,
           signal: run.controller.signal,
           onProgress: (progress) => { run.progress = progress; },
         });
+        return last;
       } finally {
         signal?.removeEventListener("abort", stopOnAbort);
         running = null;
       }
     },
-    progress: () => running?.progress ?? null,
+    status: (): LedgerReclaimStatus => running ? { running: true, progress: running.progress } : { running: false, last },
     stop() {
       if (!running) return false;
       running.controller.abort();

@@ -17,8 +17,11 @@
  *   npm run check:pglite-reclaim
  *
  * PGLITE_RECLAIM_ROWS (default 600) rows per source, PGLITE_RECLAIM_REWRITES
- * (default 60) projection rewrites, and PGLITE_RECLAIM_LIVE_CYCLES (default
- * 6000) live-query subscriptions size the run.
+ * (default 60) projection rewrites, PGLITE_RECLAIM_TASK_RUNS (default 40)
+ * sync runs and PGLITE_RECLAIM_LIVE_CYCLES (default 6000) live-query
+ * subscriptions size the run. PGLITE_RECLAIM_LIVE_TABLE_MB (default 100)
+ * sizes a separate table of live rows, whose rewrite shows how long one
+ * large table holds the ledger and how much WAL it writes.
  */
 import { mkdtemp, rm } from "node:fs/promises";
 import { statfs } from "node:fs/promises";
@@ -29,12 +32,14 @@ import { PGlite } from "@electric-sql/pglite";
 import { amcheck } from "@electric-sql/pglite/contrib/amcheck";
 import { live, type PGliteWithLive } from "@electric-sql/pglite/live";
 import { repairCorruptIndexes } from "./catalog-repair.ts";
+import { directoryBytes, fsyncDirectory } from "./data-dir-files.ts";
 import { createPgliteOperationalStore } from "./operational.ts";
 import { estimateLedgerReclaim, reclaimLedgerSpace } from "./reclaim.ts";
 import { commitResync, RESYNC_MODES } from "./resync-fixtures.ts";
 import { installFinancialStore } from "./store-layout.ts";
 import type { PGliteStore } from "./transaction.ts";
 import { vacuumPgliteTable, pgliteTablesBySize } from "./vacuum.ts";
+import { pgliteWalBacklogBytes } from "./wal-checkpoint.ts";
 
 function positiveInteger(name: string, fallback: number): number {
   const value = Number(process.env[name] ?? fallback);
@@ -46,6 +51,7 @@ const ROWS = positiveInteger("PGLITE_RECLAIM_ROWS", 600);
 const REWRITES = positiveInteger("PGLITE_RECLAIM_REWRITES", 60);
 const LIVE_CYCLES = positiveInteger("PGLITE_RECLAIM_LIVE_CYCLES", 6000);
 const TASK_RUNS = positiveInteger("PGLITE_RECLAIM_TASK_RUNS", 40);
+const LIVE_TABLE_MB = positiveInteger("PGLITE_RECLAIM_LIVE_TABLE_MB", 100);
 
 const PROJECTION_TABLES = [
   "current_transactions",
@@ -189,11 +195,41 @@ try {
   const estimate = await estimateLedgerReclaim(store, { freeBytes: free });
   const estimateMs = Math.round(performance.now() - started);
 
+  // Start from an empty WAL backlog, so its peak below is the reclaim's own.
+  await store.exec("CHECKPOINT");
   const lsn = await walLsn(store);
+  let walPeak = 0;
+  const syncs: number[] = [];
   started = performance.now();
-  const result = await reclaimLedgerSpace(store, { freeBytes: free });
+  const result = await reclaimLedgerSpace(store, {
+    freeBytes: free,
+    folderBytes: () => directoryBytes(dataDir),
+    syncToDisk: async () => {
+      const syncStarted = performance.now();
+      await fsyncDirectory(dataDir);
+      syncs.push(performance.now() - syncStarted);
+    },
+    runStep: async (step) => {
+      const value = await step();
+      walPeak = Math.max(walPeak, await pgliteWalBacklogBytes(store));
+      return value;
+    },
+  });
   const reclaimMs = Math.round(performance.now() - started);
   const walBytes = await walSince(store, lsn);
+
+  // One table that is mostly live rows: how long its rewrite holds the ledger, and how much WAL it writes.
+  await store.exec(`CREATE TABLE reclaim_live_rows (id int PRIMARY KEY, pad text);
+    INSERT INTO reclaim_live_rows SELECT g, repeat(md5(g::text || random()::text), 32) FROM generate_series(1, ${LIVE_TABLE_MB * 950}) g;`);
+  await store.exec("CHECKPOINT");
+  const liveTableBytes = Number((await store.query<{ bytes: string }>("SELECT pg_total_relation_size('reclaim_live_rows')::text AS bytes")).rows[0]!.bytes);
+  const liveLsn = await walLsn(store);
+  started = performance.now();
+  await store.exec("VACUUM (FULL, ANALYZE) reclaim_live_rows");
+  const liveRewriteMs = Math.round(performance.now() - started);
+  const liveWalBytes = await walSince(store, liveLsn);
+  await store.exec("DROP TABLE reclaim_live_rows");
+  await store.exec("CHECKPOINT");
   const databaseAfter = await databaseBytes(store);
   const catalogAfter = new Map((await sizes(store, "pg_catalog")).map(({ name, bytes }) => [name, bytes]));
   const storeAfter = new Map((await sizes(store, "public")).map(({ name, bytes }) => [name, bytes]));
@@ -229,12 +265,21 @@ try {
         status: result.status,
         ms: reclaimMs,
         walMB: MB(walBytes),
-        reclaimedMB: MB(result.bytesBefore - result.bytesAfter),
+        walPeakMB: MB(walPeak),
+        tablesReclaimedMB: MB(result.bytesBefore - result.bytesAfter),
+        folderMB: { before: MB(result.folderBytesBefore ?? 0), after: MB(result.folderBytesAfter ?? 0) },
+        fsyncMs: syncs.map(Math.round),
         longestLockMs: Math.round(result.longestMilliseconds),
         tables: result.tables.map(({ table, bytesBefore, bytesAfter, milliseconds }) =>
           `${table}: ${MB(bytesBefore)} -> ${MB(bytesAfter)} MB in ${Math.round(milliseconds)} ms`),
       }
       : result,
+    liveTable: {
+      mb: MB(liveTableBytes),
+      rewriteMs: liveRewriteMs,
+      walMB: MB(liveWalBytes),
+      walPerCopy: Math.round(liveWalBytes / liveTableBytes * 100) / 100,
+    },
     catalogMB: catalogBefore.slice(0, 8).map(({ name, bytes }) => `${name}: ${MB(bytes)} -> ${MB(catalogAfter.get(name) ?? 0)}`),
     storeMB: storeBefore.slice(0, 10).map(({ name, bytes }) => `${name}: ${MB(bytes)} -> ${MB(storeAfter.get(name) ?? 0)}`),
     afterReopen: {

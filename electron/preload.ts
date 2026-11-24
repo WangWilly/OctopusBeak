@@ -120,7 +120,7 @@ const INVOKE_CHANNELS = {
     deleteFinancialData: "settings:deleteFinancialData",
     ledgerReclaimEstimate: "settings:ledgerReclaimEstimate",
     reclaimLedgerSpace: "settings:reclaimLedgerSpace",
-    ledgerReclaimProgress: "settings:ledgerReclaimProgress",
+    ledgerReclaimStatus: "settings:ledgerReclaimStatus",
     stopLedgerReclaim: "settings:stopLedgerReclaim",
     clearSignInData: "settings:clearSignInData",
     signInDataStatus: "settings:signInDataStatus",

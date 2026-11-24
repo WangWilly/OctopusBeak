@@ -153,13 +153,22 @@ export type LedgerReclaimEstimateDto = Readonly<{
 }>;
 
 /** The running reclaim: table `index` of `count` is being rewritten. */
-export type LedgerReclaimProgressDto = Readonly<{ index: number; count: number; reclaimedBytes: number }>;
+export type LedgerReclaimProgressDto = Readonly<{ index: number; count: number }>;
 
 export type LedgerReclaimResultDto =
   | Readonly<{ status: "nothing-to-reclaim" | "already-running" }>
   | Readonly<{ status: "not-enough-space"; requiredFreeBytes: number; freeBytes: number }>
-  /** `stopped`: stopped between two tables; `failed`: a table could not be rewritten. Either way no data changed. */
+  /**
+   * `stopped`: stopped between two tables; `failed`: a table could not be
+   * rewritten. Either way no data changed. `reclaimedBytes` is how much the
+   * ledger's folder shrank, or its tables when the folder could not be measured.
+   */
   | Readonly<{ status: "reclaimed" | "stopped" | "failed"; tableCount: number; reclaimedBytes: number }>;
+
+/** A reclaim that is running, possibly started from an earlier visit to Settings, or how the last one ended. */
+export type LedgerReclaimStatusDto =
+  | Readonly<{ running: true; progress: LedgerReclaimProgressDto | null }>
+  | Readonly<{ running: false; last: LedgerReclaimResultDto | null }>;
 
 /** The part of Settings a notification or another page opens. */
 export type SettingsFocus = "financial-data-deletion" | "sign-in-data" | "app-updates";
@@ -275,8 +284,8 @@ export type OctopusBeakApi = {
     ledgerReclaimEstimate(): Promise<LedgerReclaimEstimateDto>;
     /** Rewrites the bloated ledger tables with VACUUM FULL. Deletes no data; resolves when it ends. */
     reclaimLedgerSpace(): Promise<LedgerReclaimResultDto>;
-    /** The running reclaim's progress, or null when none runs. */
-    ledgerReclaimProgress(): Promise<LedgerReclaimProgressDto | null>;
+    /** The running reclaim's progress, or how the last one ended. */
+    ledgerReclaimStatus(): Promise<LedgerReclaimStatusDto>;
     /** Stops the running reclaim after its current table. */
     stopLedgerReclaim(): Promise<boolean>;
     /** Starts every enabled source, as scheduled collection would. */

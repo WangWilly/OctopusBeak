@@ -92,7 +92,7 @@ assert.deepEqual([...invokedBy.values()].sort(), [
   "settings:deleteFinancialData",
   "settings:deletePreviewData",
   "settings:ledgerReclaimEstimate",
-  "settings:ledgerReclaimProgress",
+  "settings:ledgerReclaimStatus",
   "settings:load",
   "settings:previewUsagePing",
   "settings:reclaimLedgerSpace",

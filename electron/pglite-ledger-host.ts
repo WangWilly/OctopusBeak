@@ -19,6 +19,7 @@ export type PGliteLedgerHostReaders = Readonly<{
   cardIdentitySecret?: () => CardIdentitySecret | undefined;
   /** Free bytes on the disk that holds the ledger. */
   freeDiskBytes?: () => Promise<number>;
+  ledgerFolder?: Readonly<{ bytes(): Promise<number>; sync(): Promise<void> }>;
 }>;
 
 /** The parts of the ledger that financial calls and live views share (ADR 0120). */
@@ -35,7 +36,7 @@ export type PGliteLedgerHost = Readonly<{
 export function createPGliteLedgerHost(
   db: PGliteWithLive,
   store: PGliteStore,
-  { clock, previewVisibility, expectedSources, cardIdentitySecret, freeDiskBytes }: PGliteLedgerHostReaders,
+  { clock, previewVisibility, expectedSources, cardIdentitySecret, freeDiskBytes, ledgerFolder }: PGliteLedgerHostReaders,
 ): PGliteLedgerHost {
   // One queue lets a Pairing click start before view refreshes that are still waiting.
   const scheduler = createPGliteWorkScheduler();
@@ -44,6 +45,7 @@ export function createPGliteLedgerHost(
     today: clock.today,
     cardIdentitySecret,
     freeDiskBytes,
+    ledgerFolder,
     runBackgroundStep: (step) => scheduler.scheduleStep(step),
   });
   const views = createPGliteFinancialLiveViews(

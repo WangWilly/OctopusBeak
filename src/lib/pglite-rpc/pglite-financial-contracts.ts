@@ -61,7 +61,7 @@ import type { TdccAdmittedFundAccount } from "../../ledger/canonical/tdcc-invest
 import type { AccountIdentityContinuity, AccountIdentityContinuityRequest } from "../../ledger/pglite/account-identity-continuity.ts";
 import type { SpendingPageVersion } from "../../ledger/pglite/spending-page.ts";
 import type { CompactionPlanResult } from "../../ledger/pglite/compaction-plan.ts";
-import type { LedgerReclaimEstimate, LedgerReclaimProgress, LedgerReclaimResult } from "../../ledger/pglite/reclaim.ts";
+import type { LedgerReclaimEstimate, LedgerReclaimResult, LedgerReclaimStatus } from "../../ledger/pglite/reclaim.ts";
 import type {
   PGliteCanonicalLoanRelationResolutionRequest,
   PGliteCanonicalLoanRelationResolutionResult,
@@ -376,8 +376,8 @@ export const PGLITE_FINANCIAL_CONTRACTS = Object.freeze({
     (args) => args.length === 0,
     { lane: "background-steps" },
   ),
-  /** The running reclaim's table, or null when none runs. Host-only. */
-  "financial.ledger.reclaimProgress": operation<[], LedgerReclaimProgress | null>(
+  /** The running reclaim's table, or how the last one ended. Host-only. */
+  "financial.ledger.reclaimStatus": operation<[], LedgerReclaimStatus>(
     (args) => args.length === 0,
     { lane: "interactive" },
   ),

@@ -5,10 +5,10 @@ import type { deleteAllPreviewData } from "../../preview-sources/delete-preview-
 import type { DataVersionStore } from "../../shared-shell/data-version.ts";
 import type {
   LedgerReclaimEstimate,
-  LedgerReclaimProgress,
   LedgerReclaimResult,
+  LedgerReclaimStatus,
 } from "../../../ledger/pglite/reclaim.ts";
-import type { LedgerReclaimEstimateDto, LedgerReclaimProgressDto, LedgerReclaimResultDto } from "../../desktop/api.ts";
+import type { LedgerReclaimEstimateDto, LedgerReclaimResultDto, LedgerReclaimStatusDto } from "../../desktop/api.ts";
 import type { CollectionControl, deleteAllFinancialData } from "../data-erasure.ts";
 import {
   systemSettings,
@@ -37,7 +37,7 @@ export type SettingsDesktopServiceDeps = Readonly<{
   ledgerReclaim: Readonly<{
     estimate(): Promise<LedgerReclaimEstimate>;
     reclaim(): Promise<LedgerReclaimResult>;
-    progress(): Promise<LedgerReclaimProgress | null>;
+    status(): Promise<LedgerReclaimStatus>;
     stop(): Promise<boolean>;
   }>;
 }>;
@@ -49,12 +49,16 @@ function reclaimResultDto(result: LedgerReclaimResult): LedgerReclaimResultDto {
       return { status: result.status };
     case "not-enough-space":
       return { status: result.status, requiredFreeBytes: result.requiredFreeBytes, freeBytes: result.freeBytes };
-    default:
+    default: {
+      const folder = result.folderBytesBefore !== null && result.folderBytesAfter !== null
+        ? result.folderBytesBefore - result.folderBytesAfter
+        : null;
       return {
         status: result.status,
         tableCount: result.tables.length,
-        reclaimedBytes: Math.max(0, result.bytesBefore - result.bytesAfter),
+        reclaimedBytes: Math.max(0, folder ?? result.bytesBefore - result.bytesAfter),
       };
+    }
   }
 }
 
@@ -98,13 +102,12 @@ export function createSettingsDesktopService(deps: SettingsDesktopServiceDeps) {
     },
     // Changes no row, so no data version moves and no view reloads.
     reclaimLedgerSpace: async () => reclaimResultDto(await deps.ledgerReclaim.reclaim()),
-    async ledgerReclaimProgress(): Promise<LedgerReclaimProgressDto | null> {
-      const progress = await deps.ledgerReclaim.progress();
-      return progress && {
-        index: progress.index,
-        count: progress.count,
-        reclaimedBytes: Math.max(0, progress.bytesBefore - progress.bytesAfter),
-      };
+    async ledgerReclaimStatus(): Promise<LedgerReclaimStatusDto> {
+      const status = await deps.ledgerReclaim.status();
+      if (status.running) {
+        return { running: true, progress: status.progress && { index: status.progress.index, count: status.progress.count } };
+      }
+      return { running: false, last: status.last && reclaimResultDto(status.last) };
     },
     stopLedgerReclaim: () => deps.ledgerReclaim.stop(),
     getVersion: () => dataVersions.snapshot(),

@@ -669,7 +669,7 @@ async function start() {
     ledgerReclaim: {
       estimate: () => operationalRuntime.worker.financial.request("financial.ledger.reclaimEstimate", []),
       reclaim: () => operationalRuntime.worker.financial.request("financial.ledger.reclaim", []),
-      progress: () => operationalRuntime.worker.financial.request("financial.ledger.reclaimProgress", []),
+      status: () => operationalRuntime.worker.financial.request("financial.ledger.reclaimStatus", []),
       stop: () => operationalRuntime.worker.financial.request("financial.ledger.reclaimStop", []),
     },
   });
