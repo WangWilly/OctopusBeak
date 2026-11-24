@@ -381,6 +381,7 @@ function compactionReaders(scope: CompactionScope) {
           ON coverage.capture_id = record.capture_id AND coverage.scope_key = record.occurrence_group_scope_key
         JOIN canonical_commits written ON written.commit_id = record.commit_id
         LEFT JOIN assertion_provenance provenance ON provenance.source_record_id = record.source_record_id
+         AND provenance.run_id IS NULL AND provenance.enrichment_run_id IS NULL AND provenance.coordinate_id IS NULL
         LEFT JOIN assertions assertion ON assertion.assertion_id = provenance.assertion_id
          AND assertion.origin = 'source' AND assertion.field_name = 'transaction_revision'
        WHERE coverage.bucket_inventory_json IS NOT NULL
@@ -504,9 +505,10 @@ export type LedgerCompactionFailure =
   /**
    * Phase B's manifests are not one new manifest for each capture owning a
    * removed copy: the insert wrote `inserted` rows, the table grew by
-   * `grown`, and `outside` of its new rows belong to another capture.
+   * `grown`, `outside` of its new rows belong to another capture, and
+   * `differing` of the chunk's own rows are not the ones its selection makes.
    */
-  | Readonly<{ reason: "manifest-mismatch"; captures: number; inserted: number; grown: number; outside: number }>
+  | Readonly<{ reason: "manifest-mismatch"; captures: number; inserted: number; grown: number; outside: number; differing: number }>
   /** A reader answered differently after the delete. */
   | Readonly<{ reason: "reader-changed"; readers: readonly CompactionReader[] }>;
 
@@ -911,6 +913,13 @@ async function checkCopies(transaction: PGliteTransaction, columns: CitingColumn
 
 const MANIFESTS_BEFORE = "ledger_compaction_manifests_before";
 
+/** The manifest each capture owning a selected copy gets. A capture's removed copies have distinct occurrence keys, so their kept copies are distinct too. */
+const MANIFESTS_FROM_COPIES = `
+  (SELECT copy.capture_id, string_agg(copy.kept_id, ''::bytea ORDER BY copy.kept_id) AS source_record_ids,
+          count(*)::int AS record_count, capture.commit_id
+     FROM ${COPIES} copy JOIN source_captures capture ON capture.capture_id = copy.capture_id
+    GROUP BY copy.capture_id, capture.commit_id)`;
+
 /**
  * Gives each selected copy's capture a manifest listing its kept copy, then
  * deletes the copies with their satellite rows. The readers a chunk reads see
@@ -969,16 +978,21 @@ async function deleteCopies(
       throw new LedgerCompactionError({ reason: "removed-count-mismatch", table, selected, removed: total - after[table].total });
   }
   // A delete can reach the manifests too while the append-only guard is off; they must stand as written,
-  // and the only manifest rows this chunk wrote are its own.
-  const { rows: [kept] } = await transaction.query<{ missing: number; written: number }>(
+  // the only manifest rows this chunk wrote are its own, and those are exactly what its selection makes.
+  const own = `SELECT capture_id, source_record_ids, record_count, commit_id FROM ${MANIFEST} WHERE capture_id IN (SELECT capture_id FROM ${COPIES})`;
+  const { rows: [kept] } = await transaction.query<{ missing: number; written: number; differing: number }>(
     `SELECT (SELECT count(*)::int FROM ${MANIFESTS_BEFORE} WHERE capture_id NOT IN (SELECT capture_id FROM ${MANIFEST}))
           + (SELECT count(DISTINCT capture_id)::int FROM ${COPIES})
           - (SELECT count(*)::int FROM ${MANIFEST} WHERE capture_id NOT IN (SELECT capture_id FROM ${MANIFESTS_BEFORE})) AS missing,
             (SELECT count(*)::int FROM ${MANIFEST} WHERE xmin = pg_current_xact_id()::xid
-               AND capture_id NOT IN (SELECT capture_id FROM ${COPIES})) AS written`,
+               AND capture_id NOT IN (SELECT capture_id FROM ${COPIES})) AS written,
+            (SELECT count(*)::int FROM ((${own} EXCEPT ALL ${MANIFESTS_FROM_COPIES})
+                                        UNION ALL (${MANIFESTS_FROM_COPIES} EXCEPT ALL ${own})) changed) AS differing`,
   );
-  if (kept!.missing !== 0 || kept!.written !== 0)
-    throw new LedgerCompactionError({ reason: "manifest-mismatch", captures: manifests, inserted: manifests, grown: manifests - kept!.missing, outside: kept!.written });
+  if (kept!.missing !== 0 || kept!.written !== 0 || kept!.differing !== 0)
+    throw new LedgerCompactionError({
+      reason: "manifest-mismatch", captures: manifests, inserted: manifests, grown: manifests - kept!.missing, outside: kept!.written, differing: kept!.differing,
+    });
   return manifests;
 }
 
@@ -986,12 +1000,8 @@ async function deleteCopies(
 async function writeManifests(transaction: PGliteTransaction, options: LedgerCompactionOptions): Promise<number> {
   await transaction.query(`CREATE TEMP TABLE ${MANIFESTS_BEFORE}(capture_id BYTEA PRIMARY KEY) ON COMMIT DROP`);
   await transaction.query(`INSERT INTO ${MANIFESTS_BEFORE} SELECT capture_id FROM ${MANIFEST}`);
-  // A capture's removed copies have distinct occurrence keys, so their kept copies are distinct too.
   const inserted = (await transaction.query(options.statements?.[MANIFEST] ??
-    `INSERT INTO ${MANIFEST}(capture_id, source_record_ids, record_count, commit_id)
-     SELECT copy.capture_id, string_agg(copy.kept_id, ''::bytea ORDER BY copy.kept_id), count(*)::int, capture.commit_id
-       FROM ${COPIES} copy JOIN source_captures capture ON capture.capture_id = copy.capture_id
-      GROUP BY copy.capture_id, capture.commit_id`,
+    `INSERT INTO ${MANIFEST}(capture_id, source_record_ids, record_count, commit_id) ${MANIFESTS_FROM_COPIES}`,
   )).affectedRows ?? 0;
   const { rows: [counts] } = await transaction.query<{ captures: number; grown: number; outside: number }>(
     `SELECT (SELECT count(DISTINCT capture_id)::int FROM ${COPIES}) AS captures,
@@ -1003,7 +1013,7 @@ async function writeManifests(transaction: PGliteTransaction, options: LedgerCom
   const { captures, grown, outside } = counts!;
   // The selected captures had no manifest (`checkCopies`). With every new row theirs and the table grown by their number, each got one and no other row came or went.
   if (inserted !== captures || grown !== captures || outside !== 0)
-    throw new LedgerCompactionError({ reason: "manifest-mismatch", captures, inserted, grown, outside });
+    throw new LedgerCompactionError({ reason: "manifest-mismatch", captures, inserted, grown, outside, differing: 0 });
   return inserted;
 }
 

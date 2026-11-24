@@ -120,11 +120,19 @@ export const copyOf = (captureKey: string, key: string) =>
  * An assertion row on `copy` that also names an enrichment run, for an
  * assertion its source rows do not back, so the run row must neither count
  * as a backed assertion nor leave the copy removable.
+ *
+ * The assertion is one of the enrichment fields, the only ones
+ * `trg_assertion_provenance_integrity_insert` lets a row with an enrichment
+ * run name, so the copy never seems to back a second transaction's revision.
+ * The run itself is made up: the trigger would also want a complete run with
+ * an output naming this copy, which only a source assertion of an enrichment
+ * field has, and the store holds none. The checks need only a row naming a run.
  */
 const mixedProvenance = (copy: string) => `
   INSERT INTO assertion_provenance(assertion_id, source_record_id, run_id, enrichment_run_id, coordinate_id, commit_id)
   SELECT (SELECT other.assertion_id FROM assertions other
-           WHERE other.assertion_id NOT IN (SELECT backed.assertion_id FROM assertion_provenance backed WHERE backed.source_record_id = source.source_record_id)
+           WHERE other.field_name IN ('kind', 'category', 'counterparty_role', 'counterparty_display')
+             AND other.assertion_id NOT IN (SELECT backed.assertion_id FROM assertion_provenance backed WHERE backed.source_record_id = source.source_record_id)
            ORDER BY other.assertion_id LIMIT 1),
          source_record_id, NULL, decode(md5('mixed' || encode(source_record_id, 'hex')), 'hex'), NULL, commit_id
     FROM assertion_provenance source WHERE source_record_id = ${copy} AND run_id IS NULL AND enrichment_run_id IS NULL AND coordinate_id IS NULL

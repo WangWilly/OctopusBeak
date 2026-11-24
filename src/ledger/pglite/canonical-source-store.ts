@@ -810,6 +810,9 @@ export async function listPGliteExpectedOccurrences(
              ON commit_row.commit_id = source_record.commit_id
            LEFT JOIN assertion_provenance provenance
              ON provenance.source_record_id = source_record.source_record_id
+            AND provenance.run_id IS NULL
+            AND provenance.enrichment_run_id IS NULL
+            AND provenance.coordinate_id IS NULL
            LEFT JOIN assertions assertion
              ON assertion.assertion_id = provenance.assertion_id
             AND assertion.origin = 'source'
@@ -821,7 +824,9 @@ export async function listPGliteExpectedOccurrences(
             AND group_coverage.bucket_inventory_json IS NOT NULL
           ORDER BY source_record.occurrence_key,
                    commit_row.commit_sequence DESC,
-                   (assertion.transaction_id IS NULL)
+                   (assertion.transaction_id IS NULL),
+                   assertion.transaction_id,
+                   source_record.source_record_id DESC
        ) latest
       WHERE latest.bucket_key IN (${bucketKeys.map(() => "?").join(",")})
         AND NOT EXISTS (
