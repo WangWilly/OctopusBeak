@@ -97,7 +97,7 @@ async function numberLoanRecordsByPosition(store: PGliteStore): Promise<void> {
  * one: the card command's last capture, reusing the first copy of a
  * purchase that has left its window.
  */
-async function giveLastCardCaptureAManifest(store: PGliteStore): Promise<void> {
+async function giveLastCardCaptureAManifest(store: PGliteStore, SYNCS: number): Promise<void> {
   await writeDirectly(store, `
     INSERT INTO capture_source_record_manifests(capture_id, source_record_ids, record_count, commit_id)
     SELECT last.capture_id, aged.source_record_id, 1, last.commit_id
@@ -141,7 +141,7 @@ const mixedProvenance = (copy: string) => `
  * - an assertion row naming a run on a deposit copy, and on a card copy whose capture has a manifest;
  * - a second-sync statement record stored under another record kind, with the occurrence key of its kind's copies.
  */
-async function addEdgeCases(store: PGliteStore): Promise<Readonly<Record<string, number>>> {
+async function addEdgeCases(store: PGliteStore, SYNCS: number): Promise<Readonly<Record<string, number>>> {
   const invoice = (n: number) => keyOf("einvoice-capture-3", n);
   const { rows: revisionColumns } = await store.query<{ name: string }>(
     `SELECT column_name AS name FROM information_schema.columns
@@ -179,7 +179,8 @@ async function addEdgeCases(store: PGliteStore): Promise<Readonly<Record<string,
        ORDER BY source_record_id LIMIT 1)`)),
     kind: await writeDirectly(store, `UPDATE source_records SET record_kind = 'fubon-credit-card-statement'
       WHERE source_record_id = (SELECT evidence_source_record_id FROM canonical_credit_card_statement_summary_evidence
-                                 WHERE capture_id = ${captureOf("card-command-capture-2")})`),
+                                 WHERE capture_id = ${captureOf("card-command-capture-2")}
+                                 ORDER BY evidence_source_record_id LIMIT 1)`),
   };
 }
 
@@ -204,8 +205,11 @@ async function repeatAccountIdentifiers(store: PGliteStore): Promise<number> {
 
 export type Legacy = Readonly<{ store: PGliteStore; repeated: Readonly<Record<string, number>>; edgeCases: Readonly<Record<string, number>> }>;
 
+/** How large an old-shaped store is: the records of each sync, and the syncs of each mode. */
+export type LegacySize = Readonly<{ rows: number; syncs: number }>;
+
 /** An old-shaped store, one deposit sync through the current writer, which reuses the last copies, and the edge cases. */
-export async function legacyStore(database?: PGlite): Promise<Legacy> {
+export async function legacyStore(database?: PGlite, { rows: ROWS, syncs: SYNCS }: LegacySize = { rows: 20, syncs: 3 }): Promise<Legacy> {
   const store = await installFinancialStore(database ?? await PGlite.create());
   for (const mode of MODES)
     for (let sync = 1; sync <= SYNCS; sync += 1) await commitResync(store, mode, sync, { rowCount: ROWS, reuseSourceRecords: false });
@@ -232,9 +236,42 @@ export async function legacyStore(database?: PGlite): Promise<Legacy> {
          JOIN source_captures capture ON capture.capture_id = coverage.capture_id AND capture.capture_key = 'investment-capture-${SYNCS}'
         ORDER BY count_row.partition_date, count_row.observation_id LIMIT 1)`);
   await numberLoanRecordsByPosition(store);
-  await giveLastCardCaptureAManifest(store);
+  await giveLastCardCaptureAManifest(store, SYNCS);
   await commitResync(store, "deposit", SYNCS + 1, { rowCount: ROWS });
-  return { store, repeated, edgeCases: await addEdgeCases(store) };
+  return { store, repeated, edgeCases: await addEdgeCases(store, SYNCS) };
+}
+
+/**
+ * Adds one chain of `copies` records to a `legacyStore`, each seen once and
+ * each cited by an assertion row that names a run, so compaction keeps them
+ * all. `others` more records, without an occurrence key and spread over many
+ * subjects and record kinds, make the store's average chain a single copy,
+ * as it is on a store with many sources. Returns the chain's record kind.
+ */
+export async function addCitedChain(store: PGliteStore, { copies, others }: Readonly<{ copies: number; others: number }>): Promise<string> {
+  const kind = "cited-chain-record";
+  const subject = "decode(md5('cited-chain-subject'), 'hex')";
+  const captures = (keys: string) => `(SELECT capture_id, commit_id, ROW_NUMBER() OVER (ORDER BY capture_id) AS position, count(*) OVER () AS total
+                                        FROM source_captures WHERE capture_key LIKE '${keys}-capture-%') capture`;
+  await writeDirectly(store, `
+    INSERT INTO source_subjects(source_subject_id, source_connection_id, identity_epoch_id, stream, record_kind, subject_digest, created_commit_id)
+    SELECT ${subject}, source_connection_id, identity_epoch_id, stream, '${kind}', 'cited-chain-digest', created_commit_id
+      FROM source_subjects WHERE record_kind = 'investment-source-record' LIMIT 1`);
+  await writeDirectly(store, `
+    INSERT INTO source_records(source_record_id, capture_id, source_subject_id, commit_id, record_kind, sequence_lexeme, occurrence_key, payload_json)
+    SELECT decode(md5('cited-chain-' || n), 'hex'), capture.capture_id, ${subject}, capture.commit_id, '${kind}', 'cited-' || n, 'cited-' || n, '{}'
+      FROM generate_series(1, ${copies}) n JOIN ${captures("investment")} ON capture.position = 1 + n % capture.total`);
+  await writeDirectly(store, `
+    INSERT INTO assertion_provenance(assertion_id, source_record_id, run_id, enrichment_run_id, coordinate_id, commit_id)
+    SELECT (SELECT assertion_id FROM assertions ORDER BY assertion_id LIMIT 1), source_record_id, decode(md5('cited-chain-run'), 'hex'), NULL, NULL, commit_id
+      FROM source_records WHERE record_kind = '${kind}'`);
+  await writeDirectly(store, `
+    INSERT INTO source_records(source_record_id, capture_id, source_subject_id, commit_id, record_kind, sequence_lexeme, occurrence_key, payload_json)
+    SELECT decode(md5('other-' || n), 'hex'), capture.capture_id, decode(md5('other-subject-' || (n % 4001)), 'hex'), capture.commit_id,
+           'other-kind-' || (n % 97), 'other-' || n, NULL, '{}'
+      FROM generate_series(1, ${others}) n JOIN ${captures("deposit")} ON capture.position = 1 + n % capture.total`);
+  await store.exec("ANALYZE");
+  return kind;
 }
 
 /** Every row of every table, as a row count and a digest of the rows. */

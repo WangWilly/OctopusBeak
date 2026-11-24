@@ -516,7 +516,8 @@ export function recordCitationsSql(columns: FoundColumns, within: (column: strin
  * a removable copy `kept_id`, the nearest earlier copy of its chain that is
  * kept. A removable copy equals the copy before it in every compared value
  * and its sequence lexeme, so it equals that kept copy too. The dry run
- * counts these rows; the compaction removes the removable ones.
+ * counts these rows; the compaction removes the removable ones, through
+ * `stagedRecordCopiesSql`.
  */
 export function recordCopiesSql(where: string, columns: FoundColumns, carried: boolean): string {
   const ofSubject = (column: string) => `${column} IN (SELECT source_record_id FROM subject_records)`;
@@ -524,16 +525,39 @@ export function recordCopiesSql(where: string, columns: FoundColumns, carried: b
     WITH subject_records AS MATERIALIZED (
       SELECT record.source_record_id, record.capture_id FROM source_records record WHERE ${where}
     ),
-    cited AS (
-      SELECT cited_id, array_agg(DISTINCT citing_table ORDER BY citing_table) AS pinned_by
-        FROM (${recordCitationsSql(columns, ofSubject, carried)}) citation
-       GROUP BY cited_id
-    ),
+    cited AS (${citedCopiesSql(columns, ofSubject, carried)}),
+    ${classifiedCopiesSql(where, "subject_records", "cited")}`;
+}
+
+/** The copies `within` admits that something cites, each once, with the tables that cite it. */
+export function citedCopiesSql(columns: FoundColumns, within: (column: string) => string, carried: boolean): string {
+  return `SELECT cited_id, array_agg(DISTINCT citing_table ORDER BY citing_table) AS pinned_by
+            FROM (${recordCitationsSql(columns, within, carried)}) citation
+           GROUP BY cited_id`;
+}
+
+/**
+ * `recordCopiesSql` over two tables the caller has filled and analyzed:
+ * `records`, the `source_record_id` and `capture_id` of every copy to
+ * classify, and `cited`, `citedCopiesSql` of those copies. The planner then
+ * knows how many copies and citations there are. Inside one query it
+ * estimates a chain's copies from the store's average, which can be one row
+ * for a chain of tens of thousands, and then scans every citation again for
+ * each copy.
+ */
+export function stagedRecordCopiesSql(records: string, cited: string): string {
+  return `WITH ${classifiedCopiesSql(`record.source_record_id IN (SELECT source_record_id FROM ${records})`, records, cited)}`;
+}
+
+/** The CTEs after `WITH` that classify the copies matching `where`, which `records` lists and `cited` pins. */
+function classifiedCopiesSql(where: string, records: string, cited: string): string {
+  const ofSubject = (column: string) => `${column} IN (SELECT source_record_id FROM ${records})`;
+  return `
     shape AS (
       SELECT capture_id, scope_key,
              string_agg(DISTINCT contract_version || CASE WHEN bucket_inventory_json IS NULL THEN '/n' ELSE '/i' END, ',') AS shape
         FROM source_occurrence_group_coverages
-       WHERE capture_id IN (SELECT capture_id FROM subject_records)
+       WHERE capture_id IN (SELECT capture_id FROM ${records})
        GROUP BY capture_id, scope_key
     ),
     -- The source assertions a copy backs, as a set; a row naming a run or coordinate pins the copy instead.
@@ -567,7 +591,7 @@ export function recordCopiesSql(where: string, columns: FoundColumns, carried: b
         LEFT JOIN source_record_scopes scope ON scope.source_record_id = record.source_record_id
         LEFT JOIN provenance ON provenance.source_record_id = record.source_record_id
         LEFT JOIN backed ON backed.source_record_id = record.source_record_id
-        LEFT JOIN cited ON cited.cited_id = record.source_record_id
+        LEFT JOIN ${cited} cited ON cited.cited_id = record.source_record_id
        WHERE ${where}
     ),
     chained AS (
