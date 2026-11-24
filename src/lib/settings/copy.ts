@@ -113,7 +113,7 @@ const en = {
     deletePreviewDataFailed: "Preview data could not be deleted. Try again.",
     dataSection: "Data on this device",
     dataDescription:
-      "Delete data OctopusBeak keeps on this device. Each action first cancels running syncs and cannot be undone.",
+      "Manage data OctopusBeak keeps on this device. Each delete or clear action first cancels running syncs and cannot be undone.",
     deleteFinancialData: "Delete all collected financial data",
     deleteFinancialDataHint:
       "Removes every account, transaction, statement, and classification from every source, preview data included. Keeps sign-in details, enabled sources, schedules, what each source collects, exchange rates, and settings. Manual assets are kept too; delete them with the action below.",
@@ -123,6 +123,24 @@ const en = {
     deletingFinancialData: "Deleting...",
     financialDataDeleted: "Collected financial data deleted",
     deleteFinancialDataFailed: "Collected financial data could not be deleted. Try again.",
+    reclaimLedgerSpace: "Reclaim ledger space",
+    reclaimLedgerSpaceHint:
+      "Rewrites ledger tables that still hold space left by earlier edits, so the ledger takes less disk. No data is deleted.",
+    reclaimLedgerSpaceChecking: "Checking...",
+    reclaimLedgerSpaceEstimate: (megabytes: string) =>
+      `About ${megabytes} MB can be reclaimed. No data is deleted. OctopusBeak may pause briefly while each table is rewritten; a running sync waits and then continues.`,
+    reclaimLedgerSpaceAction: "Reclaim",
+    reclaimLedgerSpaceNothing: "Nothing to reclaim",
+    reclaimLedgerSpaceStarting: "Starting...",
+    reclaimLedgerSpaceProgress: (table: number, tables: number) => `Reclaiming table ${table} of ${tables}`,
+    reclaimLedgerSpaceStop: "Stop",
+    reclaimLedgerSpaceDone: (megabytes: string) => `Reclaimed ${megabytes} MB`,
+    reclaimLedgerSpaceStopped: (megabytes: string) => `Stopped. Reclaimed ${megabytes} MB`,
+    reclaimLedgerSpaceNoRoom: (required: string, free: string) =>
+      `Not enough free disk space. Reclaiming needs about ${required} MB free, and ${free} MB is free. Free up space and try again.`,
+    reclaimLedgerSpaceFailed: "Ledger space could not be reclaimed. No data was changed. Try again.",
+    reclaimLedgerSpaceFailedPartway: (megabytes: string) =>
+      `Ledger space could not be fully reclaimed. ${megabytes} MB was reclaimed before the error. No data was changed. Try again.`,
     collectAllSources: "Collect every source now",
     collectAllSourcesStarted: "Collection started",
     collectAllSourcesFailed: "Collection could not start. Start it from Automation.",
@@ -277,7 +295,7 @@ const zh: typeof en = {
     previewDataDeleted: "已刪除預覽資料",
     deletePreviewDataFailed: "無法刪除預覽資料，請再試一次。",
     dataSection: "此裝置上的資料",
-    dataDescription: "刪除 OctopusBeak 保存在此裝置上的資料。每個動作都會先取消進行中的同步，且無法復原。",
+    dataDescription: "管理 OctopusBeak 保存在此裝置上的資料。每個刪除或清除動作都會先取消進行中的同步，且無法復原。",
     deleteFinancialData: "刪除所有收集的財務資料",
     deleteFinancialDataHint: "移除所有來源的帳戶、交易、帳單與分類，包括預覽資料。保留登入資料、已啟用的來源、排程、各來源要收集的項目、匯率與設定。手動資產也會保留，要刪除請使用下方的動作。",
     deleteFinancialDataConfirm: "要刪除所有收集的財務資料嗎？此動作無法復原。會先取消進行中的同步。登入資料、已啟用的來源、排程、各來源要收集的項目、匯率、設定與手動資產都會保留。在你手動開始或每日排程執行之前，不會重新收集。",
@@ -285,6 +303,23 @@ const zh: typeof en = {
     deletingFinancialData: "刪除中...",
     financialDataDeleted: "已刪除收集的財務資料",
     deleteFinancialDataFailed: "無法刪除收集的財務資料，請再試一次。",
+    reclaimLedgerSpace: "回收帳本空間",
+    reclaimLedgerSpaceHint: "重寫仍保留先前編輯所留空間的帳本資料表，讓帳本占用較少磁碟空間。不會刪除任何資料。",
+    reclaimLedgerSpaceChecking: "檢查中...",
+    reclaimLedgerSpaceEstimate: (megabytes: string) =>
+      `約可回收 ${megabytes} MB。不會刪除任何資料。重寫每個資料表時，OctopusBeak 可能會短暫停頓；進行中的同步會等待，之後繼續。`,
+    reclaimLedgerSpaceAction: "回收",
+    reclaimLedgerSpaceNothing: "沒有可回收的空間",
+    reclaimLedgerSpaceStarting: "準備中...",
+    reclaimLedgerSpaceProgress: (table: number, tables: number) => `正在回收第 ${table} 個資料表，共 ${tables} 個`,
+    reclaimLedgerSpaceStop: "停止",
+    reclaimLedgerSpaceDone: (megabytes: string) => `已回收 ${megabytes} MB`,
+    reclaimLedgerSpaceStopped: (megabytes: string) => `已停止，已回收 ${megabytes} MB`,
+    reclaimLedgerSpaceNoRoom: (required: string, free: string) =>
+      `磁碟可用空間不足。回收需要約 ${required} MB 可用空間，目前只有 ${free} MB。請釋出空間後再試一次。`,
+    reclaimLedgerSpaceFailed: "無法回收帳本空間。資料沒有任何變更，請再試一次。",
+    reclaimLedgerSpaceFailedPartway: (megabytes: string) =>
+      `無法完整回收帳本空間。發生錯誤前已回收 ${megabytes} MB。資料沒有任何變更，請再試一次。`,
     collectAllSources: "立即收集所有來源",
     collectAllSourcesStarted: "已開始收集",
     collectAllSourcesFailed: "無法開始收集，請到自動化頁面開始。",

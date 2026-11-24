@@ -666,6 +666,12 @@ async function start() {
     financial: { reset: () => operationalRuntime.worker.financial.request("financial.canonical.reset", []) },
     deleteAllPreviewData,
     deleteAllFinancialData,
+    ledgerReclaim: {
+      estimate: () => operationalRuntime.worker.financial.request("financial.ledger.reclaimEstimate", []),
+      reclaim: () => operationalRuntime.worker.financial.request("financial.ledger.reclaim", []),
+      status: () => operationalRuntime.worker.financial.request("financial.ledger.reclaimStatus", []),
+      stop: () => operationalRuntime.worker.financial.request("financial.ledger.reclaimStop", []),
+    },
   });
   const rendererUrl = RENDERER_URL;
   serveRenderer(protocol, path.join(appRoot, "build"));

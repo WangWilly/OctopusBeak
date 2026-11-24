@@ -61,6 +61,7 @@ import type { TdccAdmittedFundAccount } from "../../ledger/canonical/tdcc-invest
 import type { AccountIdentityContinuity, AccountIdentityContinuityRequest } from "../../ledger/pglite/account-identity-continuity.ts";
 import type { SpendingPageVersion } from "../../ledger/pglite/spending-page.ts";
 import type { CompactionPlanResult } from "../../ledger/pglite/compaction-plan.ts";
+import type { LedgerReclaimEstimate, LedgerReclaimResult, LedgerReclaimStatus } from "../../ledger/pglite/reclaim.ts";
 import type { LedgerCompactionResult } from "../../ledger/pglite/compaction.ts";
 import type {
   PGliteCanonicalLoanRelationResolutionRequest,
@@ -362,6 +363,29 @@ export const PGLITE_FINANCIAL_CONTRACTS = Object.freeze({
   "financial.canonical.compactionPlan": operation<[], CompactionPlanResult>(
     (args) => args.length === 0,
     { lane: "background-steps" },
+  ),
+  /**
+   * Ledger space reclaim (ADR 0155): which tables a `VACUUM FULL` would
+   * shrink, and by about how much, measured one table per step. Host-only.
+   */
+  "financial.ledger.reclaimEstimate": operation<[], LedgerReclaimEstimate>(
+    (args) => args.length === 0,
+    { lane: "background-steps" },
+  ),
+  /** Rewrites those tables one per step, so other work runs between two. Host-only; one at a time. */
+  "financial.ledger.reclaim": operation<[], LedgerReclaimResult>(
+    (args) => args.length === 0,
+    { lane: "background-steps" },
+  ),
+  /** The running reclaim's table, or how the last one ended. Host-only. */
+  "financial.ledger.reclaimStatus": operation<[], LedgerReclaimStatus>(
+    (args) => args.length === 0,
+    { lane: "interactive" },
+  ),
+  /** Stops the running reclaim once its current table is rewritten; false when none runs. Host-only. */
+  "financial.ledger.reclaimStop": operation<[], boolean>(
+    (args) => args.length === 0,
+    { lane: "interactive" },
   ),
   /**
    * Removes the domain-row repeats, record copies and count-row repeats a

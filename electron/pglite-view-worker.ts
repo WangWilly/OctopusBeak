@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, statfs, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parentPort, workerData, type MessagePort } from "node:worker_threads";
@@ -13,6 +13,7 @@ import { repairCorruptIndexes, type IndexRepair } from "../src/ledger/pglite/cat
 import { isLedgerUnusable, LEDGER_UNUSABLE_CODE, LedgerUnusableError } from "./ledger-unusable.ts";
 import { installFinancialStore } from "../src/ledger/pglite/store-layout.ts";
 import type { PGliteStore } from "../src/ledger/pglite/transaction.ts";
+import { directoryBytes, fsyncDirectory } from "../src/ledger/pglite/data-dir-files.ts";
 import { startPgliteVacuums } from "../src/ledger/pglite/vacuum.ts";
 import { startPgliteWalCheckpoints } from "../src/ledger/pglite/wal-checkpoint.ts";
 import { createPGliteOperationalRpcServer } from "../src/lib/pglite-rpc/pglite-operational-rpc.ts";
@@ -112,6 +113,11 @@ export async function startPGliteViewWorker(
     previewVisibility: () => currentPreviewVisibility(readSettings()),
     expectedSources: () => configuredOverviewSources(readSettings()),
     cardIdentitySecret,
+    freeDiskBytes: async () => {
+      const disk = await statfs(ownedDataDir);
+      return disk.bavail * disk.bsize;
+    },
+    ledgerFolder: { bytes: () => directoryBytes(ownedDataDir), sync: () => fsyncDirectory(ownedDataDir) },
   });
   const walCheckpoints = startPgliteWalCheckpoints(database, {
     run: (task) => host.scheduler.schedule("background", task),
