@@ -3,14 +3,15 @@ import { performance } from "node:perf_hooks";
 import { latestCardDetailsByRevisionSql } from "./card-details-sql.ts";
 import { captureSourceRecordIdsSql } from "./capture-manifest.ts";
 import {
+  citedCopiesSql,
   COUNTS,
   MANIFEST,
   PHASE_A,
   phaseCMarkedSql,
   readCitingColumns,
   recordCitationsSql,
-  recordCopiesSql,
   SATELLITES,
+  stagedRecordCopiesSql,
   type CompactionCitingColumnProblem,
   type PhaseATable,
 } from "./compaction-plan.ts";
@@ -31,7 +32,8 @@ import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
  *   partition is removed.
  *
  * The rows are the ones the dry run marks: both run the same queries
- * (`PHASE_A`, `recordCopiesSql` and `phaseCMarkedSql`). Everything happens in
+ * (`PHASE_A`, `phaseCMarkedSql`, and the classification of `recordCopiesSql`,
+ * here through `stagedRecordCopiesSql`). Everything happens in
  * one transaction. Before deleting, each answer in `COMPACTION_READERS` is
  * read as a digest, latest and at every knowledge point; after deleting, it
  * is read again, and any difference throws, which rolls the transaction
@@ -733,6 +735,8 @@ async function createSelectionTables(transaction: PGliteTransaction): Promise<vo
   await transaction.query("CREATE TEMP TABLE ledger_compaction_removed(table_name TEXT NOT NULL, row_ctid TID NOT NULL) ON COMMIT DROP");
   await transaction.query(`CREATE TEMP TABLE ledger_compaction_copies(
       source_record_id BYTEA PRIMARY KEY, capture_id BYTEA NOT NULL, kept_id BYTEA NOT NULL) ON COMMIT DROP`);
+  await transaction.query(`CREATE TEMP TABLE ${SCOPE_RECORDS}(source_record_id BYTEA PRIMARY KEY, capture_id BYTEA NOT NULL) ON COMMIT DROP`);
+  await transaction.query(`CREATE TEMP TABLE ${SCOPE_CITED}(cited_id BYTEA PRIMARY KEY, pinned_by TEXT[] NOT NULL) ON COMMIT DROP`);
 }
 
 /** Phases A and C: records each table's selected rows; returns how many each has. Phase C is narrowed to `scope`. */
@@ -783,7 +787,16 @@ async function deleteRows(
 
 type CitingColumns = Awaited<ReturnType<typeof readCitingColumns>>["columns"];
 
-/** Phase B's selection, narrowed to `scope`: the removable copies with their kept copies. Returns how many. */
+/** Every copy in the transaction's scope, and the ones something cites, for `stagedRecordCopiesSql`. */
+const SCOPE_RECORDS = "ledger_compaction_scope_records";
+const SCOPE_CITED = "ledger_compaction_scope_cited";
+
+/**
+ * Phase B's selection, narrowed to `scope`: the removable copies with their
+ * kept copies. Returns how many. The scope's copies, then their citations,
+ * are stored and analyzed before the copies are classified, so each query is
+ * planned with the true number of rows the one before it found.
+ */
 async function selectCopies(
   transaction: PGliteTransaction,
   columns: CitingColumns,
@@ -792,9 +805,20 @@ async function selectCopies(
   step: () => void,
 ): Promise<number> {
   step();
-  const selection = options.selections?.[RECORDS]
-    ?? `SELECT source_record_id, kept_id FROM (${recordCopiesSql(scope.chain("record.source_subject_id", "record.record_kind"), columns, false)}) copy
-         WHERE copy.category = 'removable'`;
+  let selection = options.selections?.[RECORDS];
+  if (selection === undefined) {
+    await transaction.query(`INSERT INTO ${SCOPE_RECORDS}(source_record_id, capture_id)
+      SELECT record.source_record_id, record.capture_id FROM source_records record
+       WHERE ${scope.chain("record.source_subject_id", "record.record_kind")}`);
+    await transaction.query(`ANALYZE ${SCOPE_RECORDS}`);
+    step();
+    const inScope = (column: string) => `${column} IN (SELECT source_record_id FROM ${SCOPE_RECORDS})`;
+    await transaction.query(`INSERT INTO ${SCOPE_CITED}(cited_id, pinned_by) ${citedCopiesSql(columns, inScope, false)}`);
+    await transaction.query(`ANALYZE ${SCOPE_CITED}`);
+    step();
+    selection = `SELECT source_record_id, kept_id FROM (${stagedRecordCopiesSql(SCOPE_RECORDS, SCOPE_CITED)}) copy
+                  WHERE copy.category = 'removable'`;
+  }
   const selected = (await transaction.query(
     `INSERT INTO ledger_compaction_copies(source_record_id, capture_id, kept_id)
      SELECT selection.source_record_id, record.capture_id, selection.kept_id
