@@ -729,6 +729,29 @@ const STATEMENT_MUTATIONS: readonly Readonly<{
     },
     failure: { reason: "manifest-mismatch" },
   },
+  {
+    // It hides its own tracks from the checks after it.
+    name: "a scope delete that also deletes an earlier manifest and its row in the checks' snapshot",
+    statements: {
+      source_record_scopes: `WITH victim AS (
+          SELECT capture_id FROM ${MANIFESTS} WHERE capture_id NOT IN (SELECT capture_id FROM ${COPIES}) ORDER BY capture_id LIMIT 1
+        ), gone AS (DELETE FROM ${MANIFESTS} WHERE capture_id IN (SELECT capture_id FROM victim) RETURNING 1),
+        hidden AS (DELETE FROM ledger_compaction_manifests_before WHERE capture_id IN (SELECT capture_id FROM victim) RETURNING 1)
+        DELETE FROM source_record_scopes WHERE source_record_id IN (SELECT source_record_id FROM ${COPIES})`,
+    },
+    failure: { reason: "selection-changed" },
+  },
+  {
+    // The delete still sees the selection as it was; only the checks after it would read the renamed one.
+    name: "a record delete that also renames a selected copy in the selection",
+    statements: {
+      source_records: `WITH renamed AS (
+          UPDATE ${COPIES} SET source_record_id = decode(md5('renamed'), 'hex')
+           WHERE source_record_id = (SELECT source_record_id FROM ${COPIES} ORDER BY source_record_id LIMIT 1) RETURNING 1)
+        DELETE FROM source_records WHERE source_record_id IN (SELECT source_record_id FROM ${COPIES})`,
+    },
+    failure: { reason: "selection-changed" },
+  },
 ];
 
 const refusedAs = (failure: (typeof STATEMENT_MUTATIONS)[number]["failure"], name: string) => (error: unknown) => {

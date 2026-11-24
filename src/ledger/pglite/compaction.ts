@@ -499,6 +499,8 @@ export type LedgerCompactionFailure =
   | Readonly<{ reason: "outside-chunk"; table: CompactedTable; rows: number }>
   /** A delete removed another number of rows than were selected, or than a satellite table holds for the removed copies. */
   | Readonly<{ reason: "removed-count-mismatch"; table: CompactedTable; selected: number; removed: number }>
+  /** A statement rewrote the selection or the manifests' snapshot that the checks after it read. */
+  | Readonly<{ reason: "selection-changed" }>
   /**
    * Phase B's manifests are not one new manifest for each capture owning a
    * removed copy: the insert wrote `inserted` rows, the table grew by
@@ -926,15 +928,25 @@ async function deleteCopies(
   step();
   const naming = (table: string) => `${table} WHERE source_record_id IN (SELECT source_record_id FROM ${COPIES})`;
   // Rows this transaction inserted or updated carry its id; a delete leaves none behind.
-  const writtenHere = "xmin::text = (pg_current_xact_id()::text::bigint % 4294967296)::text";
-  const counted = async () => Object.fromEntries(await Promise.all(RECORD_TABLES.map(async (table) => {
-    const { rows: [row] } = await transaction.query<{ naming: number; total: number; written: number }>(
-      `SELECT (SELECT count(*)::int FROM ${naming(table)}) AS naming, (SELECT count(*)::int FROM ${table}) AS total,
-              (SELECT count(*)::int FROM ${table} WHERE ${writtenHere}) AS written`);
-    return [table, row!] as const;
-  }))) as Record<(typeof RECORD_TABLES)[number], { naming: number; total: number; written: number }>;
+  const counted = async () => {
+    const counts = {} as Record<RecordTable, { naming: number; total: number; written: number }>;
+    for (const table of RECORD_TABLES) {
+      const { rows: [row] } = await transaction.query<{ naming: number; total: number; written: number }>(
+        `SELECT (count(*) FILTER (WHERE source_record_id IN (SELECT source_record_id FROM ${COPIES})))::int AS naming,
+                count(*)::int AS total, (count(*) FILTER (WHERE xmin = pg_current_xact_id()::xid))::int AS written
+           FROM ${table}`);
+      counts[table] = row!;
+    }
+    return counts;
+  };
+  // The checks below read the selection and the manifests' snapshot; a statement must not rewrite them either.
+  const digestOf = async (table: string) => (await transaction.query<{ digest: string | null }>(
+    `SELECT md5(string_agg(row_text, ',' ORDER BY row_text)) AS digest FROM (SELECT t::text AS row_text FROM ${table} t) rows`)).rows[0]!.digest;
   const before = await counted();
   const manifests = await writeManifests(transaction, options);
+  const guarded = [COPIES, MANIFESTS_BEFORE] as const;
+  const guardedBefore: (string | null)[] = [];
+  for (const table of guarded) guardedBefore.push(await digestOf(table));
   await deleting(transaction, async () => {
     for (const table of RECORD_TABLES) {
       step();
@@ -946,6 +958,10 @@ async function deleteCopies(
   });
   // Checked once every statement has run, since one statement can reach another's table: in each table exactly the
   // rows naming a removed copy went, none of them is left, and no row was written by this chunk.
+  const guardedAfter: (string | null)[] = [];
+  for (const table of guarded) guardedAfter.push(await digestOf(table));
+  if (guardedAfter.some((digest, index) => digest !== guardedBefore[index]))
+    throw new LedgerCompactionError({ reason: "selection-changed" });
   const after = await counted();
   for (const table of RECORD_TABLES) {
     const { naming: selected, total } = before[table];
@@ -958,7 +974,7 @@ async function deleteCopies(
     `SELECT (SELECT count(*)::int FROM ${MANIFESTS_BEFORE} WHERE capture_id NOT IN (SELECT capture_id FROM ${MANIFEST}))
           + (SELECT count(DISTINCT capture_id)::int FROM ${COPIES})
           - (SELECT count(*)::int FROM ${MANIFEST} WHERE capture_id NOT IN (SELECT capture_id FROM ${MANIFESTS_BEFORE})) AS missing,
-            (SELECT count(*)::int FROM ${MANIFEST} WHERE ${writtenHere}
+            (SELECT count(*)::int FROM ${MANIFEST} WHERE xmin = pg_current_xact_id()::xid
                AND capture_id NOT IN (SELECT capture_id FROM ${COPIES})) AS written`,
   );
   if (kept!.missing !== 0 || kept!.written !== 0)
