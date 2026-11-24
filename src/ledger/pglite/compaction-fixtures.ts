@@ -173,10 +173,12 @@ async function addEdgeCases(store: PGliteStore): Promise<Readonly<Record<string,
     depositMixed: await writeDirectly(store, mixedProvenance(`(
       SELECT source_record_id FROM source_records WHERE capture_id = ${captureOf(`deposit-capture-${SYNCS}`)}
          AND source_record_id NOT IN (${captureSourceRecordIdsSql(captureOf(`deposit-capture-${SYNCS + 1}`))}))`)),
+    // The first copy by occurrence key, not by its random id, so the checks that plant defects on later copies never meet it.
     cardMixed: await writeDirectly(store, mixedProvenance(`(
-      SELECT source_record_id FROM assertion_provenance
-       WHERE source_record_id IN (SELECT source_record_id FROM source_records WHERE capture_id = ${captureOf(`card-command-capture-${SYNCS}`)})
-       ORDER BY source_record_id LIMIT 1)`)),
+      SELECT record.source_record_id FROM source_records record
+       WHERE record.capture_id = ${captureOf(`card-command-capture-${SYNCS}`)}
+         AND EXISTS (SELECT 1 FROM assertion_provenance backed WHERE backed.source_record_id = record.source_record_id)
+       ORDER BY record.occurrence_key LIMIT 1)`)),
     kind: await writeDirectly(store, `UPDATE source_records SET record_kind = 'fubon-credit-card-statement'
       WHERE source_record_id = (SELECT evidence_source_record_id FROM canonical_credit_card_statement_summary_evidence
                                  WHERE capture_id = ${captureOf("card-command-capture-2")}
