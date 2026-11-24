@@ -173,13 +173,16 @@ async function addEdgeCases(store: PGliteStore): Promise<Readonly<Record<string,
     depositMixed: await writeDirectly(store, mixedProvenance(`(
       SELECT source_record_id FROM source_records WHERE capture_id = ${captureOf(`deposit-capture-${SYNCS}`)}
          AND source_record_id NOT IN (${captureSourceRecordIdsSql(captureOf(`deposit-capture-${SYNCS + 1}`))}))`)),
+    // The first copy by occurrence key, not by its random id, so the checks that plant defects on later copies never meet it.
     cardMixed: await writeDirectly(store, mixedProvenance(`(
-      SELECT source_record_id FROM assertion_provenance
-       WHERE source_record_id IN (SELECT source_record_id FROM source_records WHERE capture_id = ${captureOf(`card-command-capture-${SYNCS}`)})
-       ORDER BY source_record_id LIMIT 1)`)),
+      SELECT record.source_record_id FROM source_records record
+       WHERE record.capture_id = ${captureOf(`card-command-capture-${SYNCS}`)}
+         AND EXISTS (SELECT 1 FROM assertion_provenance backed WHERE backed.source_record_id = record.source_record_id)
+       ORDER BY record.occurrence_key LIMIT 1)`)),
     kind: await writeDirectly(store, `UPDATE source_records SET record_kind = 'fubon-credit-card-statement'
       WHERE source_record_id = (SELECT evidence_source_record_id FROM canonical_credit_card_statement_summary_evidence
-                                 WHERE capture_id = ${captureOf("card-command-capture-2")})`),
+                                 WHERE capture_id = ${captureOf("card-command-capture-2")}
+                                 ORDER BY evidence_source_record_id LIMIT 1)`),
   };
 }
 
@@ -235,6 +238,88 @@ export async function legacyStore(database?: PGlite): Promise<Legacy> {
   await giveLastCardCaptureAManifest(store);
   await commitResync(store, "deposit", SYNCS + 1, { rowCount: ROWS });
   return { store, repeated, edgeCases: await addEdgeCases(store) };
+}
+
+/**
+ * Adds one chain of `copies` records to a `legacyStore`, each seen once and
+ * each cited by an assertion row that names a run, so compaction keeps them
+ * all. `others` more records, without an occurrence key and spread over many
+ * subjects and record kinds, make the store's average chain a single copy,
+ * as it is on a store with many sources. Returns the chain's record kind.
+ */
+export async function addCitedChain(store: PGliteStore, { copies, others }: Readonly<{ copies: number; others: number }>): Promise<string> {
+  const kind = "cited-chain-record";
+  const subject = "decode(md5('cited-chain-subject'), 'hex')";
+  const captures = (keys: string) => `(SELECT capture_id, commit_id, ROW_NUMBER() OVER (ORDER BY capture_id) AS position, count(*) OVER () AS total
+                                        FROM source_captures WHERE capture_key LIKE '${keys}-capture-%') capture`;
+  await writeDirectly(store, `
+    INSERT INTO source_subjects(source_subject_id, source_connection_id, identity_epoch_id, stream, record_kind, subject_digest, created_commit_id)
+    SELECT ${subject}, source_connection_id, identity_epoch_id, stream, '${kind}', 'cited-chain-digest', created_commit_id
+      FROM source_subjects WHERE record_kind = 'investment-source-record' LIMIT 1`);
+  await writeDirectly(store, `
+    INSERT INTO source_records(source_record_id, capture_id, source_subject_id, commit_id, record_kind, sequence_lexeme, occurrence_key, payload_json)
+    SELECT decode(md5('cited-chain-' || n), 'hex'), capture.capture_id, ${subject}, capture.commit_id, '${kind}', 'cited-' || n, 'cited-' || n, '{}'
+      FROM generate_series(1, ${copies}) n JOIN ${captures("investment")} ON capture.position = 1 + n % capture.total`);
+  await writeDirectly(store, `
+    INSERT INTO assertion_provenance(assertion_id, source_record_id, run_id, enrichment_run_id, coordinate_id, commit_id)
+    SELECT (SELECT assertion_id FROM assertions ORDER BY assertion_id LIMIT 1), source_record_id, decode(md5('cited-chain-run'), 'hex'), NULL, NULL, commit_id
+      FROM source_records WHERE record_kind = '${kind}'`);
+  await writeDirectly(store, `
+    INSERT INTO source_records(source_record_id, capture_id, source_subject_id, commit_id, record_kind, sequence_lexeme, occurrence_key, payload_json)
+    SELECT decode(md5('other-' || n), 'hex'), capture.capture_id, decode(md5('other-subject-' || (n % 4001)), 'hex'), capture.commit_id,
+           'other-kind-' || (n % 97), 'other-' || n, NULL, '{}'
+      FROM generate_series(1, ${others}) n JOIN ${captures("deposit")} ON capture.position = 1 + n % capture.total`);
+  await store.exec("ANALYZE");
+  return kind;
+}
+
+/**
+ * Adds one chain to a `legacyStore`, held by `captures` new captures, each
+ * with its own commit. Every capture holds `fresh` records only it saw, as a
+ * holding or balance is new on every sync, and the first `steadyCaptures` of
+ * them each hold a copy of the same `steady` records, so compaction removes
+ * `steady * (steadyCaptures - 1)` copies. Returns the chain's record kind.
+ */
+export async function addCaptureChain(
+  store: PGliteStore,
+  { name, captures, fresh, steady, steadyCaptures }: Readonly<{ name: string; captures: number; fresh: number; steady: number; steadyCaptures: number }>,
+): Promise<string> {
+  const kind = `${name}-record`;
+  const subject = `decode(md5('${name}-subject'), 'hex')`;
+  const id = (part: string) => `decode(md5('${name}-${part}-' || n), 'hex')`;
+  await writeDirectly(store, `
+    INSERT INTO source_subjects(source_subject_id, source_connection_id, identity_epoch_id, stream, record_kind, subject_digest, created_commit_id)
+    SELECT ${subject}, source_connection_id, identity_epoch_id, stream, '${kind}', '${name}-digest', created_commit_id
+      FROM source_subjects WHERE record_kind = 'investment-source-record' LIMIT 1`);
+  await writeDirectly(store, `
+    INSERT INTO canonical_commits(commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind)
+    SELECT ${id("commit")}, latest.commit_sequence + n, latest.recorded_at_utc_us + n, latest.authority_route, latest.commit_kind
+      FROM generate_series(1, ${captures}) n
+     CROSS JOIN (SELECT * FROM canonical_commits ORDER BY commit_sequence DESC LIMIT 1) latest`);
+  const { rows: columns } = await store.query<{ name: string }>(
+    `SELECT column_name AS name FROM information_schema.columns
+      WHERE table_schema = current_schema() AND table_name = 'source_captures' ORDER BY ordinal_position`,
+  );
+  const capture: Readonly<Record<string, string>> = {
+    capture_id: id("capture"), capture_key: `'${name}-capture-' || n`, source_subject_id: subject, record_kind: `'${kind}'`, commit_id: id("commit"),
+  };
+  await writeDirectly(store, `
+    INSERT INTO source_captures(${columns.map(({ name: column }) => column).join(", ")})
+    SELECT ${columns.map(({ name: column }) => capture[column] ?? `src.${column}`).join(", ")}
+      FROM generate_series(1, ${captures}) n
+     CROSS JOIN (SELECT * FROM source_captures WHERE capture_key = 'investment-capture-1') src`);
+  await writeDirectly(store, `
+    INSERT INTO source_records(source_record_id, capture_id, source_subject_id, commit_id, record_kind, sequence_lexeme, occurrence_key, payload_json)
+    SELECT decode(md5('${name}-record-' || n || '-' || held.key), 'hex'), ${id("capture")}, ${subject}, ${id("commit")}, '${kind}', held.key, held.key,
+           '{"key":"' || held.key || '"}'
+      FROM generate_series(1, ${captures}) n
+     CROSS JOIN LATERAL (
+       SELECT 'fresh-' || n || '-' || member AS key FROM generate_series(1, ${fresh}) member
+       UNION ALL
+       SELECT 'steady-' || member FROM generate_series(1, ${steady}) member WHERE n <= ${steadyCaptures}
+     ) held`);
+  await store.exec("ANALYZE");
+  return kind;
 }
 
 /** Every row of every table, as a row count and a digest of the rows. */

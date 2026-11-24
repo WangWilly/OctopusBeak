@@ -11,6 +11,7 @@ import { PGlite } from "@electric-sql/pglite";
 import {
   COMPACTION_READERS,
   compactLedger,
+  compactLedgerChunk,
   LedgerCompactionError,
   readCompactionReaders,
   type LedgerCompactionFailure,
@@ -18,8 +19,9 @@ import {
   type CompactionReader,
   type LedgerCompactionResult,
 } from "./compaction.ts";
+import { planLedgerCompactionJob, runLedgerCompaction } from "./compaction-job.ts";
 import { COUNTS, PHASE_A, planLedgerCompaction, type CompactionPlan } from "./compaction-plan.ts";
-import { captureOf, copyOf as copyIn, keyOf, legacyStore, MODES, ROWS, snapshot, SYNCS, writeDirectly } from "./compaction-fixtures.ts";
+import { addCaptureChain, captureOf, copyOf as copyIn, keyOf, legacyStore, MODES, ROWS, snapshot, SYNCS, writeDirectly } from "./compaction-fixtures.ts";
 import { canonicalState } from "./canonical-state-fixture.ts";
 import { commitResync } from "./resync-fixtures.ts";
 import { PGliteStore } from "./transaction.ts";
@@ -538,6 +540,307 @@ test("a phase B selection that removes a copy it must keep rolls back and change
       assert.ok(caught.has(check), `${check} stops a mutation`);
     assert.deepEqual(await markers(store), []);
     compacted(await compactLedger(store));
+  } finally {
+    await store.close();
+  }
+});
+
+test("a chunk refuses each of those phase B selections as the whole compaction does", async () => {
+  const { store } = await legacyStore();
+  try {
+    assert.equal(await writeDirectly(store, `UPDATE source_record_scopes
+        SET account_id = (SELECT account_id FROM financial_accounts ORDER BY account_id LIMIT 1)
+      WHERE source_record_id = ${invoiceCopy(2, 4)}`), 1);
+    // Phase A first, as the job runs it: the domain rows it keeps decide which copies stay cited.
+    const { chunks } = await planLedgerCompactionJob(store);
+    for (const chunk of chunks) if (chunk.kind === "domain") await compactLedgerChunk(store, chunk);
+    const before = await snapshot(store);
+    for (const mutation of RECORD_MUTATIONS) {
+      const { rows: chains } = await store.query<{ subject: string; record_kind: string }>(
+        `SELECT DISTINCT encode(record.source_subject_id, 'hex') AS subject, record.record_kind
+           FROM (${mutation.selection}) selection JOIN source_records record ON record.source_record_id = selection.source_record_id`);
+      assert.equal(chains.length, 1, mutation.name);
+      const chunk = chunks.find((candidate) => candidate.kind === "chains"
+        && candidate.chains.some(({ subject, recordKind }) => subject === chains[0]!.subject && recordKind === chains[0]!.record_kind));
+      assert.ok(chunk, mutation.name);
+      // The chunk reads only the records and captures of the copies it selected, and still sees each defect.
+      await assert.rejects(compactLedgerChunk(store, chunk, { selections: { source_records: mutation.selection } }), (error: unknown) => {
+        assert.ok(error instanceof LedgerCompactionError, String(error));
+        assert.deepEqual(error.failure, mutation.failure, mutation.name);
+        return true;
+      }, mutation.name);
+      assert.deepEqual(await snapshot(store), before, `${mutation.name} changed nothing`);
+    }
+  } finally {
+    await store.close();
+  }
+});
+
+const COPIES = "ledger_compaction_copies";
+const MANIFEST_INSERT = `INSERT INTO ${MANIFESTS}(capture_id, source_record_ids, record_count, commit_id)
+  SELECT copy.capture_id, string_agg(copy.kept_id, ''::bytea ORDER BY copy.kept_id), count(*)::int, capture.commit_id
+    FROM ${COPIES} copy JOIN source_captures capture ON capture.capture_id = copy.capture_id
+   GROUP BY copy.capture_id, capture.commit_id`;
+
+/**
+ * Phase B statements that write or delete more than the selected copies'
+ * rows, beyond what a chunk's readers read: they read only the removed
+ * copies' records and the captures that own one. Only the count guards stop
+ * them.
+ */
+const STATEMENT_MUTATIONS: readonly Readonly<{
+  name: string;
+  statements: Readonly<Partial<Record<(typeof RECORD_TABLES)[number] | typeof MANIFESTS, string>>>;
+  failure: Pick<LedgerCompactionFailure, "reason"> & { table?: CompactedTable };
+}>[] = [
+  {
+    // Its membership shrinks to the one copy, yet it owns no removed copy, so no chunk reader reads it.
+    name: "a second manifest, on a kept copy's capture, listing only that copy",
+    statements: {
+      [MANIFESTS]: `WITH extra AS (
+        INSERT INTO ${MANIFESTS}(capture_id, source_record_ids, record_count, commit_id)
+        SELECT DISTINCT ON (kept.capture_id) kept.capture_id, kept.source_record_id, 1, capture.commit_id
+          FROM ${COPIES} copy JOIN source_records kept ON kept.source_record_id = copy.kept_id
+          JOIN source_captures capture ON capture.capture_id = kept.capture_id
+         WHERE kept.capture_id NOT IN (SELECT capture_id FROM ${COPIES})
+           AND NOT EXISTS (SELECT 1 FROM ${MANIFESTS} manifest WHERE manifest.capture_id = kept.capture_id)
+         ORDER BY kept.capture_id, kept.source_record_id
+        RETURNING 1)
+      ${MANIFEST_INSERT}`,
+    },
+    failure: { reason: "manifest-mismatch" },
+  },
+  {
+    name: "a scope delete that also takes the scope rows of the kept copies' captures' other records",
+    statements: {
+      source_record_scopes: `DELETE FROM source_record_scopes
+        WHERE source_record_id IN (SELECT source_record_id FROM ${COPIES})
+           OR source_record_id IN (SELECT record.source_record_id FROM source_records record
+               WHERE record.capture_id IN (SELECT kept.capture_id FROM source_records kept JOIN ${COPIES} copy ON kept.source_record_id = copy.kept_id)
+                 AND record.capture_id NOT IN (SELECT capture_id FROM ${COPIES})
+                 AND record.source_record_id NOT IN (SELECT kept_id FROM ${COPIES}))`,
+    },
+    failure: { reason: "removed-count-mismatch", table: "source_record_scopes" },
+  },
+  {
+    // No reader reads the record provenance.
+    name: "a provenance delete that takes every record of the chunk's chains",
+    statements: {
+      source_record_provenance: `DELETE FROM source_record_provenance
+        WHERE source_record_id IN (SELECT source_record_id FROM ledger_compaction_scope_records)`,
+    },
+    failure: { reason: "removed-count-mismatch", table: "source_record_provenance" },
+  },
+  {
+    // As many rows as name a removed copy, but one of them traded for another record's row.
+    name: "a scope delete that keeps one removed copy's row and takes another record's instead",
+    statements: {
+      source_record_scopes: `DELETE FROM source_record_scopes WHERE ctid IN (
+          (SELECT ctid FROM source_record_scopes WHERE source_record_id IN (SELECT source_record_id FROM ${COPIES}) ORDER BY ctid OFFSET 1)
+          UNION ALL
+          (SELECT ctid FROM source_record_scopes WHERE source_record_id NOT IN (SELECT source_record_id FROM ${COPIES})
+             AND source_record_id NOT IN (SELECT kept_id FROM ${COPIES}) ORDER BY ctid LIMIT 1))`,
+    },
+    failure: { reason: "removed-count-mismatch", table: "source_record_scopes" },
+  },
+  {
+    name: "an assertion provenance delete that trades one removed copy's row for another record's",
+    statements: {
+      assertion_provenance: `DELETE FROM assertion_provenance WHERE ctid IN (
+          (SELECT ctid FROM assertion_provenance WHERE source_record_id IN (SELECT source_record_id FROM ${COPIES}) ORDER BY ctid OFFSET 1)
+          UNION ALL
+          (SELECT ctid FROM assertion_provenance WHERE source_record_id NOT IN (SELECT source_record_id FROM ${COPIES})
+             AND source_record_id NOT IN (SELECT kept_id FROM ${COPIES}) ORDER BY ctid LIMIT 1))`,
+    },
+    failure: { reason: "removed-count-mismatch", table: "assertion_provenance" },
+  },
+  {
+    // The row count matches, and every row stays.
+    name: "an update in place of the scope delete",
+    statements: {
+      source_record_scopes: `UPDATE source_record_scopes SET account_id = account_id
+        WHERE source_record_id IN (SELECT source_record_id FROM ${COPIES})`,
+    },
+    failure: { reason: "removed-count-mismatch", table: "source_record_scopes" },
+  },
+  {
+    // The append-only guard is off while the copies go.
+    name: "a scope delete that also deletes a manifest the chunk did not write",
+    statements: {
+      source_record_scopes: `WITH gone AS (
+          DELETE FROM ${MANIFESTS} WHERE capture_id = (SELECT capture_id FROM ${MANIFESTS}
+            WHERE capture_id NOT IN (SELECT capture_id FROM ${COPIES}) ORDER BY capture_id LIMIT 1) RETURNING 1)
+        DELETE FROM source_record_scopes WHERE source_record_id IN (SELECT source_record_id FROM ${COPIES})`,
+    },
+    failure: { reason: "manifest-mismatch" },
+  },
+  {
+    // The writes below reach rows of records the chunk's readers do not read.
+    name: "a scope delete that also updates another record's scope",
+    statements: {
+      source_record_scopes: `WITH changed AS (
+          UPDATE source_record_scopes SET account_id = NULL WHERE source_record_id = (SELECT source_record_id FROM source_records WHERE source_record_id NOT IN (SELECT source_record_id FROM ${COPIES}) AND source_record_id NOT IN (SELECT kept_id FROM ${COPIES}) ORDER BY source_record_id LIMIT 1) RETURNING 1)
+        DELETE FROM source_record_scopes WHERE source_record_id IN (SELECT source_record_id FROM ${COPIES})`,
+    },
+    failure: { reason: "removed-count-mismatch", table: "source_record_scopes" },
+  },
+  {
+    name: "a scope delete that also replaces another record's scope with a changed copy, keeping the count",
+    statements: {
+      source_record_scopes: `WITH gone AS (
+          DELETE FROM source_record_scopes WHERE ctid = (SELECT ctid FROM source_record_scopes WHERE source_record_id = (SELECT source_record_id FROM source_records WHERE source_record_id NOT IN (SELECT source_record_id FROM ${COPIES}) AND source_record_id NOT IN (SELECT kept_id FROM ${COPIES}) ORDER BY source_record_id LIMIT 1) LIMIT 1)
+          RETURNING *), back AS (
+          INSERT INTO source_record_scopes SELECT * FROM gone RETURNING 1)
+        DELETE FROM source_record_scopes WHERE source_record_id IN (SELECT source_record_id FROM ${COPIES})`,
+    },
+    failure: { reason: "removed-count-mismatch", table: "source_record_scopes" },
+  },
+  {
+    name: "a scope delete that also changes another record's payload",
+    statements: {
+      source_record_scopes: `WITH changed AS (
+          UPDATE source_records SET payload_json = payload_json || ' ' WHERE source_record_id = (SELECT source_record_id FROM source_records WHERE source_record_id NOT IN (SELECT source_record_id FROM ${COPIES}) AND source_record_id NOT IN (SELECT kept_id FROM ${COPIES}) ORDER BY source_record_id LIMIT 1) RETURNING 1)
+        DELETE FROM source_record_scopes WHERE source_record_id IN (SELECT source_record_id FROM ${COPIES})`,
+    },
+    failure: { reason: "removed-count-mismatch", table: "source_records" },
+  },
+  {
+    name: "a scope delete that also deletes another record's assertion provenance",
+    statements: {
+      source_record_scopes: `WITH gone AS (
+          DELETE FROM assertion_provenance WHERE ctid = (SELECT ctid FROM assertion_provenance
+            WHERE source_record_id NOT IN (SELECT source_record_id FROM ${COPIES}) ORDER BY ctid LIMIT 1) RETURNING 1)
+        DELETE FROM source_record_scopes WHERE source_record_id IN (SELECT source_record_id FROM ${COPIES})`,
+    },
+    failure: { reason: "removed-count-mismatch", table: "assertion_provenance" },
+  },
+  {
+    name: "a scope delete that swaps a manifest it did not write for a made-up one",
+    statements: {
+      source_record_scopes: `WITH gone AS (
+          DELETE FROM ${MANIFESTS} WHERE capture_id = (SELECT capture_id FROM ${MANIFESTS}
+            WHERE capture_id NOT IN (SELECT capture_id FROM ${COPIES}) ORDER BY capture_id LIMIT 1) RETURNING *), made AS (
+          INSERT INTO ${MANIFESTS}(capture_id, source_record_ids, record_count, commit_id)
+          SELECT capture.capture_id, gone.source_record_ids, gone.record_count, capture.commit_id FROM gone
+            CROSS JOIN LATERAL (SELECT capture_id, commit_id FROM source_captures
+              WHERE capture_id NOT IN (SELECT capture_id FROM ${MANIFESTS}) AND capture_id NOT IN (SELECT capture_id FROM ${COPIES})
+              ORDER BY capture_id LIMIT 1) capture RETURNING 1)
+        DELETE FROM source_record_scopes WHERE source_record_id IN (SELECT source_record_id FROM ${COPIES})`,
+    },
+    failure: { reason: "manifest-mismatch" },
+  },
+  {
+    // It hides its own tracks from the checks after it.
+    name: "a scope delete that also deletes an earlier manifest and its row in the checks' snapshot",
+    statements: {
+      source_record_scopes: `WITH victim AS (
+          SELECT capture_id FROM ${MANIFESTS} WHERE capture_id NOT IN (SELECT capture_id FROM ${COPIES}) ORDER BY capture_id LIMIT 1
+        ), gone AS (DELETE FROM ${MANIFESTS} WHERE capture_id IN (SELECT capture_id FROM victim) RETURNING 1),
+        hidden AS (DELETE FROM ledger_compaction_manifests_before WHERE capture_id IN (SELECT capture_id FROM victim) RETURNING 1)
+        DELETE FROM source_record_scopes WHERE source_record_id IN (SELECT source_record_id FROM ${COPIES})`,
+    },
+    failure: { reason: "selection-changed" },
+  },
+  {
+    // The delete still sees the selection as it was; only the checks after it would read the renamed one.
+    name: "a record delete that also renames a selected copy in the selection",
+    statements: {
+      source_records: `WITH renamed AS (
+          UPDATE ${COPIES} SET source_record_id = decode(md5('renamed'), 'hex')
+           WHERE source_record_id = (SELECT source_record_id FROM ${COPIES} ORDER BY source_record_id LIMIT 1) RETURNING 1)
+        DELETE FROM source_records WHERE source_record_id IN (SELECT source_record_id FROM ${COPIES})`,
+    },
+    failure: { reason: "selection-changed" },
+  },
+];
+
+const refusedAs = (failure: (typeof STATEMENT_MUTATIONS)[number]["failure"], name: string) => (error: unknown) => {
+  assert.ok(error instanceof LedgerCompactionError, String(error));
+  assert.equal(error.failure.reason, failure.reason, name);
+  if (failure.table) assert.equal((error.failure as { table?: string }).table, failure.table, name);
+  return true;
+};
+
+test("a phase B statement that writes or deletes more than its copies' rows rolls back, whole or in a chunk", async () => {
+  for (const mutation of STATEMENT_MUTATIONS) {
+    const { store } = await legacyStore();
+    try {
+      const before = await snapshot(store);
+      await assert.rejects(compactLedger(store, { statements: mutation.statements }), refusedAs(mutation.failure, mutation.name), mutation.name);
+      assert.deepEqual(await snapshot(store), before, `${mutation.name} changed nothing`);
+      assert.deepEqual(await markers(store), []);
+
+      // Each chunk the statement changes more than its copies in is refused; the rest commit as they would anyway.
+      const { chunks } = await planLedgerCompactionJob(store);
+      let refused = 0;
+      for (const chunk of chunks) {
+        if (chunk.kind === "chains") {
+          const unchanged = await snapshot(store);
+          try {
+            await compactLedgerChunk(store, chunk, { statements: mutation.statements });
+          } catch (error) {
+            refusedAs(mutation.failure, mutation.name)(error);
+            assert.deepEqual(await snapshot(store), unchanged, `${mutation.name} changed nothing in a chunk`);
+            refused += 1;
+          }
+        }
+        await compactLedgerChunk(store, chunk);
+      }
+      assert.ok(refused > 0, `a chunk refuses ${mutation.name}`);
+    } finally {
+      await store.close();
+    }
+  }
+});
+
+test("a chunk reads the records it removes a copy of and the captures that own one, not its whole chain", async () => {
+  const { store } = await legacyStore();
+  try {
+    // Twelve captures of one chain, each with five records only it saw; the first four also hold a copy of one record.
+    const kind = await addCaptureChain(store, { name: "holdings", captures: 12, fresh: 5, steady: 1, steadyCaptures: 4 });
+    const { rows: [chain] } = await store.query<{ subject: string; copies: number }>(
+      "SELECT encode(min(source_subject_id), 'hex') AS subject, count(*)::int AS copies FROM source_records WHERE record_kind = $1", [kind]);
+    assert.equal(chain!.copies, 12 * 5 + 4);
+    const chunk = { kind: "chains", chains: [{ subject: chain!.subject, recordKind: kind }], namespaces: [], records: true, counts: false } as const;
+
+    // A copy without an occurrence key is in no record reader's scope, so a chunk refuses to remove one.
+    await writeDirectly(store, `
+      INSERT INTO source_records(source_record_id, capture_id, source_subject_id, commit_id, record_kind, sequence_lexeme, occurrence_key, payload_json)
+      SELECT decode(md5('keyless-' || n), 'hex'), capture_id, source_subject_id, commit_id, record_kind, 'keyless', NULL, '{}'
+        FROM source_records CROSS JOIN generate_series(1, 2) n
+       WHERE capture_id = ${captureOf("holdings-capture-1")} AND occurrence_key = 'steady-1'`);
+    const keyless = "SELECT decode(md5('keyless-2'), 'hex') AS source_record_id, decode(md5('keyless-1'), 'hex') AS kept_id";
+    await assert.rejects(compactLedgerChunk(store, chunk, { selections: { source_records: keyless } }), (error: unknown) => {
+      assert.ok(error instanceof LedgerCompactionError, String(error));
+      assert.deepEqual(error.failure, { reason: "outside-chunk", table: "source_records", rows: 1 });
+      return true;
+    });
+
+    const result = await compactLedgerChunk(store, chunk);
+    assert.equal(result.removed.source_records, 3);
+    assert.equal(result.manifests, 3);
+    // Three captures each owned a removed copy: their six members each, the kept copy now through the manifest.
+    assert.equal(result.digests.captureMembership?.rows, 3 * 6);
+    assert.equal(result.digests.recordLatestCopy?.rows, 1);
+    assert.equal(result.digests.recordLatestCopyHistory?.rows, 1);
+  } finally {
+    await store.close();
+  }
+});
+
+test("the job analyzes the tables its chunks changed once they are all done", async () => {
+  const { store } = await legacyStore();
+  try {
+    const estimated = async (table: string) =>
+      (await store.query<{ rows: number }>("SELECT reltuples::int AS rows FROM pg_class WHERE oid = $1::regclass", [table])).rows[0]!.rows;
+    assert.equal(await estimated("source_records"), -1, "never analyzed before the run");
+    const result = await runLedgerCompaction(store);
+    assert.equal(result.status, "compacted", JSON.stringify(result));
+    // No table was rewritten, so the row counts the planner holds come from the job's own ANALYZE.
+    assert.equal(result.status === "compacted" && result.reclaim.status, "nothing-to-reclaim");
+    const counts = await rowCounts(store);
+    for (const table of ["source_records", "assertion_provenance", "source_occurrence_group_counts", MANIFESTS] as const)
+      assert.equal(await estimated(table), counts[table], table);
   } finally {
     await store.close();
   }

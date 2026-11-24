@@ -1,5 +1,6 @@
 import { performance } from "node:perf_hooks";
 import {
+  analyzeCompactedTables,
   COMPACTED_TABLES,
   COMPACTION_READERS,
   compactLedgerChunk,
@@ -389,6 +390,7 @@ export async function runLedgerCompaction(store: PGliteStore, options: LedgerCom
   }
   if (!compacted) {
     try {
+      await analyzeCompactedTables(store, runStep);
       await runStep(() => writeMarkers(store, [DOMAIN_COUNTS_MARKER, RECORDS_MARKER]));
     } catch (error) {
       return ended(error, null);
