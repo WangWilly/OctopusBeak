@@ -3,11 +3,13 @@
  * writes to it, refuses without room, and leaves nothing behind when it fails.
  */
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { chmod, cp, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { setTimeout as sleep } from "node:timers/promises";
 import { PGlite } from "@electric-sql/pglite";
 import {
   backUpLedger,
@@ -15,6 +17,7 @@ import {
   LedgerBackupError,
   ledgerBackupBytesNeeded,
   ledgerBackupPath,
+  ledgerFolderCopy,
   ledgerBackupRoom,
   removePartialLedgerBackups,
 } from "./data-dir-backup.ts";
@@ -103,6 +106,8 @@ test("a backup goes beside the folder and never over an earlier one", () => {
   const now = new Date("2026-11-24T08:00:00.123Z");
   const taken = new Set(["/data/ledger.before-compaction-2026-11-24T08-00-00Z"]);
   assert.equal(ledgerBackupPath("/data/ledger", now, (path) => taken.has(path)), "/data/ledger.before-compaction-2026-11-24T08-00-00Z-1");
+  // Not `/data/ledger/.before-compaction-…`, inside the folder.
+  assert.equal(ledgerBackupPath("/data/ledger/", now, () => false), "/data/ledger.before-compaction-2026-11-24T08-00-00Z");
 });
 
 test("a backup needs the folder's size plus a margin free, so the WAL after it still has room", async () => {
@@ -177,6 +182,112 @@ test("a partial copy a killed backup left is removed by the next backup or on op
     assert.ok(existsSync(finished) && existsSync(second));
   } finally {
     await store.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+/** A stand-in for `/bin/cp`, called as `cp -cR <from> <to>`, running `body`. */
+async function fakeClone(root: string, body: string): Promise<string> {
+  const path = join(root, `fake-cp-${Math.random().toString(16).slice(2)}`);
+  await writeFile(path, `#!/bin/sh\n${body}\n`);
+  await chmod(path, 0o755);
+  return path;
+}
+
+test("a clone that fails partway ends the backup as failed, and one that fails before it writes falls back to the byte copy", async () => {
+  const { store, dataDir, root } = await folderStore();
+  const scripts = await mkdtemp(join(tmpdir(), "octopus-beak-backup-cp-"));
+  try {
+    // As on ENOSPC or EACCES after some files: the byte copy would succeed, so the backup failing shows it never ran.
+    const late = await fakeClone(scripts, 'mkdir "$3" && echo half > "$3/half" && exit 1');
+    await assert.rejects(
+      () => backUpLedger(store, dataDir, { ...roomy, copyFolder: ledgerFolderCopy(late) }),
+      (error) => error instanceof LedgerBackupError && error.reason === "copy-failed",
+    );
+    assert.deepEqual(await readdir(root), ["ledger"], "the partial copy and its pid file were removed");
+
+    // As a `cp` that does not know `-c`: usage error, nothing written.
+    const unsupported = await fakeClone(scripts, "exit 64");
+    const path = await backUpLedger(store, dataDir, { ...roomy, copyFolder: ledgerFolderCopy(unsupported) });
+    assert.deepEqual((await readdir(root)).sort(), ["ledger", path.slice(root.length + 1)].sort());
+    const copy = new PGliteStore(await PGlite.create(path));
+    try {
+      assert.equal((await copy.query<{ n: number }>("SELECT count(*)::int AS n FROM rows")).rows[0]!.n, 5000);
+    } finally {
+      await copy.close();
+    }
+  } finally {
+    await store.close();
+    await rm(root, { recursive: true, force: true });
+    await rm(scripts, { recursive: true, force: true });
+  }
+});
+
+test("a backup whose name cannot be flushed is reported failed and leaves no backup", async () => {
+  const { store, dataDir, root } = await folderStore();
+  try {
+    let flushed: string | undefined;
+    await assert.rejects(
+      () => backUpLedger(store, dataDir, {
+        ...roomy,
+        flushEntry: async (folder) => {
+          flushed = folder;
+          assert.ok((await readdir(folder)).some((name) => name.startsWith("ledger.before-compaction-") && !name.endsWith(".partial")), "renamed first");
+          throw new Error("EIO: i/o error, fsync");
+        },
+      }),
+      (error) => error instanceof LedgerBackupError && error.reason === "copy-failed" && /EIO/u.test(error.message),
+    );
+    assert.equal(flushed, root);
+    assert.deepEqual(await readdir(root), ["ledger"], "neither the backup nor its partial copy is left");
+  } finally {
+    await store.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+const alive = (pid: number) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+test("the cleanup kills a cp that outlived the worker killed during its copy, then removes the copy", { skip: process.platform !== "darwin" }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "octopus-beak-backup-kill-"));
+  const dataDir = join(root, "ledger");
+  const partial = `${dataDir}.before-compaction-2026-11-24T08-00-00Z.partial`;
+  let pid: number | undefined;
+  try {
+    // Enough files that cloning them takes seconds.
+    for (let dir = 0; dir < 300; dir += 1) {
+      await mkdir(join(dataDir, String(dir)), { recursive: true });
+      await Promise.all(Array.from({ length: 100 }, (_, file) => writeFile(join(dataDir, String(dir), String(file)), "x")));
+    }
+    const worker = spawn(process.execPath, [
+      "--no-warnings", "--experimental-strip-types", "--input-type=module", "-e",
+      `const { ledgerFolderCopy } = await import(${JSON.stringify(new URL("./data-dir-backup.ts", import.meta.url).href)});
+       await ledgerFolderCopy("/bin/cp")(${JSON.stringify(dataDir)}, ${JSON.stringify(partial)}, undefined);`,
+    ], { stdio: "ignore" });
+    const exited = new Promise((done) => worker.once("exit", done));
+    for (let waited = 0; !(existsSync(partial) && existsSync(`${partial}.pid`)); waited += 10) {
+      assert.ok(waited < 20_000, "the copy started");
+      await sleep(10);
+    }
+    pid = Number(await readFile(`${partial}.pid`, "utf8"));
+    worker.kill("SIGKILL");
+    await exited;
+    await sleep(100);
+    assert.ok(alive(pid), "cp outlives the killed worker");
+
+    await removePartialLedgerBackups(`${dataDir}/`);
+    assert.equal(alive(pid), false, "cp was killed");
+    await sleep(500);
+    assert.deepEqual((await readdir(root)).sort(), ["ledger"], "nothing writes the copy again");
+  } finally {
+    if (pid !== undefined && alive(pid)) process.kill(pid, "SIGKILL");
     await rm(root, { recursive: true, force: true });
   }
 });
