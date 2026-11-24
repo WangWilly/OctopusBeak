@@ -627,6 +627,37 @@ test("a store something else cites a compacted table in is refused", async () =>
   }
 });
 
+test("a copy named only by a record id kept as text is kept", async () => {
+  const database = await PGlite.create();
+  const { store } = await legacyStore(database);
+  try {
+    // Which copies a compaction removes, learned on a twin.
+    const twin = await copyOf(database);
+    let removed: string[];
+    try {
+      const before = await copiesByCapture(twin);
+      compacted(await compactLedger(twin));
+      const after = await copiesByCapture(twin);
+      removed = [...before.keys()].filter((copy) => !after.has(copy)).sort();
+    } finally {
+      await twin.close();
+    }
+    assert.ok(removed.length > 0);
+    // An enrichment output's provenance names one of them, and nothing else does.
+    const named = removed[0]!;
+    const uuid = named.replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/u, "$1-$2-$3-$4-$5");
+    assert.equal(await writeDirectly(store, `UPDATE enrichment_run_outputs
+        SET provenance_json = jsonb_set(provenance_json::jsonb, '{sourceRecordId}', to_jsonb('${uuid}'::text))::text
+      WHERE output_id = (SELECT output_id FROM enrichment_run_outputs ORDER BY output_id LIMIT 1)`), 1);
+    const plan = planned(await planLedgerCompaction(store));
+    assert.equal(plan.phaseB.pinnedBy["enrichment_run_outputs.provenance_json"], 1);
+    compacted(await compactLedger(store));
+    assert.ok((await copiesByCapture(store)).has(named), "the copy named in provenance_json is kept");
+  } finally {
+    await store.close();
+  }
+});
+
 test("compaction is a host-only financial operation", () => {
   const contract = PGLITE_FINANCIAL_CONTRACTS["financial.canonical.compactLedger"];
   assert.equal("renderer" in contract, false);

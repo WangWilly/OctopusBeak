@@ -468,9 +468,21 @@ type CopyRow = Readonly<{
 }>;
 
 /**
+ * Record ids kept as text, which no foreign key or bytea column scan sees.
+ * Today each also sits in a cited column of a row that pins the same copy,
+ * but a copy named only here must still be kept.
+ */
+const TEXT_CITATIONS: readonly Readonly<{ table: string; column: string; id: string }>[] = [
+  { table: "enrichment_run_outputs", column: "provenance_json", id: "replace((provenance_json::jsonb)->>'sourceRecordId', '-', '')" },
+  { table: "enrichment_taxonomy_assertion_values", column: "provenance_json", id: "replace((provenance_json::jsonb)->>'sourceRecordId', '-', '')" },
+  { table: "investment_funding_relations", column: "source_linkage_key", id: "source_linkage_key" },
+];
+
+/**
  * Every row that cites a copy `within` admits, as `cited_id` and the citing
- * table: the citing columns found in `pg_constraint`, the manifests, and the
- * assertion rows that also name a run or coordinate. With `carried`, the
+ * table: the citing columns found in `pg_constraint`, the manifests, the
+ * assertion rows that also name a run or coordinate, and the record ids kept
+ * as text. With `carried`, the
  * phase A tables are left out and the rows phase A keeps come in as the
  * parameters `$1` (record ids as hex) and `$2` (their tables); without it,
  * phase A has already run, so those tables are read as they stand.
@@ -489,6 +501,11 @@ export function recordCitationsSql(columns: FoundColumns, within: (column: strin
      ) member WHERE ${within("member.cited_id")}`,
     `SELECT source_record_id AS cited_id, '${MIXED_PROVENANCE}' AS citing_table FROM assertion_provenance
       WHERE ${within("source_record_id")} AND (run_id IS NOT NULL OR enrichment_run_id IS NOT NULL OR coordinate_id IS NOT NULL)`,
+    ...TEXT_CITATIONS.map(({ table, column, id }) =>
+      `SELECT cited_id, '${table}.${column}' AS citing_table FROM (
+         SELECT CASE WHEN text_id ~* '^[0-9a-f]{32}$' THEN decode(text_id, 'hex') END AS cited_id
+           FROM (SELECT ${id} AS text_id FROM ${table}) text_ids
+       ) text_citation WHERE ${within("cited_id")}`),
   );
   return citations.join("\nUNION ALL\n");
 }
