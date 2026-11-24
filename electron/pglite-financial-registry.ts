@@ -51,7 +51,7 @@ import type { CardIdentitySecret } from "../src/lib/shared-identity/card-identit
 import { cardAccountNamespaces } from "../src/ledger/pglite/card-identity-secret.ts";
 import { planLedgerCompaction } from "../src/ledger/pglite/compaction-plan.ts";
 import { createLedgerReclaimer } from "../src/ledger/pglite/reclaim.ts";
-import { compactLedger } from "../src/ledger/pglite/compaction.ts";
+import { createLedgerCompactor } from "../src/ledger/pglite/compaction-job.ts";
 import {
   readAssetsPage,
   readLiabilitiesPage,
@@ -113,6 +113,10 @@ export function createPGliteFinancialRegistry(
     freeBytes: options.freeDiskBytes,
     folderBytes: options.ledgerFolder?.bytes,
     syncToDisk: options.ledgerFolder?.sync,
+  });
+  const compactor = createLedgerCompactor(store, {
+    runStep: options.runBackgroundStep,
+    reclaim: { freeBytes: options.freeDiskBytes, folderBytes: options.ledgerFolder?.bytes, syncToDisk: options.ledgerFolder?.sync },
   });
   return Object.freeze({
     "financial.overview.current": ([expectedSources = []]) =>
@@ -183,9 +187,9 @@ export function createPGliteFinancialRegistry(
     "financial.ledger.reclaim": (_args, request) => reclaimer.reclaim(request?.signal),
     "financial.ledger.reclaimStatus": async () => reclaimer.status(),
     "financial.ledger.reclaimStop": async () => reclaimer.stop(),
-    // Not for the UI: one transaction that holds the ledger until it ends (ADR 0154).
-    "financial.canonical.compactLedger": (_args, request) =>
-      compactLedger(store, { signal: request?.signal }),
+    "financial.canonical.compact": (_args, request) => compactor.compact(request?.signal),
+    "financial.canonical.compactionStatus": async () => compactor.status(),
+    "financial.canonical.compactionStop": async () => compactor.stop(),
   });
 }
 

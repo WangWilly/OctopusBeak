@@ -41,26 +41,27 @@ import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
  * `pglite_operational_migrations`, written in the same transaction, make a
  * second run a no-op: one for phases A and C, one for phase B.
  *
- * Not for the open path, and not yet for the UI: the whole compaction is one
- * transaction that holds the ledger for as long as it runs. Wire it to
- * Settings only through the chunked worker job, which also rewrites the
- * tables to return their space (VACUUM FULL); until then it is a host-only
- * financial operation.
+ * `compactLedger` is the whole compaction in one transaction, which holds
+ * the ledger for as long as it runs; the checks compare the worker job with
+ * it. The worker runs the job in `compaction-job.ts` instead: one
+ * `compactLedgerChunk` per step, each its own verified transaction over one
+ * chunk of the store, which reads only the answers that chunk's deletes can
+ * change. Neither runs on the open path.
  */
 
 /** Phases A and C. A store compacted before phase B existed keeps this marker, and phase B still runs. */
-const DOMAIN_COUNTS_MARKER = "ledger-compaction-domain-counts-v1";
-const RECORDS_MARKER = "ledger-compaction-records-v1";
+export const DOMAIN_COUNTS_MARKER = "ledger-compaction-domain-counts-v1";
+export const RECORDS_MARKER = "ledger-compaction-records-v1";
 
 const RECORDS = "source_records";
 /** Phase B's tables: the satellites first, so each delete leaves no row naming a removed copy. */
-const RECORD_TABLES = [...SATELLITES, RECORDS] as const;
+export const RECORD_TABLES = [...SATELLITES, RECORDS] as const;
 export type RecordTable = (typeof RECORD_TABLES)[number];
 export type DomainCountsTable = PhaseATable | typeof COUNTS;
 export type CompactedTable = DomainCountsTable | RecordTable;
 
 const DOMAIN_COUNTS_TABLES: readonly DomainCountsTable[] = [...(Object.keys(PHASE_A) as PhaseATable[]), COUNTS];
-const COMPACTED_TABLES: readonly CompactedTable[] = [...DOMAIN_COUNTS_TABLES, ...RECORD_TABLES];
+export const COMPACTED_TABLES: readonly CompactedTable[] = [...DOMAIN_COUNTS_TABLES, ...RECORD_TABLES];
 
 const commitOfCapture = (alias: string) =>
   `JOIN source_captures ${alias}_capture ON ${alias}_capture.capture_id = ${alias}.capture_id
@@ -141,6 +142,27 @@ const BACKED_REVISIONS = `
   ) backed ON TRUE`;
 
 /**
+ * The rows one compaction transaction covers. `WHOLE_STORE` is every row;
+ * `IN_CHUNK` is one chunk of the worker job: its chains, each a source
+ * subject and record kind, and the captures that hold their copies, as two
+ * temporary tables the chunk fills. Each returns a condition on the columns
+ * it is given.
+ */
+export type CompactionScope = Readonly<{
+  chain(subject: string, kind: string): string;
+  capture(column: string): string;
+}>;
+
+export const WHOLE_STORE: CompactionScope = Object.freeze({ chain: () => "TRUE", capture: () => "TRUE" });
+const CHUNK_CHAINS = "ledger_compaction_chains";
+const CHUNK_CAPTURES = "ledger_compaction_captures";
+const IN_CHUNK: CompactionScope = Object.freeze({
+  chain: (subject: string, kind: string) =>
+    `(${subject}, ${kind}) IN (SELECT source_subject_id, record_kind FROM ${CHUNK_CHAINS})`,
+  capture: (column: string) => `${column} IN (SELECT capture_id FROM ${CHUNK_CAPTURES})`,
+});
+
+/**
  * The answers the removed rows feed, each as the rows its reader can tell
  * apart. Each mirrors its reader's selection and keeps every column a reader
  * returns or compares; generated ids are kept as stored, so a reader that
@@ -149,253 +171,275 @@ const BACKED_REVISIONS = `
  * points each capture at an equal earlier copy. The history readers hold
  * each table's answer at every knowledge point, which keeping the first row
  * of a run preserves and keeping the last would not.
+ *
+ * The count and record readers take a scope. Each is keyed by a chain's
+ * subject and record kind, or by capture, so its rows in a chunk's scope are
+ * exactly the rows that chunk's deletes can change; the rest of its answer
+ * reads none of the chunk's rows. The other readers are always read whole.
  */
-export const COMPACTION_READERS = {
-  /** `latestCardDetailsByRevisionSql`: the spending facts, the purchase report and the pairing projection. */
-  cardDetailsLatestByRevision: latestCardDetailsByRevisionSql(
-    `detail.revision_id, detail.transaction_id, detail.instrument_id, detail.billing_status,
-     detail.consume_date, detail.posting_date, detail.effective_date_basis, detail.statement_key`,
-  ),
-  /** The card command's stored details of a transaction, which it compares a new capture with. */
-  cardDetailsLatestByTransaction: `
-    SELECT DISTINCT ON (revision.transaction_id) revision.transaction_id, detail.revision_id, detail.instrument_id,
-           detail.billing_status, detail.consume_date, detail.posting_date, detail.effective_date_basis, detail.statement_key
-      FROM transaction_revisions revision
-      JOIN canonical_credit_card_transaction_details detail ON detail.revision_id = revision.revision_id
-      ${commitOfCapture("detail")}
-     ORDER BY revision.transaction_id, detail_commit.commit_sequence DESC, detail.source_record_id DESC`,
-  /** The spending facts' date match, which any details row of a revision can satisfy. */
-  cardDetailsDateMatch: `SELECT DISTINCT revision_id, consume_date FROM canonical_credit_card_transaction_details`,
-  /** `listLatestLifecycle`: a statement member's billing status, by transaction. */
-  cardLifecycleLatest: `
-    SELECT DISTINCT ON (lifecycle.transaction_id) lifecycle.transaction_id, lifecycle.revision_id, lifecycle.instrument_id,
-           lifecycle.billing_status, lifecycle.statement_key
-      FROM canonical_credit_card_transaction_lifecycle lifecycle ${commitOfCapture("lifecycle")}
-     ORDER BY lifecycle.transaction_id, lifecycle_commit.commit_sequence DESC, lifecycle.lifecycle_event_id DESC`,
-  /** The card command's stored lifecycle of a transaction, by namespace and account. */
-  cardLifecycleLatestByAccount: `
-    SELECT DISTINCT ON (lifecycle.integration_namespace, lifecycle.account_id, lifecycle.transaction_id)
-           lifecycle.integration_namespace, lifecycle.account_id, lifecycle.transaction_id, lifecycle.revision_id,
-           lifecycle.instrument_id, lifecycle.billing_status, lifecycle.statement_key
-      FROM canonical_credit_card_transaction_lifecycle lifecycle ${commitOfCapture("lifecycle")}
-     ORDER BY lifecycle.integration_namespace, lifecycle.account_id, lifecycle.transaction_id,
-              lifecycle_commit.commit_sequence DESC, lifecycle.lifecycle_event_id DESC`,
-  /** The card command's stored evidence of an instrument. */
-  cardInstrumentEvidenceLatest: `
-    SELECT DISTINCT ON (evidence.instrument_id) evidence.instrument_id, record.occurrence_key
-      FROM canonical_credit_card_instrument_evidence evidence
-      JOIN source_records record ON record.source_record_id = evidence.source_record_id
-      ${commitOfCapture("evidence")}
-     ORDER BY evidence.instrument_id, evidence_commit.commit_sequence DESC, evidence.source_record_id DESC`,
-  /** The card command's stored summary of a statement. */
-  cardStatementSummaryLatest: `
-    SELECT DISTINCT ON (revision.statement_id) revision.statement_id, evidence.statement_revision_id, evidence.evidence_key
-      FROM canonical_credit_card_statement_summary_evidence evidence
-      JOIN canonical_credit_card_statement_revisions revision ON revision.statement_revision_id = evidence.statement_revision_id
-      ${commitOfCapture("evidence")}
-     ORDER BY revision.statement_id, evidence_commit.commit_sequence DESC, evidence.evidence_source_record_id DESC`,
-  /** The overview's and the investment command's name of a security at every knowledge point. */
-  securityNamesAtEveryKnowledgePoint: historySql(
-    { security_id: "observation.security_id" },
-    { name: "observation.name", contract_version: "observation.contract_version" },
-    `FROM (SELECT observation.*, observation_commit.commit_sequence
-             FROM investment_security_name_observations observation ${commitOf("observation")}) observation`,
-    "observation.capture_id DESC",
-  ),
-  /** The loan command's stored evidence of a relation. */
-  relationEvidenceLatest: `
-    SELECT DISTINCT ON (entry.relation_id) entry.relation_id, entry.evidence_source_record_key, entry.evidence_relation_id,
-           entry.evidence_contract_version
-      FROM transaction_relation_provenance entry ${commitOf("entry")}
-     ORDER BY entry.relation_id, entry_commit.commit_sequence DESC, entry.source_record_id DESC`,
-  /** Account identity continuity (ADR 0049), and the writer's first-sighting check: whether an identifier was seen. */
-  accountIdentifiers: `
-    SELECT DISTINCT account_id, identifier_kind, identifier_value, evidence_version, source_field
-      FROM financial_account_identifier_observations`,
-  /** The e-invoice command's latest observed revisions of an invoice. */
-  einvoiceLatestObserved: `
-    SELECT DISTINCT invoice_id, revision_id FROM (
-      SELECT revision.invoice_id, observation.revision_id, observation_commit.commit_sequence,
-             MAX(observation_commit.commit_sequence) OVER (PARTITION BY revision.invoice_id) AS latest_sequence
-        FROM einvoice_invoice_revisions revision
-        JOIN einvoice_revision_observations observation ON observation.revision_id = revision.revision_id
-        ${commitOf("observation")}
-    ) observed WHERE commit_sequence = latest_sequence`,
-  /** The invoice view's `provenanceComplete`: which revisions have an observation. */
-  einvoiceObservedRevisions: `SELECT DISTINCT revision_id FROM einvoice_revision_observations`,
-  /** The member-loss guard and the count writer: the highest count of each partition. */
-  occurrenceCountMaxima: `
-    SELECT coverage.source_subject_id, coverage.record_kind, coverage.scope_key, coverage.contract_version,
-           count_row.partition_date, count_row.fingerprint, MAX(count_row.occurrence_count) AS occurrence_count
-      FROM source_occurrence_group_counts count_row
-      JOIN source_occurrence_group_coverages coverage ON coverage.coverage_id = count_row.coverage_id
-     GROUP BY 1, 2, 3, 4, 5, 6`,
-  cardDetailsHistory: historySql(
-    { transaction_id: "detail.transaction_id" },
-    {
-      revision_id: "detail.revision_id", instrument_id: "detail.instrument_id", billing_status: "detail.billing_status",
-      consume_date: "detail.consume_date", posting_date: "detail.posting_date",
-      effective_date_basis: "detail.effective_date_basis", statement_key: "detail.statement_key",
-    },
-    `FROM (SELECT detail.*, detail_commit.commit_sequence
-             FROM canonical_credit_card_transaction_details detail ${commitOfCapture("detail")}) detail`,
-    "detail.source_record_id DESC",
-  ),
-  cardLifecycleHistory: historySql(
-    { integration_namespace: "lifecycle.integration_namespace", account_id: "lifecycle.account_id", transaction_id: "lifecycle.transaction_id" },
-    {
-      revision_id: "lifecycle.revision_id", instrument_id: "lifecycle.instrument_id",
-      billing_status: "lifecycle.billing_status", statement_key: "lifecycle.statement_key",
-    },
-    `FROM (SELECT lifecycle.*, lifecycle_commit.commit_sequence
-             FROM canonical_credit_card_transaction_lifecycle lifecycle ${commitOfCapture("lifecycle")}) lifecycle`,
-    "lifecycle.lifecycle_event_id DESC",
-  ),
-  cardInstrumentEvidenceHistory: historySql(
-    { instrument_id: "evidence.instrument_id" },
-    { occurrence_key: "evidence.occurrence_key" },
-    `FROM (SELECT evidence.*, record.occurrence_key, evidence_commit.commit_sequence
-             FROM canonical_credit_card_instrument_evidence evidence
-             JOIN source_records record ON record.source_record_id = evidence.source_record_id
-             ${commitOfCapture("evidence")}) evidence`,
-    "evidence.source_record_id DESC",
-  ),
-  cardStatementSummaryHistory: historySql(
-    { statement_id: "evidence.statement_id" },
-    { statement_revision_id: "evidence.statement_revision_id", evidence_key: "evidence.evidence_key" },
-    `FROM (SELECT evidence.*, revision.statement_id, evidence_commit.commit_sequence
-             FROM canonical_credit_card_statement_summary_evidence evidence
-             JOIN canonical_credit_card_statement_revisions revision ON revision.statement_revision_id = evidence.statement_revision_id
-             ${commitOfCapture("evidence")}) evidence`,
-    "evidence.evidence_source_record_id DESC",
-  ),
-  relationEvidenceHistory: historySql(
-    { relation_id: "entry.relation_id" },
-    {
-      evidence_source_record_key: "entry.evidence_source_record_key", evidence_relation_id: "entry.evidence_relation_id",
-      evidence_contract_version: "entry.evidence_contract_version",
-    },
-    `FROM (SELECT entry.*, entry_commit.commit_sequence FROM transaction_relation_provenance entry ${commitOf("entry")}) entry`,
-    "entry.source_record_id DESC",
-  ),
-  /** When each identifier was first seen, so continuity as of any commit answers alike. */
-  accountIdentifierFirstSightings: `
-    SELECT observation.account_id, observation.identifier_kind, observation.identifier_value, observation.evidence_version,
-           observation.source_field, MIN(observation_commit.commit_sequence) AS commit_sequence
-      FROM financial_account_identifier_observations observation ${commitOf("observation")}
-     GROUP BY 1, 2, 3, 4, 5`,
-  /** Each invoice's observed revisions at every knowledge point. */
-  einvoiceObservedHistory: historySql(
-    { invoice_id: "observed.invoice_id" },
-    { observed: "observed.observed" },
-    `FROM (${OBSERVED_SETS}) observed`,
-    "observed.observed",
-  ),
-  /**
-   * The observations without an `observed` event at their commit, and the
-   * `observed` events without an observation. A removed commit loses its
-   * observations and their events together, so neither set changes; an
-   * event or observation removed alone shows up here.
-   */
-  einvoiceUnpairedObservations: `
-    SELECT 'observation' AS side, observation.revision_id, observation.commit_id
-      FROM einvoice_revision_observations observation
-     WHERE NOT EXISTS (SELECT 1 FROM einvoice_revision_events event
-                        WHERE event.revision_id = observation.revision_id AND event.commit_id = observation.commit_id
-                          AND event.event_kind = 'observed')
-    UNION ALL
-    SELECT 'event' AS side, event.revision_id, event.commit_id
-      FROM einvoice_revision_events event
-     WHERE event.event_kind = 'observed'
-       AND NOT EXISTS (SELECT 1 FROM einvoice_revision_observations observation
-                        WHERE observation.revision_id = event.revision_id AND observation.commit_id = event.commit_id)`,
-  /** The lineage view's events other than `observed` ones, which compaction never removes: every column. */
-  einvoiceNonObservedEvents: `SELECT * FROM einvoice_revision_events WHERE event_kind <> 'observed'`,
-  /** Each count partition's maximum at every knowledge point: the rows that raised it. */
-  occurrenceCountHistory: `
-    SELECT * FROM (
+function compactionReaders(scope: CompactionScope) {
+  return {
+    /** `latestCardDetailsByRevisionSql`: the spending facts, the purchase report and the pairing projection. */
+    cardDetailsLatestByRevision: latestCardDetailsByRevisionSql(
+      `detail.revision_id, detail.transaction_id, detail.instrument_id, detail.billing_status,
+       detail.consume_date, detail.posting_date, detail.effective_date_basis, detail.statement_key`,
+    ),
+    /** The card command's stored details of a transaction, which it compares a new capture with. */
+    cardDetailsLatestByTransaction: `
+      SELECT DISTINCT ON (revision.transaction_id) revision.transaction_id, detail.revision_id, detail.instrument_id,
+             detail.billing_status, detail.consume_date, detail.posting_date, detail.effective_date_basis, detail.statement_key
+        FROM transaction_revisions revision
+        JOIN canonical_credit_card_transaction_details detail ON detail.revision_id = revision.revision_id
+        ${commitOfCapture("detail")}
+       ORDER BY revision.transaction_id, detail_commit.commit_sequence DESC, detail.source_record_id DESC`,
+    /** The spending facts' date match, which any details row of a revision can satisfy. */
+    cardDetailsDateMatch: `SELECT DISTINCT revision_id, consume_date FROM canonical_credit_card_transaction_details`,
+    /** `listLatestLifecycle`: a statement member's billing status, by transaction. */
+    cardLifecycleLatest: `
+      SELECT DISTINCT ON (lifecycle.transaction_id) lifecycle.transaction_id, lifecycle.revision_id, lifecycle.instrument_id,
+             lifecycle.billing_status, lifecycle.statement_key
+        FROM canonical_credit_card_transaction_lifecycle lifecycle ${commitOfCapture("lifecycle")}
+       ORDER BY lifecycle.transaction_id, lifecycle_commit.commit_sequence DESC, lifecycle.lifecycle_event_id DESC`,
+    /** The card command's stored lifecycle of a transaction, by namespace and account. */
+    cardLifecycleLatestByAccount: `
+      SELECT DISTINCT ON (lifecycle.integration_namespace, lifecycle.account_id, lifecycle.transaction_id)
+             lifecycle.integration_namespace, lifecycle.account_id, lifecycle.transaction_id, lifecycle.revision_id,
+             lifecycle.instrument_id, lifecycle.billing_status, lifecycle.statement_key
+        FROM canonical_credit_card_transaction_lifecycle lifecycle ${commitOfCapture("lifecycle")}
+       ORDER BY lifecycle.integration_namespace, lifecycle.account_id, lifecycle.transaction_id,
+                lifecycle_commit.commit_sequence DESC, lifecycle.lifecycle_event_id DESC`,
+    /** The card command's stored evidence of an instrument. */
+    cardInstrumentEvidenceLatest: `
+      SELECT DISTINCT ON (evidence.instrument_id) evidence.instrument_id, record.occurrence_key
+        FROM canonical_credit_card_instrument_evidence evidence
+        JOIN source_records record ON record.source_record_id = evidence.source_record_id
+        ${commitOfCapture("evidence")}
+       ORDER BY evidence.instrument_id, evidence_commit.commit_sequence DESC, evidence.source_record_id DESC`,
+    /** The card command's stored summary of a statement. */
+    cardStatementSummaryLatest: `
+      SELECT DISTINCT ON (revision.statement_id) revision.statement_id, evidence.statement_revision_id, evidence.evidence_key
+        FROM canonical_credit_card_statement_summary_evidence evidence
+        JOIN canonical_credit_card_statement_revisions revision ON revision.statement_revision_id = evidence.statement_revision_id
+        ${commitOfCapture("evidence")}
+       ORDER BY revision.statement_id, evidence_commit.commit_sequence DESC, evidence.evidence_source_record_id DESC`,
+    /** The overview's and the investment command's name of a security at every knowledge point. */
+    securityNamesAtEveryKnowledgePoint: historySql(
+      { security_id: "observation.security_id" },
+      { name: "observation.name", contract_version: "observation.contract_version" },
+      `FROM (SELECT observation.*, observation_commit.commit_sequence
+               FROM investment_security_name_observations observation ${commitOf("observation")}) observation`,
+      "observation.capture_id DESC",
+    ),
+    /** The loan command's stored evidence of a relation. */
+    relationEvidenceLatest: `
+      SELECT DISTINCT ON (entry.relation_id) entry.relation_id, entry.evidence_source_record_key, entry.evidence_relation_id,
+             entry.evidence_contract_version
+        FROM transaction_relation_provenance entry ${commitOf("entry")}
+       ORDER BY entry.relation_id, entry_commit.commit_sequence DESC, entry.source_record_id DESC`,
+    /** Account identity continuity (ADR 0049), and the writer's first-sighting check: whether an identifier was seen. */
+    accountIdentifiers: `
+      SELECT DISTINCT account_id, identifier_kind, identifier_value, evidence_version, source_field
+        FROM financial_account_identifier_observations`,
+    /** The e-invoice command's latest observed revisions of an invoice. */
+    einvoiceLatestObserved: `
+      SELECT DISTINCT invoice_id, revision_id FROM (
+        SELECT revision.invoice_id, observation.revision_id, observation_commit.commit_sequence,
+               MAX(observation_commit.commit_sequence) OVER (PARTITION BY revision.invoice_id) AS latest_sequence
+          FROM einvoice_invoice_revisions revision
+          JOIN einvoice_revision_observations observation ON observation.revision_id = revision.revision_id
+          ${commitOf("observation")}
+      ) observed WHERE commit_sequence = latest_sequence`,
+    /** The invoice view's `provenanceComplete`: which revisions have an observation. */
+    einvoiceObservedRevisions: `SELECT DISTINCT revision_id FROM einvoice_revision_observations`,
+    /** The member-loss guard and the count writer: the highest count of each partition. */
+    occurrenceCountMaxima: `
       SELECT coverage.source_subject_id, coverage.record_kind, coverage.scope_key, coverage.contract_version,
-             count_row.partition_date, count_row.fingerprint, written.commit_sequence, count_row.occurrence_count,
-             count_row.occurrence_count > COALESCE(MAX(count_row.occurrence_count) OVER (
-               PARTITION BY coverage.source_subject_id, coverage.record_kind, coverage.scope_key, coverage.contract_version,
-                            count_row.partition_date, count_row.fingerprint
-               ORDER BY written.commit_sequence, count_row.observation_id
-               ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), -1) AS raises
+             count_row.partition_date, count_row.fingerprint, MAX(count_row.occurrence_count) AS occurrence_count
         FROM source_occurrence_group_counts count_row
         JOIN source_occurrence_group_coverages coverage ON coverage.coverage_id = count_row.coverage_id
-        JOIN canonical_commits written ON written.commit_id = coverage.commit_id
-    ) running WHERE raises`,
-  /**
-   * `listPGliteExpectedOccurrences` for every subject, kind, scope key and
-   * inventoried contract version, all buckets at once: the latest copy of
-   * each occurrence found through its owner capture's coverage.
-   */
-  recordExpectedOccurrences: `
-    SELECT DISTINCT ON (record.source_subject_id, record.record_kind, record.occurrence_group_scope_key, coverage.contract_version,
-                        record.occurrence_key)
-           record.source_subject_id, record.record_kind, record.occurrence_group_scope_key, coverage.contract_version,
-           record.occurrence_key, assertion.transaction_id, record.occurrence_group_partition_date,
-           record.occurrence_group_fingerprint, record.occurrence_group_bucket_key
-      FROM source_records record
-      JOIN source_occurrence_group_coverages coverage
-        ON coverage.capture_id = record.capture_id AND coverage.scope_key = record.occurrence_group_scope_key
-      JOIN canonical_commits written ON written.commit_id = record.commit_id
-      LEFT JOIN assertion_provenance provenance ON provenance.source_record_id = record.source_record_id
-      LEFT JOIN assertions assertion ON assertion.assertion_id = provenance.assertion_id
-       AND assertion.origin = 'source' AND assertion.field_name = 'transaction_revision'
-     WHERE coverage.bucket_inventory_json IS NOT NULL
-     ORDER BY record.source_subject_id, record.record_kind, record.occurrence_group_scope_key, coverage.contract_version,
-              record.occurrence_key, written.commit_sequence DESC, (assertion.transaction_id IS NULL), assertion.transaction_id,
-              record.source_record_id DESC`,
-  /** The reuse writer's latest copy of each record (`planSourceRecordReuse`), with what it compares. */
-  recordLatestCopy: `
-    SELECT DISTINCT ON (record.source_subject_id, record.record_kind, record.occurrence_key)
-           record.source_subject_id, record.record_kind, record.occurrence_key, ${recordContent}, owner.shape, backed.assertions
-      FROM source_records record
-      JOIN canonical_commits written ON written.commit_id = record.commit_id
-      ${OWNER_SHAPE}
-      ${BACKED_REVISIONS}
-     WHERE record.occurrence_key IS NOT NULL
-     ORDER BY record.source_subject_id, record.record_kind, record.occurrence_key, written.commit_sequence DESC, record.source_record_id DESC`,
-  /** The latest copy of each record at every knowledge point. */
-  recordLatestCopyHistory: historySql(
-    { source_subject_id: "record.source_subject_id", record_kind: "record.record_kind", occurrence_key: "record.occurrence_key" },
-    {
-      ...Object.fromEntries(Object.keys(RECORD_CONTENT).map((name) => [name, `record.${name}`])),
-      shape: "record.shape", assertions: "record.assertions",
-    },
-    `FROM (SELECT record.source_record_id, record.source_subject_id, record.record_kind, record.occurrence_key, ${recordContent},
-                  owner.shape, backed.assertions, written.commit_sequence
-             FROM source_records record
-             JOIN canonical_commits written ON written.commit_id = record.commit_id
-             ${OWNER_SHAPE}
-             ${BACKED_REVISIONS}
-            WHERE record.occurrence_key IS NOT NULL) record`,
-    "record.source_record_id DESC",
-  ),
-  /**
-   * What each capture saw, through `captureSourceRecordIdsSql` as
-   * withdrawal by omission and counterparty evidence read it: each member
-   * by occurrence key, with its content, its scope row's account and
-   * subject, every assertion it backs, and whether it was known by the
-   * capture's commit. Not distinct, so a member listed twice shows, and a
-   * member whose copy is gone keeps a row with no content.
-   */
-  captureMembership: `
-    SELECT capture.capture_key, record.source_subject_id, record.record_kind, record.occurrence_key, ${recordContent},
-           record_commit.commit_sequence <= capture_commit.commit_sequence AS known_at_capture,
-           scope.account_id, scope.source_subject_id AS scope_subject_id,
-           (SELECT string_agg(encode(provenance.assertion_id, 'hex'), ',' ORDER BY provenance.assertion_id)
-              FROM assertion_provenance provenance WHERE provenance.source_record_id = member.source_record_id) AS assertions
-      FROM source_captures capture
-      JOIN canonical_commits capture_commit ON capture_commit.commit_id = capture.commit_id
-      JOIN LATERAL (${captureSourceRecordIdsSql("capture.capture_id")}) member ON TRUE
-      LEFT JOIN source_records record ON record.source_record_id = member.source_record_id
-      LEFT JOIN canonical_commits record_commit ON record_commit.commit_id = record.commit_id
-      LEFT JOIN source_record_scopes scope ON scope.source_record_id = member.source_record_id`,
-} as const;
+       WHERE ${scope.chain("coverage.source_subject_id", "coverage.record_kind")}
+       GROUP BY 1, 2, 3, 4, 5, 6`,
+    cardDetailsHistory: historySql(
+      { transaction_id: "detail.transaction_id" },
+      {
+        revision_id: "detail.revision_id", instrument_id: "detail.instrument_id", billing_status: "detail.billing_status",
+        consume_date: "detail.consume_date", posting_date: "detail.posting_date",
+        effective_date_basis: "detail.effective_date_basis", statement_key: "detail.statement_key",
+      },
+      `FROM (SELECT detail.*, detail_commit.commit_sequence
+               FROM canonical_credit_card_transaction_details detail ${commitOfCapture("detail")}) detail`,
+      "detail.source_record_id DESC",
+    ),
+    cardLifecycleHistory: historySql(
+      { integration_namespace: "lifecycle.integration_namespace", account_id: "lifecycle.account_id", transaction_id: "lifecycle.transaction_id" },
+      {
+        revision_id: "lifecycle.revision_id", instrument_id: "lifecycle.instrument_id",
+        billing_status: "lifecycle.billing_status", statement_key: "lifecycle.statement_key",
+      },
+      `FROM (SELECT lifecycle.*, lifecycle_commit.commit_sequence
+               FROM canonical_credit_card_transaction_lifecycle lifecycle ${commitOfCapture("lifecycle")}) lifecycle`,
+      "lifecycle.lifecycle_event_id DESC",
+    ),
+    cardInstrumentEvidenceHistory: historySql(
+      { instrument_id: "evidence.instrument_id" },
+      { occurrence_key: "evidence.occurrence_key" },
+      `FROM (SELECT evidence.*, record.occurrence_key, evidence_commit.commit_sequence
+               FROM canonical_credit_card_instrument_evidence evidence
+               JOIN source_records record ON record.source_record_id = evidence.source_record_id
+               ${commitOfCapture("evidence")}) evidence`,
+      "evidence.source_record_id DESC",
+    ),
+    cardStatementSummaryHistory: historySql(
+      { statement_id: "evidence.statement_id" },
+      { statement_revision_id: "evidence.statement_revision_id", evidence_key: "evidence.evidence_key" },
+      `FROM (SELECT evidence.*, revision.statement_id, evidence_commit.commit_sequence
+               FROM canonical_credit_card_statement_summary_evidence evidence
+               JOIN canonical_credit_card_statement_revisions revision ON revision.statement_revision_id = evidence.statement_revision_id
+               ${commitOfCapture("evidence")}) evidence`,
+      "evidence.evidence_source_record_id DESC",
+    ),
+    relationEvidenceHistory: historySql(
+      { relation_id: "entry.relation_id" },
+      {
+        evidence_source_record_key: "entry.evidence_source_record_key", evidence_relation_id: "entry.evidence_relation_id",
+        evidence_contract_version: "entry.evidence_contract_version",
+      },
+      `FROM (SELECT entry.*, entry_commit.commit_sequence FROM transaction_relation_provenance entry ${commitOf("entry")}) entry`,
+      "entry.source_record_id DESC",
+    ),
+    /** When each identifier was first seen, so continuity as of any commit answers alike. */
+    accountIdentifierFirstSightings: `
+      SELECT observation.account_id, observation.identifier_kind, observation.identifier_value, observation.evidence_version,
+             observation.source_field, MIN(observation_commit.commit_sequence) AS commit_sequence
+        FROM financial_account_identifier_observations observation ${commitOf("observation")}
+       GROUP BY 1, 2, 3, 4, 5`,
+    /** Each invoice's observed revisions at every knowledge point. */
+    einvoiceObservedHistory: historySql(
+      { invoice_id: "observed.invoice_id" },
+      { observed: "observed.observed" },
+      `FROM (${OBSERVED_SETS}) observed`,
+      "observed.observed",
+    ),
+    /**
+     * The observations without an `observed` event at their commit, and the
+     * `observed` events without an observation. A removed commit loses its
+     * observations and their events together, so neither set changes; an
+     * event or observation removed alone shows up here.
+     */
+    einvoiceUnpairedObservations: `
+      SELECT 'observation' AS side, observation.revision_id, observation.commit_id
+        FROM einvoice_revision_observations observation
+       WHERE NOT EXISTS (SELECT 1 FROM einvoice_revision_events event
+                          WHERE event.revision_id = observation.revision_id AND event.commit_id = observation.commit_id
+                            AND event.event_kind = 'observed')
+      UNION ALL
+      SELECT 'event' AS side, event.revision_id, event.commit_id
+        FROM einvoice_revision_events event
+       WHERE event.event_kind = 'observed'
+         AND NOT EXISTS (SELECT 1 FROM einvoice_revision_observations observation
+                          WHERE observation.revision_id = event.revision_id AND observation.commit_id = event.commit_id)`,
+    /** The lineage view's events other than `observed` ones, which compaction never removes: every column. */
+    einvoiceNonObservedEvents: `SELECT * FROM einvoice_revision_events WHERE event_kind <> 'observed'`,
+    /** Each count partition's maximum at every knowledge point: the rows that raised it. */
+    occurrenceCountHistory: `
+      SELECT * FROM (
+        SELECT coverage.source_subject_id, coverage.record_kind, coverage.scope_key, coverage.contract_version,
+               count_row.partition_date, count_row.fingerprint, written.commit_sequence, count_row.occurrence_count,
+               count_row.occurrence_count > COALESCE(MAX(count_row.occurrence_count) OVER (
+                 PARTITION BY coverage.source_subject_id, coverage.record_kind, coverage.scope_key, coverage.contract_version,
+                              count_row.partition_date, count_row.fingerprint
+                 ORDER BY written.commit_sequence, count_row.observation_id
+                 ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), -1) AS raises
+          FROM source_occurrence_group_counts count_row
+          JOIN source_occurrence_group_coverages coverage ON coverage.coverage_id = count_row.coverage_id
+          JOIN canonical_commits written ON written.commit_id = coverage.commit_id
+         WHERE ${scope.chain("coverage.source_subject_id", "coverage.record_kind")}
+      ) running WHERE raises`,
+    /**
+     * `listPGliteExpectedOccurrences` for every subject, kind, scope key and
+     * inventoried contract version, all buckets at once: the latest copy of
+     * each occurrence found through its owner capture's coverage.
+     */
+    recordExpectedOccurrences: `
+      SELECT DISTINCT ON (record.source_subject_id, record.record_kind, record.occurrence_group_scope_key, coverage.contract_version,
+                          record.occurrence_key)
+             record.source_subject_id, record.record_kind, record.occurrence_group_scope_key, coverage.contract_version,
+             record.occurrence_key, assertion.transaction_id, record.occurrence_group_partition_date,
+             record.occurrence_group_fingerprint, record.occurrence_group_bucket_key
+        FROM source_records record
+        JOIN source_occurrence_group_coverages coverage
+          ON coverage.capture_id = record.capture_id AND coverage.scope_key = record.occurrence_group_scope_key
+        JOIN canonical_commits written ON written.commit_id = record.commit_id
+        LEFT JOIN assertion_provenance provenance ON provenance.source_record_id = record.source_record_id
+        LEFT JOIN assertions assertion ON assertion.assertion_id = provenance.assertion_id
+         AND assertion.origin = 'source' AND assertion.field_name = 'transaction_revision'
+       WHERE coverage.bucket_inventory_json IS NOT NULL AND ${scope.chain("record.source_subject_id", "record.record_kind")}
+       ORDER BY record.source_subject_id, record.record_kind, record.occurrence_group_scope_key, coverage.contract_version,
+                record.occurrence_key, written.commit_sequence DESC, (assertion.transaction_id IS NULL), assertion.transaction_id,
+                record.source_record_id DESC`,
+    /** The reuse writer's latest copy of each record (`planSourceRecordReuse`), with what it compares. */
+    recordLatestCopy: `
+      SELECT DISTINCT ON (record.source_subject_id, record.record_kind, record.occurrence_key)
+             record.source_subject_id, record.record_kind, record.occurrence_key, ${recordContent}, owner.shape, backed.assertions
+        FROM source_records record
+        JOIN canonical_commits written ON written.commit_id = record.commit_id
+        ${OWNER_SHAPE}
+        ${BACKED_REVISIONS}
+       WHERE record.occurrence_key IS NOT NULL AND ${scope.chain("record.source_subject_id", "record.record_kind")}
+       ORDER BY record.source_subject_id, record.record_kind, record.occurrence_key, written.commit_sequence DESC, record.source_record_id DESC`,
+    /** The latest copy of each record at every knowledge point. */
+    recordLatestCopyHistory: historySql(
+      { source_subject_id: "record.source_subject_id", record_kind: "record.record_kind", occurrence_key: "record.occurrence_key" },
+      {
+        ...Object.fromEntries(Object.keys(RECORD_CONTENT).map((name) => [name, `record.${name}`])),
+        shape: "record.shape", assertions: "record.assertions",
+      },
+      `FROM (SELECT record.source_record_id, record.source_subject_id, record.record_kind, record.occurrence_key, ${recordContent},
+                    owner.shape, backed.assertions, written.commit_sequence
+               FROM source_records record
+               JOIN canonical_commits written ON written.commit_id = record.commit_id
+               ${OWNER_SHAPE}
+               ${BACKED_REVISIONS}
+              WHERE record.occurrence_key IS NOT NULL AND ${scope.chain("record.source_subject_id", "record.record_kind")}) record`,
+      "record.source_record_id DESC",
+    ),
+    /**
+     * What each capture saw, through `captureSourceRecordIdsSql` as
+     * withdrawal by omission and counterparty evidence read it: each member
+     * by occurrence key, with its content, its scope row's account and
+     * subject, every assertion it backs, and whether it was known by the
+     * capture's commit. Not distinct, so a member listed twice shows, and a
+     * member whose copy is gone keeps a row with no content.
+     */
+    captureMembership: `
+      SELECT capture.capture_key, record.source_subject_id, record.record_kind, record.occurrence_key, ${recordContent},
+             record_commit.commit_sequence <= capture_commit.commit_sequence AS known_at_capture,
+             scope.account_id, scope.source_subject_id AS scope_subject_id,
+             (SELECT string_agg(encode(provenance.assertion_id, 'hex'), ',' ORDER BY provenance.assertion_id)
+                FROM assertion_provenance provenance WHERE provenance.source_record_id = member.source_record_id) AS assertions
+        FROM source_captures capture
+        JOIN canonical_commits capture_commit ON capture_commit.commit_id = capture.commit_id
+        JOIN LATERAL (${captureSourceRecordIdsSql("capture.capture_id")}) member ON TRUE
+        LEFT JOIN source_records record ON record.source_record_id = member.source_record_id
+        LEFT JOIN canonical_commits record_commit ON record_commit.commit_id = record.commit_id
+        LEFT JOIN source_record_scopes scope ON scope.source_record_id = member.source_record_id
+       WHERE ${scope.capture("capture.capture_id")}`,
+  } as const;
+}
 
+export const COMPACTION_READERS = compactionReaders(WHOLE_STORE);
 export type CompactionReader = keyof typeof COMPACTION_READERS;
+
+/**
+ * The readers whose SQL names one of `tables`. A query's answer depends only
+ * on the tables it reads, so these are the only answers a change to those
+ * tables can move.
+ */
+export function readersOf(tables: readonly string[]): CompactionReader[] {
+  return (Object.entries(COMPACTION_READERS) as [CompactionReader, string][])
+    .filter(([, sql]) => tables.some((table) => new RegExp(`\\b${table}\\b`, "u").test(sql)))
+    .map(([reader]) => reader);
+}
 
 /** A reader's answer: its row count and the SHA-256 of its rows as text, sorted. */
 export type ReaderDigest = Readonly<{ rows: number; sha256: string }>;
@@ -432,6 +476,8 @@ export type LedgerCompactionFailure =
   | Readonly<{ reason: "removed-copy-in-manifest-capture"; copies: number }>
   /** A copy phase B would remove differs from its kept copy in a stored column, or its kept copy is missing. */
   | Readonly<{ reason: "removed-copy-differs"; copies: number }>
+  /** A chunk selected rows outside its chains, which its scoped readers would not see. */
+  | Readonly<{ reason: "outside-chunk"; table: CompactedTable; rows: number }>
   /** A delete removed another number of rows than were selected. */
   | Readonly<{ reason: "removed-count-mismatch"; table: CompactedTable; selected: number; removed: number }>
   /** A reader answered differently after the delete. */
@@ -465,7 +511,7 @@ export type LedgerCompactionOptions = Readonly<{
   selections?: Readonly<Partial<Record<CompactionSelection, string>>>;
 }>;
 
-const zeroRemoved = (): Record<CompactedTable, number> =>
+export const zeroRemoved = (): Record<CompactedTable, number> =>
   Object.fromEntries(COMPACTED_TABLES.map((table) => [table, 0])) as Record<CompactedTable, number>;
 
 /**
@@ -482,39 +528,41 @@ export async function compactLedger(
   const step = () => options.signal?.throwIfAborted();
   step();
   return store.transaction(async (transaction) => {
-    const { rows: marked } = await transaction.query<{ migration_key: string }>(
-      "SELECT migration_key FROM pglite_operational_migrations WHERE migration_key = ANY($1::text[])",
-      [[DOMAIN_COUNTS_MARKER, RECORDS_MARKER]],
-    );
-    const done = new Set(marked.map(({ migration_key }) => migration_key));
+    const done = await readMarkers(transaction);
     const domainAndCounts = !done.has(DOMAIN_COUNTS_MARKER);
     const records = !done.has(RECORDS_MARKER);
     if (!domainAndCounts && !records)
       return { status: "already-compacted", removed: zeroRemoved(), manifests: 0, durationMs: elapsed(started) };
 
-    await refuseUnexpectedDependents(transaction);
-    const citing = await readCitingColumns(transaction);
-    if (citing.problems.length > 0) throw new LedgerCompactionError({ reason: "unrecognised-citations", problems: citing.problems });
+    const columns = await refuseUnexpectedStore(transaction);
     step();
     const before = await readCompactionReaders(transaction, step);
 
     const removed = zeroRemoved();
-    await transaction.query("CREATE TEMP TABLE ledger_compaction_removed(table_name TEXT NOT NULL, row_ctid TID NOT NULL) ON COMMIT DROP");
-    if (domainAndCounts) await compactDomainAndCounts(transaction, options, removed, step);
+    await createSelectionTables(transaction);
+    if (domainAndCounts) {
+      // Every selection is made before any delete: the e-invoice selections of
+      // both tables read the observations, which the first delete changes.
+      const selected = await selectRows(transaction, DOMAIN_COUNTS_TABLES, WHOLE_STORE, options, step);
+      await deleteRows(transaction, DOMAIN_COUNTS_TABLES, selected, options, removed, step);
+    }
     // After phase A, whose kept rows are the domain rows that still cite a copy.
-    const manifests = records ? await compactRecordCopies(transaction, citing.columns, options, removed, step) : 0;
+    let manifests = 0;
+    if (records) {
+      const copies = await selectCopies(transaction, columns, WHOLE_STORE, options, step);
+      if (copies > 0) {
+        await checkCopies(transaction, columns, step);
+        manifests = await deleteCopies(transaction, copies, options, removed, step);
+      }
+    }
 
     const after = await readCompactionReaders(transaction, step);
-    const changed = (Object.keys(before) as CompactionReader[])
-      .filter((reader) => before[reader].sha256 !== after[reader].sha256 || before[reader].rows !== after[reader].rows);
-    if (changed.length > 0) throw new LedgerCompactionError({ reason: "reader-changed", readers: changed });
-
-    const touched = [...COMPACTED_TABLES.filter((table) => removed[table] > 0), ...(manifests > 0 ? [MANIFEST] : [])];
-    if (touched.length > 0) await transaction.query(`ANALYZE ${touched.join(", ")}`);
+    refuseChanged(before, after);
+    await analyzeTouched(transaction, removed, manifests);
     for (const marker of [...(domainAndCounts ? [DOMAIN_COUNTS_MARKER] : []), ...(records ? [RECORDS_MARKER] : [])])
       await transaction.query(
         `INSERT INTO pglite_operational_migrations(migration_key, schema_signature) VALUES ($1, $2)`,
-        [marker, createHash("sha256").update(marker).digest("hex")],
+        [marker, markerSignature(marker)],
       );
     return {
       status: "compacted",
@@ -526,7 +574,146 @@ export async function compactLedger(
   });
 }
 
+/** A source subject, as hex, and a record kind: the copies of one chain key's prefix. */
+export type CompactionChain = Readonly<{ subject: string; recordKind: string }>;
+
+/**
+ * One step of the worker job, in its own transaction:
+ *
+ * - `domain`: phase A of one table, or of tables that must be compacted
+ *   together, store-wide;
+ * - `chains`: phase B or C, or both, of a set of chains. The set holds every
+ *   chain a capture holding one of its copies also holds copies of, when the
+ *   job planned it, so a capture's manifest is written once.
+ */
+export type CompactionChunk =
+  | Readonly<{ kind: "domain"; tables: readonly PhaseATable[] }>
+  | Readonly<{
+    kind: "chains";
+    chains: readonly CompactionChain[];
+    /** The chains' integration namespaces, for progress. */
+    namespaces: readonly string[];
+    records: boolean;
+    counts: boolean;
+  }>;
+
+export type CompactionChunkResult = Readonly<{
+  removed: Readonly<Record<CompactedTable, number>>;
+  manifests: number;
+  /** The readers read before and after; empty when the chunk selected nothing. */
+  readers: readonly CompactionReader[];
+}>;
+
+/**
+ * Compact one chunk in one transaction, with the safety of `compactLedger`:
+ * the same selections narrowed to the chunk, the same guards on each removed
+ * copy, replication mode and the purge guard for the deletes, and every
+ * reader that names a table the chunk changes read before and after, the
+ * count and record readers narrowed to the chunk's chains and captures. Any
+ * difference throws a `LedgerCompactionError` and rolls the chunk back;
+ * chunks committed before it stay. A chunk that selects nothing reads no
+ * reader and changes nothing. Writes no marker: the job writes them once
+ * every chunk is done.
+ */
+export async function compactLedgerChunk(
+  store: PGliteStore,
+  chunk: CompactionChunk,
+  options: LedgerCompactionOptions = {},
+): Promise<CompactionChunkResult> {
+  const step = () => options.signal?.throwIfAborted();
+  step();
+  return store.transaction(async (transaction) => {
+    const columns = await refuseUnexpectedStore(transaction);
+    const scope = chunk.kind === "domain" ? WHOLE_STORE : await enterChunk(transaction, chunk.chains);
+    await createSelectionTables(transaction);
+    const tables: readonly DomainCountsTable[] = chunk.kind === "domain" ? chunk.tables : chunk.counts ? [COUNTS] : [];
+    const selected = await selectRows(transaction, tables, scope, options, step);
+    const copies = chunk.kind === "chains" && chunk.records ? await selectCopies(transaction, columns, scope, options, step) : 0;
+    const removed = zeroRemoved();
+    const changing = [...tables.filter((table) => selected[table] > 0), ...(copies > 0 ? [...RECORD_TABLES, MANIFEST] : [])];
+    if (changing.length === 0) return { removed, manifests: 0, readers: [] };
+
+    if (scope !== WHOLE_STORE) await refuseOutsideChunk(transaction, scope, selected[COUNTS], copies);
+    if (copies > 0) await checkCopies(transaction, columns, step);
+    const readers = readersOf(changing);
+    const before = await readCompactionReaders(transaction, step, { scope, readers });
+    await deleteRows(transaction, tables, selected, options, removed, step);
+    const manifests = copies > 0 ? await deleteCopies(transaction, copies, options, removed, step) : 0;
+    refuseChanged(before, await readCompactionReaders(transaction, step, { scope, readers }));
+    await analyzeTouched(transaction, removed, manifests);
+    return { removed, manifests, readers };
+  });
+}
+
 const elapsed = (started: number) => Math.round(performance.now() - started);
+
+export const markerSignature = (marker: string) => createHash("sha256").update(marker).digest("hex");
+
+async function readMarkers(transaction: PGliteTransaction): Promise<Set<string>> {
+  const { rows } = await transaction.query<{ migration_key: string }>(
+    "SELECT migration_key FROM pglite_operational_migrations WHERE migration_key = ANY($1::text[])",
+    [[DOMAIN_COUNTS_MARKER, RECORDS_MARKER]],
+  );
+  return new Set(rows.map(({ migration_key }) => migration_key));
+}
+
+/** The dependents and citations checks; returns the citing columns phase B reads. */
+async function refuseUnexpectedStore(transaction: PGliteTransaction): Promise<Awaited<ReturnType<typeof readCitingColumns>>["columns"]> {
+  await refuseUnexpectedDependents(transaction);
+  const citing = await readCitingColumns(transaction);
+  if (citing.problems.length > 0) throw new LedgerCompactionError({ reason: "unrecognised-citations", problems: citing.problems });
+  return citing.columns;
+}
+
+function refuseChanged(before: Record<CompactionReader, ReaderDigest>, after: Record<CompactionReader, ReaderDigest>): void {
+  const changed = (Object.keys(before) as CompactionReader[])
+    .filter((reader) => before[reader].sha256 !== after[reader]?.sha256 || before[reader].rows !== after[reader]?.rows);
+  if (changed.length > 0) throw new LedgerCompactionError({ reason: "reader-changed", readers: changed });
+}
+
+async function analyzeTouched(transaction: PGliteTransaction, removed: Record<CompactedTable, number>, manifests: number): Promise<void> {
+  const touched = [...COMPACTED_TABLES.filter((table) => removed[table] > 0), ...(manifests > 0 ? [MANIFEST] : [])];
+  if (touched.length > 0) await transaction.query(`ANALYZE ${touched.join(", ")}`);
+}
+
+/** Fills the chunk's two scope tables: its chains, and the captures that hold their copies. */
+async function enterChunk(transaction: PGliteTransaction, chains: readonly CompactionChain[]): Promise<CompactionScope> {
+  for (const { subject } of chains) if (!/^[0-9a-f]{32}$/u.test(subject)) throw new Error("A chunk's source subject must be 16 bytes of hex.");
+  await transaction.query(`CREATE TEMP TABLE ${CHUNK_CHAINS}(
+      source_subject_id BYTEA NOT NULL, record_kind TEXT NOT NULL, PRIMARY KEY (source_subject_id, record_kind)) ON COMMIT DROP`);
+  await transaction.query(
+    `INSERT INTO ${CHUNK_CHAINS} SELECT decode(subject, 'hex'), kind FROM unnest($1::text[], $2::text[]) AS chain(subject, kind)`,
+    [chains.map(({ subject }) => subject), chains.map(({ recordKind }) => recordKind)],
+  );
+  await transaction.query(`CREATE TEMP TABLE ${CHUNK_CAPTURES}(capture_id BYTEA PRIMARY KEY) ON COMMIT DROP`);
+  await transaction.query(`INSERT INTO ${CHUNK_CAPTURES}
+    SELECT DISTINCT record.capture_id FROM source_records record
+     WHERE ${IN_CHUNK.chain("record.source_subject_id", "record.record_kind")}`);
+  await transaction.query(`ANALYZE ${CHUNK_CHAINS}, ${CHUNK_CAPTURES}`);
+  return IN_CHUNK;
+}
+
+/** A selected count row or copy whose chain or capture is outside the chunk; `WHERE` alone would let a NULL through. */
+async function refuseOutsideChunk(transaction: PGliteTransaction, scope: CompactionScope, counts: number, copies: number): Promise<void> {
+  if (counts > 0) {
+    const { rows: [outside] } = await transaction.query<{ rows: number }>(
+      `SELECT count(*)::int AS rows FROM ledger_compaction_removed removed
+         JOIN ${COUNTS} count_row ON count_row.ctid = removed.row_ctid
+         JOIN source_occurrence_group_coverages coverage ON coverage.coverage_id = count_row.coverage_id
+        WHERE removed.table_name = $1 AND (${scope.chain("coverage.source_subject_id", "coverage.record_kind")}) IS NOT TRUE`,
+      [COUNTS],
+    );
+    if (outside!.rows > 0) throw new LedgerCompactionError({ reason: "outside-chunk", table: COUNTS, rows: outside!.rows });
+  }
+  if (copies > 0) {
+    const { rows: [outside] } = await transaction.query<{ rows: number }>(
+      `SELECT count(*)::int AS rows FROM ledger_compaction_copies copy
+         JOIN source_records record ON record.source_record_id = copy.source_record_id
+        WHERE (${scope.chain("record.source_subject_id", "record.record_kind")} AND ${scope.capture("copy.capture_id")}) IS NOT TRUE`,
+    );
+    if (outside!.rows > 0) throw new LedgerCompactionError({ reason: "outside-chunk", table: RECORDS, rows: outside!.rows });
+  }
+}
 
 /**
  * As ADR 0144: no per-row foreign-key checks or triggers, which the
@@ -542,27 +729,45 @@ async function deleting<T>(transaction: PGliteTransaction, body: () => Promise<T
   return result;
 }
 
-/** Phases A and C. */
-async function compactDomainAndCounts(
+async function createSelectionTables(transaction: PGliteTransaction): Promise<void> {
+  await transaction.query("CREATE TEMP TABLE ledger_compaction_removed(table_name TEXT NOT NULL, row_ctid TID NOT NULL) ON COMMIT DROP");
+  await transaction.query(`CREATE TEMP TABLE ledger_compaction_copies(
+      source_record_id BYTEA PRIMARY KEY, capture_id BYTEA NOT NULL, kept_id BYTEA NOT NULL) ON COMMIT DROP`);
+}
+
+/** Phases A and C: records each table's selected rows; returns how many each has. Phase C is narrowed to `scope`. */
+async function selectRows(
   transaction: PGliteTransaction,
+  tables: readonly DomainCountsTable[],
+  scope: CompactionScope,
   options: LedgerCompactionOptions,
-  removed: Record<CompactedTable, number>,
   step: () => void,
-): Promise<void> {
-  // Every selection is made before any delete: the e-invoice selections of
-  // both tables read the observations, which the first delete changes.
+): Promise<Record<CompactedTable, number>> {
   const selected = zeroRemoved();
-  for (const table of DOMAIN_COUNTS_TABLES) {
+  for (const table of tables) {
     step();
-    const selection = options.selections?.[table] ?? (table === COUNTS ? phaseCMarkedSql() : PHASE_A[table].marked);
+    const selection = options.selections?.[table]
+      ?? (table === COUNTS ? phaseCMarkedSql(scope.chain("coverage.source_subject_id", "coverage.record_kind")) : PHASE_A[table].marked);
     selected[table] = (await transaction.query(
       `INSERT INTO ledger_compaction_removed(table_name, row_ctid)
        SELECT $1, selection.row_ctid FROM (${selection}) selection WHERE selection.repeats`,
       [table],
     )).affectedRows ?? 0;
   }
+  return selected;
+}
+
+async function deleteRows(
+  transaction: PGliteTransaction,
+  tables: readonly DomainCountsTable[],
+  selected: Record<CompactedTable, number>,
+  options: LedgerCompactionOptions,
+  removed: Record<CompactedTable, number>,
+  step: () => void,
+): Promise<void> {
+  if (tables.every((table) => selected[table] === 0)) return;
   await deleting(transaction, async () => {
-    for (const table of DOMAIN_COUNTS_TABLES) {
+    for (const table of tables) {
       step();
       if (selected[table] === 0) continue;
       removed[table] = (await transaction.query(
@@ -576,31 +781,31 @@ async function compactDomainAndCounts(
   });
 }
 
-/**
- * Phase B: select the removable copies, check each again on its own, give
- * each one's capture a manifest listing its kept copy, and delete the copies
- * with their satellite rows. Returns the manifests written.
- */
-async function compactRecordCopies(
+type CitingColumns = Awaited<ReturnType<typeof readCitingColumns>>["columns"];
+
+/** Phase B's selection, narrowed to `scope`: the removable copies with their kept copies. Returns how many. */
+async function selectCopies(
   transaction: PGliteTransaction,
-  columns: Awaited<ReturnType<typeof readCitingColumns>>["columns"],
+  columns: CitingColumns,
+  scope: CompactionScope,
   options: LedgerCompactionOptions,
-  removed: Record<CompactedTable, number>,
   step: () => void,
 ): Promise<number> {
   step();
   const selection = options.selections?.[RECORDS]
-    ?? `SELECT source_record_id, kept_id FROM (${recordCopiesSql("TRUE", columns, false)}) copy WHERE copy.category = 'removable'`;
-  await transaction.query(`CREATE TEMP TABLE ledger_compaction_copies(
-      source_record_id BYTEA PRIMARY KEY, capture_id BYTEA NOT NULL, kept_id BYTEA NOT NULL) ON COMMIT DROP`);
+    ?? `SELECT source_record_id, kept_id FROM (${recordCopiesSql(scope.chain("record.source_subject_id", "record.record_kind"), columns, false)}) copy
+         WHERE copy.category = 'removable'`;
   const selected = (await transaction.query(
     `INSERT INTO ledger_compaction_copies(source_record_id, capture_id, kept_id)
      SELECT selection.source_record_id, record.capture_id, selection.kept_id
        FROM (${selection}) selection JOIN source_records record ON record.source_record_id = selection.source_record_id`,
   )).affectedRows ?? 0;
-  if (selected === 0) return 0;
-  await transaction.query("ANALYZE ledger_compaction_copies");
+  if (selected > 0) await transaction.query("ANALYZE ledger_compaction_copies");
+  return selected;
+}
 
+/** Each selected copy checked again on its own, apart from the selection. */
+async function checkCopies(transaction: PGliteTransaction, columns: CitingColumns, step: () => void): Promise<void> {
   // 1. Nothing cites a removed copy: no citing column, manifest or assertion row naming a run.
   step();
   const removedCopy = (column: string) => `${column} IN (SELECT source_record_id FROM ledger_compaction_copies)`;
@@ -634,7 +839,16 @@ async function compactRecordCopies(
      ) differing`,
   );
   if (differing!.copies > 0) throw new LedgerCompactionError({ reason: "removed-copy-differs", copies: differing!.copies });
+}
 
+/** Gives each selected copy's capture a manifest listing its kept copy, then deletes the copies with their satellite rows. */
+async function deleteCopies(
+  transaction: PGliteTransaction,
+  selected: number,
+  options: LedgerCompactionOptions,
+  removed: Record<CompactedTable, number>,
+  step: () => void,
+): Promise<number> {
   // A capture's removed copies have distinct occurrence keys, so their kept copies are distinct too.
   step();
   const manifests = (await transaction.query(
@@ -681,18 +895,23 @@ async function refuseUnexpectedDependents(transaction: PGliteTransaction): Promi
   if (triggers.length > 0) throw new LedgerCompactionError({ reason: "unexpected-trigger", triggers: triggers.map(({ name }) => name) });
 }
 
-/** Every reader's answer as a digest. */
+/**
+ * Each reader's answer as a digest: every reader, read whole, unless
+ * `readers` names some and `scope` narrows the count and record readers.
+ */
 export async function readCompactionReaders(
   reader: Pick<PGliteTransaction, "query">,
   step: () => void = () => {},
+  { scope = WHOLE_STORE, readers }: Readonly<{ scope?: CompactionScope; readers?: readonly CompactionReader[] }> = {},
 ): Promise<Record<CompactionReader, ReaderDigest>> {
+  const queries = scope === WHOLE_STORE ? COMPACTION_READERS : compactionReaders(scope);
   const digests = {} as Record<CompactionReader, ReaderDigest>;
-  for (const [name, sql] of Object.entries(COMPACTION_READERS) as [CompactionReader, string][]) {
+  for (const name of readers ?? (Object.keys(queries) as CompactionReader[])) {
     step();
     const { rows: [row] } = await reader.query<{ rows: number; sha256: string }>(
       `SELECT count(*)::int AS rows,
               encode(sha256(convert_to(COALESCE(string_agg(answer::text, E'\\n' ORDER BY answer::text), ''), 'UTF8')), 'hex') AS sha256
-         FROM (${sql}) answer`,
+         FROM (${queries[name]}) answer`,
     );
     digests[name] = { rows: row!.rows, sha256: row!.sha256 };
   }
