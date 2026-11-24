@@ -61,6 +61,7 @@ import type { TdccAdmittedFundAccount } from "../../ledger/canonical/tdcc-invest
 import type { AccountIdentityContinuity, AccountIdentityContinuityRequest } from "../../ledger/pglite/account-identity-continuity.ts";
 import type { SpendingPageVersion } from "../../ledger/pglite/spending-page.ts";
 import type { CompactionPlanResult } from "../../ledger/pglite/compaction-plan.ts";
+import type { LedgerCompactionResult } from "../../ledger/pglite/compaction.ts";
 import type {
   PGliteCanonicalLoanRelationResolutionRequest,
   PGliteCanonicalLoanRelationResolutionResult,
@@ -361,6 +362,18 @@ export const PGLITE_FINANCIAL_CONTRACTS = Object.freeze({
   "financial.canonical.compactionPlan": operation<[], CompactionPlanResult>(
     (args) => args.length === 0,
     { lane: "background-steps" },
+  ),
+  /**
+   * Removes the domain-row and count-row repeats a store written before ADR
+   * 0152 holds, phases A and C of the compaction (ADR 0154), in one verified
+   * transaction. Host-only: no renderer route and no workflow access. Do not
+   * wire it to the UI: the transaction holds the ledger for as long as it
+   * runs, and the chunked worker job that will run it from Settings, and
+   * return its space, does not exist yet.
+   */
+  "financial.canonical.compactDomainAndCounts": operation<[], LedgerCompactionResult>(
+    (args) => args.length === 0,
+    { lane: "background" },
   ),
 });
 
