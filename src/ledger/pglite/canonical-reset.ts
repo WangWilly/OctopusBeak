@@ -6,6 +6,7 @@ import {
   canonicalSourceRouteRegistration,
   type CanonicalSourceRouteRegistration,
 } from "../canonical/canonical-source-route-registry.ts";
+import { FAILURE_RECORD as COMPACTION_FAILURE_RECORD } from "./compaction-job.ts";
 import { MANUAL_ASSET_TABLES } from "./manual-assets.ts";
 import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
 
@@ -66,6 +67,8 @@ export async function resetPGliteCanonicalStore(store: PGliteStore): Promise<voi
     // TRUNCATE skips the per-row append-only guards and gives each table new
     // storage, so the deleted rows leave the table files at commit.
     await transaction.exec(`TRUNCATE ${financial.map(quoted).join(", ")}`);
+    // A compaction's recorded failure counts rows of the store just emptied (ADR 0154); the markers stay.
+    await transaction.query("DELETE FROM pglite_operational_migrations WHERE migration_key = $1", [COMPACTION_FAILURE_RECORD]);
     // The knowledge version is MAX(commit_sequence). An empty rebuild commit
     // keeps it increasing, so no cache or page keyed by a version from before
     // the reset can match one after it, and live views observe the change.

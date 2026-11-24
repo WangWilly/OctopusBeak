@@ -170,6 +170,37 @@ export type LedgerReclaimStatusDto =
   | Readonly<{ running: true; progress: LedgerReclaimProgressDto | null }>
   | Readonly<{ running: false; last: LedgerReclaimResultDto | null }>;
 
+/**
+ * What Compact ledger would free (ADR 0154), from its dry run. `storeBytes`
+ * is the ledger folder's size, `backupNeededBytes` the free space a backup
+ * first needs (the size plus a margin) and `freeBytes` what the disk has;
+ * null when the ledger cannot be backed up.
+ */
+export type LedgerCompactionEstimateDto =
+  | Readonly<{ status: "planned"; removableRows: number; removableBytes: number;
+    storeBytes: number | null; backupNeededBytes: number | null; freeBytes: number | null }>
+  /** The ledger holds a reference the compaction does not know, so it would remove nothing. */
+  | Readonly<{ status: "cannot-compact" }>;
+
+/** The running compaction: the backup, step `index` of `count`, or table `index` of `count` being rewritten. */
+export type LedgerCompactionProgressDto =
+  | Readonly<{ phase: "backing-up" }>
+  | Readonly<{ phase: "compacting" | "reclaiming"; index: number; count: number; removedRows: number }>;
+
+export type LedgerCompactionResultDto =
+  | Readonly<{ status: "already-compacted" | "already-running" }>
+  /** `reclaimedBytes` is null when the removed rows' space could not be returned yet. */
+  | Readonly<{ status: "compacted"; removedRows: number; reclaimedBytes: number | null }>
+  /** The steps done before the stop stay done; starting again goes on from there. */
+  | Readonly<{ status: "stopped"; removedRows: number }>
+  /** The failing step rolled back; the steps before it stay done. `backup`: the backup failed, so nothing ran. */
+  | Readonly<{ status: "failed"; removedRows: number; backup: boolean }>;
+
+/** A compaction that is running, or how the last one ended; a failure is still reported after a restart. */
+export type LedgerCompactionStatusDto =
+  | Readonly<{ running: true; progress: LedgerCompactionProgressDto | null }>
+  | Readonly<{ running: false; last: LedgerCompactionResultDto | null }>;
+
 /** The part of Settings a notification or another page opens. */
 export type SettingsFocus = "financial-data-deletion" | "sign-in-data" | "app-updates";
 
@@ -288,6 +319,14 @@ export type OctopusBeakApi = {
     ledgerReclaimStatus(): Promise<LedgerReclaimStatusDto>;
     /** Stops the running reclaim after its current table. */
     stopLedgerReclaim(): Promise<boolean>;
+    /** About how much Compact ledger would free, from its dry run, and whether a backup first fits on the disk. */
+    ledgerCompactionEstimate(): Promise<LedgerCompactionEstimateDto>;
+    /** Removes the repeated rows an older ledger holds, then returns their space; resolves when it ends. */
+    compactLedger(request: Readonly<{ backup: boolean }>): Promise<LedgerCompactionResultDto>;
+    /** The running compaction's progress, or how the last one ended. */
+    ledgerCompactionStatus(): Promise<LedgerCompactionStatusDto>;
+    /** Stops the running compaction; its current step rolls back. */
+    stopLedgerCompaction(): Promise<boolean>;
     /** Starts every enabled source, as scheduled collection would. */
     collectAllSources(): Promise<AutomationRunManyResult>;
   };

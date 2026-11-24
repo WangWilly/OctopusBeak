@@ -56,10 +56,11 @@ export async function directoryBytes(directory: string, fs: DataDirFs = NODE_FS)
  * so a checkpoint reaches only the OS cache. Each directory is flushed after
  * its files, so a renamed or new file is durable under its name too.
  * Node's fsync is not macOS's `F_FULLFSYNC`, so the drive's own cache may
- * still hold the last writes.
+ * still hold the last writes. An aborted `signal` stops it between files.
  */
-export async function fsyncDirectory(directory: string, fs: DataDirFs = NODE_FS): Promise<void> {
+export async function fsyncDirectory(directory: string, fs: DataDirFs = NODE_FS, signal?: AbortSignal): Promise<void> {
   for await (const { path } of walk(directory, fs)) {
+    signal?.throwIfAborted();
     let handle;
     try {
       handle = await fs.open(path, "r");

@@ -672,6 +672,13 @@ async function start() {
       status: () => operationalRuntime.worker.financial.request("financial.ledger.reclaimStatus", []),
       stop: () => operationalRuntime.worker.financial.request("financial.ledger.reclaimStop", []),
     },
+    ledgerCompaction: {
+      plan: () => operationalRuntime.worker.financial.request("financial.canonical.compactionPlan", []),
+      backupRoom: () => operationalRuntime.worker.financial.request("financial.canonical.compactionBackupRoom", []),
+      compact: (request) => operationalRuntime.worker.financial.request("financial.canonical.compact", [request]),
+      status: () => operationalRuntime.worker.financial.request("financial.canonical.compactionStatus", []),
+      stop: () => operationalRuntime.worker.financial.request("financial.canonical.compactionStop", []),
+    },
   });
   const rendererUrl = RENDERER_URL;
   serveRenderer(protocol, path.join(appRoot, "build"));

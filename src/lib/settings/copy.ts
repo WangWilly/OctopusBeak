@@ -141,6 +141,32 @@ const en = {
     reclaimLedgerSpaceFailed: "Ledger space could not be reclaimed. No data was changed. Try again.",
     reclaimLedgerSpaceFailedPartway: (megabytes: string) =>
       `Ledger space could not be fully reclaimed. ${megabytes} MB was reclaimed before the error. No data was changed. Try again.`,
+    compactLedger: "Compact ledger",
+    compactLedgerHint:
+      "Removes the repeated copies earlier versions of OctopusBeak stored on every sync, then returns their space. Every page shows the same data. Checking what can be freed may pause OctopusBeak for a few seconds.",
+    compactLedgerChecking: "Checking...",
+    compactLedgerEstimate: (megabytes: string) =>
+      `About ${megabytes} MB can be freed. Only rows that repeat the row before them are removed, and every page shows the same data afterwards. On a large ledger this can take a few minutes, and OctopusBeak may pause briefly between steps; a running sync waits and then continues.`,
+    compactLedgerBackup: "Back up the ledger first",
+    compactLedgerBackupHint: (megabytes: string) =>
+      `Copies the ledger folder, about ${megabytes} MB, before anything is removed. The copy is saved beside the ledger folder, under its name with "before-compaction" and the time. On a disk that cannot clone files, OctopusBeak pauses while the copy is made.`,
+    compactLedgerAction: "Compact",
+    compactLedgerNothing: "Nothing to compact",
+    compactLedgerCannot: "This ledger cannot be compacted yet. No data was changed.",
+    compactLedgerStarting: "Starting...",
+    compactLedgerBackingUp: "Backing up the ledger...",
+    compactLedgerProgress: (step: number, steps: number, rows: string) => `Compacting step ${step} of ${steps} · ${rows} rows removed`,
+    compactLedgerReclaiming: (table: number, tables: number) => `Returning space: table ${table} of ${tables}`,
+    compactLedgerStop: "Stop",
+    compactLedgerDone: (rows: string, megabytes: string) => `Compacted. ${rows} rows removed, ${megabytes} MB freed`,
+    compactLedgerDoneSpaceLeft: (rows: string) =>
+      `Compacted. ${rows} rows removed. Their space is not returned yet; use Reclaim ledger space.`,
+    compactLedgerStopped: (rows: string) => `Stopped. ${rows} rows removed. Compact again to continue.`,
+    compactLedgerFailed: "The ledger could not be compacted. The failing step was undone and no data was changed. You can start again.",
+    compactLedgerFailedPartway: (rows: string) =>
+      `Compacting stopped at an error. The failing step was undone. The ${rows} rows removed by earlier steps stay removed, and every page shows the same data. You can start again.`,
+    compactLedgerBackupFailed:
+      "The backup could not be made, so nothing was compacted. Free up disk space, or compact without a backup.",
     collectAllSources: "Collect every source now",
     collectAllSourcesStarted: "Collection started",
     collectAllSourcesFailed: "Collection could not start. Start it from Automation.",
@@ -320,6 +346,29 @@ const zh: typeof en = {
     reclaimLedgerSpaceFailed: "無法回收帳本空間。資料沒有任何變更，請再試一次。",
     reclaimLedgerSpaceFailedPartway: (megabytes: string) =>
       `無法完整回收帳本空間。發生錯誤前已回收 ${megabytes} MB。資料沒有任何變更，請再試一次。`,
+    compactLedger: "壓縮帳本",
+    compactLedgerHint: "移除舊版 OctopusBeak 每次同步重複儲存的副本，再回收它們占用的空間。各頁面顯示的資料不變。檢查可釋出的空間時，OctopusBeak 可能會暫停幾秒。",
+    compactLedgerChecking: "檢查中...",
+    compactLedgerEstimate: (megabytes: string) =>
+      `約可釋出 ${megabytes} MB。只會移除與前一筆相同的重複資料，完成後各頁面顯示的資料不變。帳本較大時可能需要幾分鐘，步驟之間 OctopusBeak 可能會短暫停頓；進行中的同步會等待，之後繼續。`,
+    compactLedgerBackup: "先備份帳本",
+    compactLedgerBackupHint: (megabytes: string) =>
+      `移除任何資料前，先把帳本資料夾（約 ${megabytes} MB）複製一份。備份存放在帳本資料夾旁，名稱是資料夾名稱加上「before-compaction」與備份時間。若磁碟無法快速複製（clone）檔案，複製期間 OctopusBeak 會暫停。`,
+    compactLedgerAction: "壓縮",
+    compactLedgerNothing: "沒有可壓縮的資料",
+    compactLedgerCannot: "目前無法壓縮這個帳本。資料沒有任何變更。",
+    compactLedgerStarting: "準備中...",
+    compactLedgerBackingUp: "正在備份帳本...",
+    compactLedgerProgress: (step: number, steps: number, rows: string) => `正在壓縮第 ${step} 步，共 ${steps} 步 · 已移除 ${rows} 筆`,
+    compactLedgerReclaiming: (table: number, tables: number) => `正在回收空間：第 ${table} 個資料表，共 ${tables} 個`,
+    compactLedgerStop: "停止",
+    compactLedgerDone: (rows: string, megabytes: string) => `已壓縮，移除 ${rows} 筆，釋出 ${megabytes} MB`,
+    compactLedgerDoneSpaceLeft: (rows: string) => `已壓縮，移除 ${rows} 筆。空間尚未回收，請使用「回收帳本空間」。`,
+    compactLedgerStopped: (rows: string) => `已停止，已移除 ${rows} 筆。再次壓縮即可接續。`,
+    compactLedgerFailed: "無法壓縮帳本。失敗的步驟已復原，資料沒有任何變更。你可以重新開始。",
+    compactLedgerFailedPartway: (rows: string) =>
+      `壓縮因錯誤而停止。失敗的步驟已復原；先前步驟移除的 ${rows} 筆維持移除，各頁面顯示的資料不變。你可以重新開始。`,
+    compactLedgerBackupFailed: "無法建立備份，因此沒有壓縮任何資料。請釋出磁碟空間，或不備份直接壓縮。",
     collectAllSources: "立即收集所有來源",
     collectAllSourcesStarted: "已開始收集",
     collectAllSourcesFailed: "無法開始收集，請到自動化頁面開始。",

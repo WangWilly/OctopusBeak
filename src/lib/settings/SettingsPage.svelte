@@ -19,6 +19,13 @@
   } from "@lucide/svelte";
   import { isMacPlatform } from "$lib/desktop/platform.ts";
   import { estimateView, megabytes, resumeLedgerReclaim, runLedgerReclaim, type LedgerReclaimView } from "$lib/settings/ledger-reclaim.ts";
+  import {
+    compactionEstimateView,
+    resumeLedgerCompaction,
+    rowCount,
+    runLedgerCompaction,
+    type LedgerCompactionView,
+  } from "$lib/settings/ledger-compaction.ts";
   import { locale, localeLabels, locales, setLocale, t, type Locale } from "$lib/i18n/i18n.ts";
   import {
     DISPLAY_SCALE_DEFAULT,
@@ -129,7 +136,13 @@
   // Stops following a reclaim once Settings closes; the reclaim itself goes on.
   const reclaimFollow = new AbortController();
   $: reclaimBusy = reclaimView.kind === "checking" || reclaimView.kind === "running";
-  $: dataActionPending = financialDeleteStatus === "pending" || signInClearStatus === "pending" || manualDeleteStatus === "pending" || reclaimBusy;
+  let compactionView: LedgerCompactionView = { kind: "idle" };
+  let compactionStopping = false;
+  // Off by default (ADR 0154); offered only when the disk has room for a copy of the ledger.
+  let compactionBackup = false;
+  $: compactionBusy = compactionView.kind === "checking" || compactionView.kind === "running";
+  $: dataActionPending = financialDeleteStatus === "pending" || signInClearStatus === "pending" || manualDeleteStatus === "pending"
+    || reclaimBusy || compactionBusy;
   let saveStatus: "idle" | "pending" | "success" | "error" = "idle";
   let saveError = "";
   let saveVersion = 0;
@@ -167,6 +180,8 @@
     void readSignInStatus();
     // A reclaim started before Settings was left is still running in the worker.
     void resumeLedgerReclaim(window.octopusBeak.settings, (view) => (reclaimView = view), { signal: reclaimFollow.signal });
+    // So is a compaction, and a failed one shows until the person starts again, across restarts.
+    void resumeLedgerCompaction(window.octopusBeak.settings, (view) => (compactionView = view), { signal: reclaimFollow.signal });
     shortcutModifier = isMacPlatform(navigator) ? "⌘" : "Ctrl";
     const clock = setInterval(() => (now = new Date()), 60_000);
     // Every scroll re-reads every section, so a section still in view is never
@@ -425,6 +440,31 @@
       await window.octopusBeak.settings.stopLedgerReclaim();
     } catch {
       reclaimStopping = false;
+    }
+  }
+
+  async function estimateLedgerCompaction() {
+    compactionView = { kind: "checking" };
+    compactionBackup = false;
+    try {
+      compactionView = compactionEstimateView(await window.octopusBeak.settings.ledgerCompactionEstimate());
+    } catch {
+      compactionView = { kind: "failed", removedRows: 0, backup: false };
+    }
+  }
+
+  async function compactLedger() {
+    const backup = compactionView.kind === "estimated" && compactionView.backupOffered && compactionBackup;
+    compactionStopping = false;
+    await runLedgerCompaction(window.octopusBeak.settings, { backup }, (view) => (compactionView = view), { signal: reclaimFollow.signal });
+  }
+
+  async function stopLedgerCompaction() {
+    compactionStopping = true;
+    try {
+      await window.octopusBeak.settings.stopLedgerCompaction();
+    } catch {
+      compactionStopping = false;
     }
   }
 
@@ -1062,6 +1102,88 @@
           {/if}
           <div class="setting-row">
             <div class="setting-label-group">
+              <span class="setting-label">{$t.settings.compactLedger}</span>
+              <small class="setting-hint">{$t.settings.compactLedgerHint}</small>
+            </div>
+            <div class="onboarding-setting-actions">
+              {#if compactionView.kind === "done" || compactionView.kind === "stopped"}
+                <span class="chip status-chip good" role="status">
+                  <Check size={13} strokeWidth={2.5} aria-hidden="true" />
+                  {compactionView.kind === "stopped"
+                    ? $t.settings.compactLedgerStopped(rowCount(compactionView.removedRows))
+                    : compactionView.reclaimedBytes === null
+                    ? $t.settings.compactLedgerDoneSpaceLeft(rowCount(compactionView.removedRows))
+                    : $t.settings.compactLedgerDone(rowCount(compactionView.removedRows), megabytes(compactionView.reclaimedBytes))}
+                </span>
+              {:else if compactionView.kind === "nothing"}
+                <span class="chip status-chip good" role="status">
+                  <Check size={13} strokeWidth={2.5} aria-hidden="true" />
+                  {$t.settings.compactLedgerNothing}
+                </span>
+              {:else if compactionView.kind === "running"}
+                <button
+                  id="stop-ledger-compaction"
+                  class="button"
+                  type="button"
+                  disabled={compactionStopping}
+                  onclick={stopLedgerCompaction}
+                >{$t.settings.compactLedgerStop}</button>
+              {:else if compactionView.kind !== "estimated"}
+                <button
+                  id="compact-ledger"
+                  class="button"
+                  type="button"
+                  disabled={dataActionPending}
+                  aria-busy={compactionView.kind === "checking"}
+                  onclick={estimateLedgerCompaction}
+                >{compactionView.kind === "checking" ? $t.settings.compactLedgerChecking : $t.settings.compactLedger}</button>
+              {/if}
+            </div>
+          </div>
+          {#if compactionView.kind === "estimated"}
+            <div class="restart-confirm" role="group" aria-labelledby="ledger-compaction-estimate">
+              <p id="ledger-compaction-estimate">{$t.settings.compactLedgerEstimate(megabytes(compactionView.removableBytes))}</p>
+              {#if compactionView.backupOffered}
+                <label class="confirm-option">
+                  <input id="ledger-compaction-backup" type="checkbox" bind:checked={compactionBackup} aria-describedby="ledger-compaction-backup-hint" />
+                  <span>{$t.settings.compactLedgerBackup}</span>
+                </label>
+                <small id="ledger-compaction-backup-hint" class="setting-hint">{$t.settings.compactLedgerBackupHint(megabytes(compactionView.storeBytes ?? 0))}</small>
+              {/if}
+              <div class="onboarding-setting-actions">
+                <button class="button" type="button" onclick={() => (compactionView = { kind: "idle" })}>{$t.common.cancel}</button>
+                <button id="confirm-compact-ledger" class="button primary" type="button" disabled={dataActionPending} onclick={compactLedger}>{$t.settings.compactLedgerAction}</button>
+              </div>
+            </div>
+          {:else if compactionView.kind === "running"}
+            <p id="ledger-compaction-progress" class="setting-hint" role="status" aria-live="polite">
+              {#if compactionView.progress === null}
+                {$t.settings.compactLedgerStarting}
+              {:else if compactionView.progress.phase === "backing-up"}
+                {$t.settings.compactLedgerBackingUp}
+              {:else if compactionView.progress.phase === "compacting"}
+                {$t.settings.compactLedgerProgress(compactionView.progress.index, compactionView.progress.count, rowCount(compactionView.progress.removedRows))}
+              {:else}
+                {$t.settings.compactLedgerReclaiming(compactionView.progress.index, compactionView.progress.count)}
+              {/if}
+            </p>
+          {:else if compactionView.kind === "cannot"}
+            <div class="settings-error" role="alert">
+              <CircleAlert size={16} strokeWidth={2.25} aria-hidden="true" />
+              <span>{$t.settings.compactLedgerCannot}</span>
+            </div>
+          {:else if compactionView.kind === "failed"}
+            <div id="ledger-compaction-failed" class="settings-error" role="alert">
+              <CircleAlert size={16} strokeWidth={2.25} aria-hidden="true" />
+              <span>{compactionView.backup
+                ? $t.settings.compactLedgerBackupFailed
+                : compactionView.removedRows > 0
+                ? $t.settings.compactLedgerFailedPartway(rowCount(compactionView.removedRows))
+                : $t.settings.compactLedgerFailed}</span>
+            </div>
+          {/if}
+          <div class="setting-row">
+            <div class="setting-label-group">
               <span class="setting-label">{$t.settings.clearSignInData}</span>
               <small class="setting-hint">{$t.settings.clearSignInDataHint}</small>
               {#if signInGuidance.unreadableHint && signInClearStatus !== "done"}
@@ -1543,6 +1665,13 @@
     color: var(--muted);
     font-size: 13px;
     line-height: 1.5;
+  }
+
+  .confirm-option {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: 13px;
   }
 
   .restart-confirm .confirm-warning,

@@ -62,7 +62,8 @@ import type { AccountIdentityContinuity, AccountIdentityContinuityRequest } from
 import type { SpendingPageVersion } from "../../ledger/pglite/spending-page.ts";
 import type { CompactionPlanResult } from "../../ledger/pglite/compaction-plan.ts";
 import type { LedgerReclaimEstimate, LedgerReclaimResult, LedgerReclaimStatus } from "../../ledger/pglite/reclaim.ts";
-import type { LedgerCompactionJobResult, LedgerCompactionStatus } from "../../ledger/pglite/compaction-job.ts";
+import type { LedgerCompactionJobResult, LedgerCompactionRequest, LedgerCompactionStatus } from "../../ledger/pglite/compaction-job.ts";
+import type { LedgerBackupRoom } from "../../ledger/pglite/data-dir-backup.ts";
 import type {
   PGliteCanonicalLoanRelationResolutionRequest,
   PGliteCanonicalLoanRelationResolutionResult,
@@ -356,9 +357,9 @@ export const PGLITE_FINANCIAL_CONTRACTS = Object.freeze({
   /**
    * What a ledger compaction would remove, read without changing anything,
    * one step at a time. Host-only: no renderer route and no workflow access.
-   * Do not wire it to the UI or call it on the live worker until a subject
-   * step is split further, for example by record kind or occurrence-key
-   * range; one large subject's step can hold the ledger for tens of seconds.
+   * Settings shows its estimate before a compaction, only when the owner asks
+   * for one. One large subject's step can hold the ledger for seconds, and
+   * for tens of seconds on a store of several GB (ADR 0154).
    */
   "financial.canonical.compactionPlan": operation<[], CompactionPlanResult>(
     (args) => args.length === 0,
@@ -394,14 +395,25 @@ export const PGLITE_FINANCIAL_CONTRACTS = Object.freeze({
    * compacted tables to return their space. Host-only: no renderer route and
    * no workflow access; one at a time.
    */
-  "financial.canonical.compact": operation<[], LedgerCompactionJobResult>(
-    (args) => args.length === 0,
+  "financial.canonical.compact": operation<[request?: LedgerCompactionRequest], LedgerCompactionJobResult>(
+    (args) => args.length === 0
+      || (args.length === 1 && plainRecord(args[0]) && Object.keys(args[0]).every((key) => key === "backup")
+        && typeof args[0].backup === "boolean"),
     { lane: "background-steps" },
   ),
   /** The running compaction's chunk, or how the last one ended. Host-only. */
   "financial.canonical.compactionStatus": operation<[], LedgerCompactionStatus>(
     (args) => args.length === 0,
     { lane: "interactive" },
+  ),
+  /**
+   * What the ledger's folder takes and the disk has free, which a backup
+   * before a compaction needs; null when the ledger has no folder of its own.
+   * Reads the disk, not the ledger. Host-only.
+   */
+  "financial.canonical.compactionBackupRoom": operation<[], LedgerBackupRoom | null>(
+    (args) => args.length === 0,
+    { lane: "background-steps" },
   ),
   /** Stops the running compaction; its running chunk rolls back. False when none runs. Host-only. */
   "financial.canonical.compactionStop": operation<[], boolean>(
