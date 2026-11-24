@@ -611,6 +611,32 @@ const STATEMENT_MUTATIONS: readonly Readonly<{
     failure: { reason: "manifest-mismatch" },
   },
   {
+    // One row per capture, as many as expected, only one column wrong.
+    name: "a manifest insert that writes another commit on one capture's manifest",
+    statements: {
+      [MANIFESTS]: `INSERT INTO ${MANIFESTS}(capture_id, source_record_ids, record_count, commit_id)
+        SELECT copy.capture_id, string_agg(copy.kept_id, ''::bytea ORDER BY copy.kept_id), count(*)::int,
+               CASE WHEN copy.capture_id = (SELECT min(capture_id) FROM ${COPIES})
+                    THEN (SELECT commit_id FROM canonical_commits WHERE commit_id <> capture.commit_id ORDER BY commit_sequence LIMIT 1)
+                    ELSE capture.commit_id END
+          FROM ${COPIES} copy JOIN source_captures capture ON capture.capture_id = copy.capture_id
+         GROUP BY copy.capture_id, capture.commit_id`,
+    },
+    failure: { reason: "manifest-mismatch" },
+  },
+  {
+    // The append-only guard is off while the copies go, and the row it changes is the chunk's own.
+    name: "a record delete that also changes the commit of a manifest the chunk wrote",
+    statements: {
+      source_records: `WITH changed AS (
+          UPDATE ${MANIFESTS} SET commit_id = (SELECT commit_id FROM canonical_commits
+              WHERE commit_id <> ${MANIFESTS}.commit_id ORDER BY commit_sequence LIMIT 1)
+           WHERE capture_id = (SELECT capture_id FROM ${COPIES} ORDER BY capture_id LIMIT 1) RETURNING 1)
+        DELETE FROM source_records WHERE source_record_id IN (SELECT source_record_id FROM ${COPIES})`,
+    },
+    failure: { reason: "manifest-mismatch" },
+  },
+  {
     name: "a scope delete that also takes the scope rows of the kept copies' captures' other records",
     statements: {
       source_record_scopes: `DELETE FROM source_record_scopes

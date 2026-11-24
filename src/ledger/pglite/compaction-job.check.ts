@@ -86,19 +86,11 @@ async function rows(store: PGliteStore): Promise<Map<string, string>> {
   return tables;
 }
 
-/**
- * The store's canonical state with each reader's answer, the markers left
- * out. So are the expected occurrences `canonicalState` lists through
- * `listPGliteExpectedOccurrences`: for a copy that backs two transactions it
- * returns whichever row the plan meets first, which a rewritten table
- * changes. The `recordExpectedOccurrences` reader answers the same question
- * with the tie broken, and stays.
- */
+/** The store's canonical state with each reader's answer, the markers left out. */
 async function state(store: PGliteStore): Promise<Record<string, readonly string[]>> {
   const compared = await canonicalState(store, Object.fromEntries(Object.entries(COMPACTION_READERS).map(([reader, sql]) =>
     [`reader ${reader}`, `SELECT to_jsonb(answer) AS row FROM (${sql}) answer`])));
   delete compared[MARKERS];
-  delete compared["expected occurrences"];
   return compared;
 }
 
@@ -110,6 +102,27 @@ async function assertSameAsTwin(store: PGliteStore, twin: PGliteStore): Promise<
 }
 
 const sum = (removed: Readonly<Record<CompactedTable, number>>) => Object.values(removed).reduce((total, count) => total + count, 0);
+
+test("no reader or phase A selection reads through a view, so naming a table finds every reader of it", async () => {
+  // A view hides the tables it reads: `\bassertion_provenance\b` does not match `derived_assertion_provenance`.
+  const { store } = await legacyStore();
+  try {
+    const { rows } = await store.query<{ name: string }>(
+      `SELECT relname AS name FROM pg_class
+        WHERE relkind IN ('v', 'm') AND relnamespace NOT IN ('pg_catalog'::regnamespace, 'information_schema'::regnamespace)`);
+    const views = new Set(rows.map(({ name }) => name));
+    assert.ok(views.has("derived_assertion_provenance"), "the store's views are listed");
+    const sqls: Record<string, string> = {
+      ...COMPACTION_READERS,
+      ...Object.fromEntries(Object.entries(PHASE_A).map(([table, { marked }]) => [`phase A ${table}`, marked])),
+    };
+    const named = Object.entries(sqls).flatMap(([name, sql]) =>
+      [...new Set(sql.toLowerCase().match(/[a-z_][a-z0-9_]*/gu))].filter((word) => views.has(word)).map((view) => `${name}: ${view}`));
+    assert.deepEqual(named, []);
+  } finally {
+    await store.close();
+  }
+});
 
 test("the chunk plan keeps tables that share a selection or reader together, and chains that share a capture", async () => {
   // Every reader reads a compacted table, so a chunk's readers are found by name.
