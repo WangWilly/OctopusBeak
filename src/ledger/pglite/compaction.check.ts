@@ -193,6 +193,8 @@ const MUTATIONS: readonly Readonly<{
   name: string;
   table: CompactedTable;
   selection: string;
+  /** Selections of other tables made in the same run. */
+  also?: Readonly<Partial<Record<CompactedTable, string>>>;
   readers: readonly CompactionReader[];
 }>[] = [
   {
@@ -217,6 +219,14 @@ const MUTATIONS: readonly Readonly<{
     selection: allButLatest("canonical_credit_card_transaction_lifecycle", seqByCapture("domain"), "domain.transaction_id",
       "domain_commit.commit_sequence DESC, domain.lifecycle_event_id DESC"),
     readers: ["cardLifecycleHistory"],
+  },
+  {
+    name: "every details row of one purchase",
+    table: "canonical_credit_card_transaction_details",
+    selection: `SELECT ctid AS row_ctid,
+        transaction_id = (SELECT min(transaction_id) FROM canonical_credit_card_transaction_details) AS repeats
+      FROM canonical_credit_card_transaction_details`,
+    readers: ["cardDetailsLatestByRevision", "cardDetailsLatestByTransaction", "cardDetailsDateMatch", "cardDetailsHistory"],
   },
   {
     name: "the last details row of each run instead of the first",
@@ -270,22 +280,37 @@ const MUTATIONS: readonly Readonly<{
     table: "einvoice_revision_observations",
     selection: `SELECT ctid AS row_ctid, revision_id = (SELECT min(revision_id) FROM einvoice_revision_observations) AS repeats
       FROM einvoice_revision_observations`,
-    readers: ["einvoiceLatestObserved", "einvoiceObservedRevisions", "einvoiceObservedHistory"],
+    readers: ["einvoiceLatestObserved", "einvoiceObservedRevisions", "einvoiceObservedHistory", "einvoiceUnpairedObservations"],
   },
   {
-    // Observed sets A, B, A: removing B keeps the latest set and every observed revision.
+    // Observed sets A, B, A: removing B, its events with it, keeps the latest set and every observed revision.
     name: "the observing commit between two equal ones, whose set differs",
     table: "einvoice_revision_observations",
     selection: `SELECT observation.ctid AS row_ctid,
         revision.invoice_id = ${ABA_INVOICE} AND observation.commit_id = ${commitOf("einvoice-capture-2")} AS repeats
       FROM einvoice_revision_observations observation
       JOIN einvoice_invoice_revisions revision ON revision.revision_id = observation.revision_id`,
+    also: {
+      einvoice_revision_events: `SELECT ctid AS row_ctid,
+          invoice_id = ${ABA_INVOICE} AND commit_id = ${commitOf("einvoice-capture-2")} AS repeats
+        FROM einvoice_revision_events`,
+    },
     readers: ["einvoiceObservedHistory"],
   },
   {
+    // The observations stay, so only the pairing of observations with their events sees it.
+    name: "every observed event",
+    table: "einvoice_revision_events",
+    selection: `SELECT ctid AS row_ctid, event_kind = 'observed' AS repeats FROM einvoice_revision_events`,
+    readers: ["einvoiceUnpairedObservations"],
+  },
+  {
+    // With the real repeats, so the observations removed with them keep their pairing.
     name: "the issued and revoked events",
     table: "einvoice_revision_events",
-    selection: `SELECT ctid AS row_ctid, event_kind <> 'observed' AS repeats FROM einvoice_revision_events`,
+    selection: `SELECT marked.row_ctid, marked.repeats OR event.event_kind <> 'observed' AS repeats
+      FROM (${PHASE_A.einvoice_revision_events.marked}) marked
+      JOIN einvoice_revision_events event ON event.ctid = marked.row_ctid`,
     readers: ["einvoiceNonObservedEvents"],
   },
 ];
@@ -311,7 +336,7 @@ test("a selection that would change a reader's answer rolls back and changes not
     const before = await snapshot(store);
     for (const mutation of MUTATIONS) {
       await assert.rejects(
-        compactLedgerDomainAndCounts(store, { selections: { [mutation.table]: mutation.selection } }),
+        compactLedgerDomainAndCounts(store, { selections: { ...mutation.also, [mutation.table]: mutation.selection } }),
         (error: unknown) => {
           assert.ok(error instanceof LedgerCompactionError, String(error));
           assert.deepEqual(error.failure, { reason: "reader-changed", readers: mutation.readers }, mutation.name);

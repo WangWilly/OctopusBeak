@@ -68,7 +68,8 @@ Captures, scopes, pages, coverages, commits, revisions, assertions, transitions,
   - account identifiers, the distinct set (account identity continuity, ADR 0049), and the commit that first saw each;
   - e-invoices, each invoice's latest observed revisions, the revisions that have an observation (`provenanceComplete`), and every event that is not `observed`, with all its columns;
   - count rows, the maximum of each partition;
-  - at every knowledge point: the value as of each commit for card details, card lifecycle, instrument evidence, statement summary evidence, security names (the overview and the investment command), relation provenance, and each invoice's observed set, and each count partition's running maximum.
+  - at every knowledge point: the value as of each commit for card details, card lifecycle, instrument evidence, statement summary evidence, security names (the overview and the investment command), relation provenance, each invoice's observed set, and each count partition's running maximum;
+  - e-invoices, the observations without an `observed` event at their commit and the `observed` events without an observation. A removed commit loses both together, so an event or observation removed alone shows.
 
   The e-invoice lineage lists are the one answer that changes, by the owner's decision: they lose the `observed` observations and events of the removed commits.
 

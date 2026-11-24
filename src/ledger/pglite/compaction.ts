@@ -231,6 +231,24 @@ export const COMPACTION_READERS = {
     `FROM (${OBSERVED_SETS}) observed`,
     "observed.observed",
   ),
+  /**
+   * The observations without an `observed` event at their commit, and the
+   * `observed` events without an observation. A removed commit loses its
+   * observations and their events together, so neither set changes; an
+   * event or observation removed alone shows up here.
+   */
+  einvoiceUnpairedObservations: `
+    SELECT 'observation' AS side, observation.revision_id, observation.commit_id
+      FROM einvoice_revision_observations observation
+     WHERE NOT EXISTS (SELECT 1 FROM einvoice_revision_events event
+                        WHERE event.revision_id = observation.revision_id AND event.commit_id = observation.commit_id
+                          AND event.event_kind = 'observed')
+    UNION ALL
+    SELECT 'event' AS side, event.revision_id, event.commit_id
+      FROM einvoice_revision_events event
+     WHERE event.event_kind = 'observed'
+       AND NOT EXISTS (SELECT 1 FROM einvoice_revision_observations observation
+                        WHERE observation.revision_id = event.revision_id AND observation.commit_id = event.commit_id)`,
   /** The lineage view's events other than `observed` ones, which compaction never removes: every column. */
   einvoiceNonObservedEvents: `SELECT * FROM einvoice_revision_events WHERE event_kind <> 'observed'`,
   /** Each count partition's maximum at every knowledge point: the rows that raised it. */
