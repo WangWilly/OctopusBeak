@@ -24,10 +24,17 @@ import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
  * column the planner does not know, or a record-id column without a foreign
  * key, makes the plan refuse rather than count a cited copy as removable.
  *
- * Everything runs in one read-only transaction that is rolled back, so a
- * plan is safe to read from a live store. Byte estimates use each table's
- * average size per row, indexes and TOAST included, and are only freed once
- * the tables are rewritten.
+ * The plan runs as short steps, each in its own read-only transaction that
+ * is rolled back: the citation check, one step per phase A table, one per
+ * source subject for phases B and C, and the sizes. On the worker each step
+ * is queued on the background lane, so pages, clicks and commits run between
+ * them. Phase A runs once; the rows it keeps that cite a record are carried
+ * into that record's subject step. Steps read different moments of a live
+ * store, so a commit between them can make a count slightly stale; the plan
+ * is an estimate, and the compaction itself plans again inside its own
+ * transaction. Byte estimates use each table's average size per row,
+ * indexes and TOAST included, and are only freed once the tables are
+ * rewritten.
  */
 
 /** How a table that cites `source_records` takes part in the plan. */
@@ -52,8 +59,9 @@ const seqByCommit = (alias: string) =>
  */
 const EINVOICE_REPEATS = `
   SELECT marked.invoice_id, marked.commit_id FROM (
+    -- LAG is NULL on an invoice's first observing commit, so it never repeats.
     SELECT per_commit.invoice_id, per_commit.commit_id,
-           ROW_NUMBER() OVER history > 1 AND per_commit.observed = LAG(per_commit.observed) OVER history AS repeats
+           per_commit.observed = LAG(per_commit.observed) OVER history AS repeats
       FROM (
         SELECT revision.invoice_id, observation.commit_id, observed_commit.commit_sequence,
                string_agg(encode(observation.revision_id, 'hex'), ',' ORDER BY observation.revision_id) AS observed
@@ -241,7 +249,8 @@ export type CompactionRecordGroupPlan = Readonly<{
 
 export type CompactionPlan = Readonly<{
   status: "planned";
-  storeBytes: number;
+  /** `pg_database_size`; the data folder also holds WAL and free pages. */
+  databaseBytes: number;
   phaseA: readonly CompactionTablePlan[];
   phaseB: Readonly<{
     groups: readonly CompactionRecordGroupPlan[];
@@ -264,42 +273,83 @@ export type CompactionPlanRefusal = Readonly<{
 
 export type CompactionPlanResult = CompactionPlan | CompactionPlanRefusal;
 
-/** Plan the compaction of `store` without changing it. */
-export async function planLedgerCompaction(store: PGliteStore): Promise<CompactionPlanResult> {
-  return store.transaction(async (transaction) => {
-    await transaction.query("SET TRANSACTION READ ONLY");
-    try {
-      return await plan(transaction);
-    } finally {
-      await transaction.rollback();
-    }
-  });
-}
+export type CompactionPlanOptions = Readonly<{
+  /**
+   * Runs one step of the plan. The worker queues each step on its background
+   * lane, so other work runs between steps; by default a step runs at once.
+   */
+  runStep?: <T>(step: () => Promise<T>) => Promise<T>;
+  /** Checked before each step; an aborted plan stops with the signal's reason. */
+  signal?: AbortSignal;
+}>;
 
-async function plan(transaction: PGliteTransaction): Promise<CompactionPlanResult> {
-  const citing = await readCitingColumns(transaction);
+type Removable = Omit<CompactionTablePlan, "estimatedBytes">;
+
+/** A row phase A keeps that cites a record, carried to that record's subject step. */
+type KeptCitation = Readonly<{ cited: string; table: string }>;
+
+/** A source subject as hex, or `null` for the records that have none. */
+type Subject = string | null;
+
+/** Plan the compaction of `store` without changing it. */
+export async function planLedgerCompaction(store: PGliteStore, options: CompactionPlanOptions = {}): Promise<CompactionPlanResult> {
+  const runStep = options.runStep ?? (<T>(step: () => Promise<T>) => step());
+  const read = <T>(body: (transaction: PGliteTransaction) => Promise<T>): Promise<T> =>
+    runStep(() => {
+      options.signal?.throwIfAborted();
+      return store.transaction(async (transaction) => {
+        await transaction.query("SET TRANSACTION READ ONLY");
+        try {
+          return await body(transaction);
+        } finally {
+          await transaction.rollback();
+        }
+      });
+    });
+
+  const citing = await read(readCitingColumns);
   if (citing.problems.length > 0) return { status: "unrecognised-citations", problems: citing.problems };
-  const phaseA = await planDomainRows(transaction);
-  const phaseB = await planRecordCopies(transaction, citing.columns);
-  const phaseC = await planCountRows(transaction);
-  const sized = await sizeTables(transaction, [...phaseA, ...phaseB.tables, phaseC]);
-  const estimate = (table: Omit<CompactionTablePlan, "estimatedBytes">): CompactionTablePlan => {
-    const bytes = sized.get(table.table) ?? 0;
-    return { ...table, estimatedBytes: table.rows === 0 ? 0 : Math.round((bytes / table.rows) * table.removable) };
-  };
-  const estimatedA = phaseA.map(estimate);
-  const estimatedB = phaseB.tables.map(estimate);
-  const estimatedC = estimate(phaseC);
-  const { rows: [size] } = await transaction.query<{ bytes: string }>("SELECT pg_database_size(current_database())::text AS bytes");
-  return {
-    status: "planned",
-    storeBytes: Number(size!.bytes),
-    phaseA: estimatedA,
-    phaseB: { ...phaseB, tables: estimatedB },
-    phaseC: estimatedC,
-    citingColumns: [...citing.columns.keys()].sort(),
-    estimatedBytes: [...estimatedA, ...estimatedB, estimatedC].reduce((sum, table) => sum + table.estimatedBytes, 0),
-  };
+
+  const phaseA: Removable[] = [];
+  const kept = new Map<Subject, KeptCitation[]>();
+  for (const table of Object.keys(PHASE_A)) {
+    const planned = await read((transaction) => planDomainTable(transaction, table));
+    phaseA.push(planned.table);
+    for (const { subject, cited } of planned.kept) kept.set(subject, [...(kept.get(subject) ?? []), { cited, table }]);
+  }
+
+  const copies = new CopyTally();
+  let counts: Removable = { table: COUNTS, rows: 0, removable: 0 };
+  for (const subject of await read(listSubjects)) {
+    const step = await read(async (transaction) => ({
+      copies: await planSubjectCopies(transaction, subject, citing.columns, kept.get(subject) ?? []),
+      counts: await planSubjectCounts(transaction, subject),
+    }));
+    copies.add(step.copies);
+    counts = { table: COUNTS, rows: counts.rows + step.counts.rows, removable: counts.removable + step.counts.removable };
+  }
+
+  return read(async (transaction) => {
+    const phaseB = copies.result(await countRows(transaction, Object.keys(copies.removed)));
+    const sized = await sizeTables(transaction, [...phaseA, ...phaseB.tables, counts].map(({ table }) => table));
+    const estimate = (table: Removable): CompactionTablePlan => {
+      const bytes = sized.get(table.table) ?? 0;
+      return { ...table, estimatedBytes: table.rows === 0 ? 0 : Math.round((bytes / table.rows) * table.removable) };
+    };
+    const estimatedA = phaseA.map(estimate);
+    const estimatedB = phaseB.tables.map(estimate);
+    const estimatedC = estimate(counts);
+    const { rows: [size] } = await transaction.query<{ bytes: string }>("SELECT pg_database_size(current_database())::text AS bytes");
+    return {
+      status: "planned",
+      databaseBytes: Number(size!.bytes),
+      phaseA: estimatedA,
+      phaseB: { ...phaseB, tables: estimatedB },
+      phaseC: estimatedC,
+      citingColumns: [...citing.columns.keys()].sort(),
+      estimatedBytes: [...estimatedA, ...estimatedB, estimatedC].reduce((sum, table) => sum + table.estimatedBytes, 0),
+    } satisfies CompactionPlan;
+  });
 }
 
 type FoundColumns = ReadonlyMap<string, Readonly<{ table: string; column: string; citing: CitingColumn }>>;
@@ -354,52 +404,81 @@ async function readCitingColumns(transaction: PGliteTransaction): Promise<Readon
   return { columns, problems };
 }
 
-async function planDomainRows(transaction: PGliteTransaction): Promise<Omit<CompactionTablePlan, "estimatedBytes">[]> {
-  const tables = Object.keys(PHASE_A);
-  const { rows } = await transaction.query<{ table_name: string; rows: number; removable: number }>(
-    tables.map((table) => `SELECT '${table}' AS table_name, count(*)::int AS rows, (count(*) FILTER (WHERE marked.repeats))::int AS removable
-      FROM (${PHASE_A[table]!.marked}) marked`).join("\nUNION ALL\n"),
+
+const COUNTS = "source_occurrence_group_counts";
+
+/** `column` belongs to `subject`. A subject is hex the store encoded, so it is safe to inline. */
+function subjectIs(column: string, subject: Subject): string {
+  if (subject === null) return `${column} IS NULL`;
+  if (!/^[0-9a-f]+$/u.test(subject)) throw new Error("A source subject id must be hex.");
+  return `${column} = decode('${subject}', 'hex')`;
+}
+
+async function listSubjects(transaction: PGliteTransaction): Promise<Subject[]> {
+  const { rows } = await transaction.query<{ subject: string }>(
+    "SELECT encode(source_subject_id, 'hex') AS subject FROM source_subjects ORDER BY 1",
   );
-  return tables.map((table) => {
-    const row = rows.find((candidate) => candidate.table_name === table)!;
-    return { table, rows: row.rows, removable: row.removable };
-  });
+  const { rows: [unowned] } = await transaction.query<{ exists: boolean }>(
+    `SELECT EXISTS (SELECT 1 FROM source_records WHERE source_subject_id IS NULL)
+         OR EXISTS (SELECT 1 FROM source_occurrence_group_coverages WHERE source_subject_id IS NULL) AS exists`,
+  );
+  return [...rows.map(({ subject }) => subject), ...(unowned!.exists ? [null] : [])];
+}
+
+/** One phase A table: its removable rows, and the records its kept rows cite, by subject. */
+async function planDomainTable(transaction: PGliteTransaction, table: string): Promise<Readonly<{
+  table: Removable;
+  kept: readonly Readonly<{ subject: Subject; cited: string }>[];
+}>> {
+  const { rows: [row] } = await transaction.query<{ rows: number; removable: number; kept: { subject: Subject; cited: string }[] }>(`
+    WITH marked AS MATERIALIZED (${PHASE_A[table]!.marked})
+    SELECT (SELECT count(*)::int FROM marked) AS rows,
+           (SELECT (count(*) FILTER (WHERE repeats))::int FROM marked) AS removable,
+           (SELECT COALESCE(json_agg(json_build_object('subject', encode(record.source_subject_id, 'hex'), 'cited', encode(kept.cited_id, 'hex'))), '[]')
+              FROM (SELECT DISTINCT cited_id FROM marked WHERE NOT repeats AND cited_id IS NOT NULL) kept
+              JOIN source_records record ON record.source_record_id = kept.cited_id) AS kept`);
+  return { table: { table, rows: row!.rows, removable: row!.removable }, kept: row!.kept };
 }
 
 const CATEGORIES = ["unchained", "first", "changed", "manifestCapture", "pinned", "lexemeOnly", "removable"] as const;
 type Category = (typeof CATEGORIES)[number];
 
-async function planRecordCopies(transaction: PGliteTransaction, columns: FoundColumns): Promise<Readonly<{
-  groups: readonly CompactionRecordGroupPlan[];
-  totals: CompactionCopyCounts;
-  pinnedBy: Readonly<Record<string, number>>;
-  tables: readonly Omit<CompactionTablePlan, "estimatedBytes">[];
-}>> {
-  const citations = [...columns.values()].flatMap(({ table, column, citing }) => {
-    switch (citing.role) {
-      case "satellite": return [];
-      case "cites": return [`SELECT ${column} AS cited_id, '${table}' AS citing_table FROM ${table} WHERE ${column} IS NOT NULL`];
-      case "compacted": return [`SELECT kept.cited_id, '${table}' AS citing_table FROM (${citing.marked}) kept
-                                  WHERE NOT kept.repeats AND kept.cited_id IS NOT NULL`];
-    }
-  });
+type CopyRow = Readonly<{
+  integration_namespace: string;
+  record_kind: string;
+  category: Category;
+  pinned_by: string[] | null;
+  copies: number;
+  scopes: number;
+  provenance: number;
+  assertions: number;
+}>;
+
+/** Phase B for one subject's copies, each classified once, grouped by namespace, kind and category. */
+async function planSubjectCopies(
+  transaction: PGliteTransaction,
+  subject: Subject,
+  columns: FoundColumns,
+  kept: readonly KeptCitation[],
+): Promise<readonly CopyRow[]> {
+  const ofSubject = (column: string) => `${column} IN (SELECT source_record_id FROM subject_records)`;
+  const citations = [...columns.values()].flatMap(({ table, column, citing }) =>
+    citing.role === "cites" ? [`SELECT ${column} AS cited_id, '${table}' AS citing_table FROM ${table} WHERE ${ofSubject(column)}`] : []);
   citations.push(
-    `SELECT substring(manifest.source_record_ids FROM slot * 16 + 1 FOR 16) AS cited_id, '${MANIFEST}' AS citing_table
-       FROM ${MANIFEST} manifest CROSS JOIN generate_series(0, manifest.record_count - 1) AS slot`,
+    // Phase A ran once, before the subject steps; these are the rows it keeps.
+    `SELECT decode(kept.cited, 'hex') AS cited_id, kept.citing_table FROM unnest($1::text[], $2::text[]) AS kept(cited, citing_table)`,
+    `SELECT member.cited_id, '${MANIFEST}' AS citing_table FROM (
+       SELECT substring(manifest.source_record_ids FROM slot * 16 + 1 FOR 16) AS cited_id
+         FROM ${MANIFEST} manifest CROSS JOIN generate_series(0, manifest.record_count - 1) AS slot
+     ) member WHERE ${ofSubject("member.cited_id")}`,
     `SELECT source_record_id AS cited_id, '${MIXED_PROVENANCE}' AS citing_table FROM assertion_provenance
-      WHERE source_record_id IS NOT NULL AND (run_id IS NOT NULL OR enrichment_run_id IS NOT NULL OR coordinate_id IS NOT NULL)`,
+      WHERE ${ofSubject("source_record_id")} AND (run_id IS NOT NULL OR enrichment_run_id IS NOT NULL OR coordinate_id IS NOT NULL)`,
   );
-  const { rows } = await transaction.query<{
-    integration_namespace: string;
-    record_kind: string;
-    category: Category;
-    pinned_by: string[] | null;
-    copies: number;
-    scopes: number;
-    provenance: number;
-    assertions: number;
-  }>(`
-    WITH cited AS (
+  const { rows } = await transaction.query<CopyRow>(`
+    WITH subject_records AS MATERIALIZED (
+      SELECT source_record_id, capture_id FROM source_records WHERE ${subjectIs("source_subject_id", subject)}
+    ),
+    cited AS (
       SELECT cited_id, array_agg(DISTINCT citing_table ORDER BY citing_table) AS pinned_by
         FROM (${citations.join("\nUNION ALL\n")}) citation
        GROUP BY cited_id
@@ -407,13 +486,22 @@ async function planRecordCopies(transaction: PGliteTransaction, columns: FoundCo
     shape AS (
       SELECT capture_id, scope_key,
              string_agg(DISTINCT contract_version || CASE WHEN bucket_inventory_json IS NULL THEN '/n' ELSE '/i' END, ',') AS shape
-        FROM source_occurrence_group_coverages GROUP BY capture_id, scope_key
+        FROM source_occurrence_group_coverages
+       WHERE capture_id IN (SELECT capture_id FROM subject_records)
+       GROUP BY capture_id, scope_key
     ),
+    -- The source assertions a copy backs, as a set; a row naming a run or coordinate pins the copy instead.
     backed AS (
-      SELECT source_record_id, string_agg(encode(assertion_id, 'hex'), ',' ORDER BY assertion_id) AS assertions, count(*)::int AS rows
-        FROM assertion_provenance WHERE source_record_id IS NOT NULL GROUP BY source_record_id
+      SELECT source_record_id,
+             string_agg(DISTINCT encode(assertion_id, 'hex'), ',' ORDER BY encode(assertion_id, 'hex'))
+               FILTER (WHERE run_id IS NULL AND enrichment_run_id IS NULL AND coordinate_id IS NULL) AS assertions,
+             count(*)::int AS rows
+        FROM assertion_provenance WHERE ${ofSubject("source_record_id")} GROUP BY source_record_id
     ),
-    provenance AS (SELECT source_record_id, count(*)::int AS rows FROM source_record_provenance GROUP BY source_record_id),
+    provenance AS (
+      SELECT source_record_id, count(*)::int AS rows FROM source_record_provenance
+       WHERE ${ofSubject("source_record_id")} GROUP BY source_record_id
+    ),
     copy AS (
       SELECT record.source_record_id, connection.integration_namespace, record.record_kind,
              record.source_subject_id, record.occurrence_key, written.commit_sequence, record.sequence_lexeme,
@@ -434,6 +522,7 @@ async function planRecordCopies(transaction: PGliteTransaction, columns: FoundCo
         LEFT JOIN provenance ON provenance.source_record_id = record.source_record_id
         LEFT JOIN backed ON backed.source_record_id = record.source_record_id
         LEFT JOIN cited ON cited.cited_id = record.source_record_id
+       WHERE ${subjectIs("record.source_subject_id", subject)}
     ),
     chained AS (
       SELECT copy.*, ROW_NUMBER() OVER chain AS position,
@@ -459,43 +548,62 @@ async function planRecordCopies(transaction: PGliteTransaction, columns: FoundCo
            CASE WHEN category = 'pinned' THEN pinned_by END AS pinned_by,
            count(*)::int AS copies, sum(scopes)::int AS scopes, sum(provenance)::int AS provenance, sum(assertions)::int AS assertions
       FROM classified
-     GROUP BY 1, 2, 3, 4
-     ORDER BY 1, 2, 3`);
-  const groups = new Map<string, { integrationNamespace: string; recordKind: string; counts: Record<keyof CompactionCopyCounts, number>; pinnedBy: Record<string, number> }>();
-  const emptyCounts = (): Record<keyof CompactionCopyCounts, number> =>
-    ({ copies: 0, ...Object.fromEntries(CATEGORIES.map((category) => [category, 0])) }) as Record<keyof CompactionCopyCounts, number>;
-  const totals = emptyCounts();
-  const pinnedBy: Record<string, number> = {};
-  const removed = { source_records: 0, source_record_scopes: 0, source_record_provenance: 0, assertion_provenance: 0 };
-  for (const row of rows) {
-    const key = `${row.integration_namespace}\u0000${row.record_kind}`;
-    const group = groups.get(key) ?? { integrationNamespace: row.integration_namespace, recordKind: row.record_kind, counts: emptyCounts(), pinnedBy: {} };
-    groups.set(key, group);
-    for (const counts of [group.counts, totals]) {
-      counts.copies += row.copies;
-      counts[row.category] += row.copies;
-    }
-    for (const table of row.pinned_by ?? []) {
-      group.pinnedBy[table] = (group.pinnedBy[table] ?? 0) + row.copies;
-      pinnedBy[table] = (pinnedBy[table] ?? 0) + row.copies;
-    }
-    if (row.category === "removable") {
-      removed.source_records += row.copies;
-      removed.source_record_scopes += row.scopes;
-      removed.source_record_provenance += row.provenance;
-      removed.assertion_provenance += row.assertions;
-    }
-  }
-  const counted = await countRows(transaction, Object.keys(removed));
-  return {
-    groups: [...groups.values()],
-    totals,
-    pinnedBy,
-    tables: Object.entries(removed).map(([table, removable]) => ({ table, rows: counted.get(table) ?? 0, removable })),
-  };
+     GROUP BY 1, 2, 3, 4`, [kept.map(({ cited }) => cited), kept.map(({ table }) => table)]);
+  return rows;
 }
 
-async function planCountRows(transaction: PGliteTransaction): Promise<Omit<CompactionTablePlan, "estimatedBytes">> {
+type Counts = Record<keyof CompactionCopyCounts, number>;
+const emptyCounts = (): Counts =>
+  ({ copies: 0, ...Object.fromEntries(CATEGORIES.map((category) => [category, 0])) }) as Counts;
+
+/** Phase B's totals, added up over the subject steps. */
+class CopyTally {
+  readonly #groups = new Map<string, { integrationNamespace: string; recordKind: string; counts: Counts; pinnedBy: Record<string, number> }>();
+  readonly #totals = emptyCounts();
+  readonly #pinnedBy: Record<string, number> = {};
+  readonly removed = { source_records: 0, source_record_scopes: 0, source_record_provenance: 0, assertion_provenance: 0 };
+
+  add(rows: readonly CopyRow[]): void {
+    for (const row of rows) {
+      const key = `${row.integration_namespace}\u0000${row.record_kind}`;
+      const group = this.#groups.get(key)
+        ?? { integrationNamespace: row.integration_namespace, recordKind: row.record_kind, counts: emptyCounts(), pinnedBy: {} };
+      this.#groups.set(key, group);
+      for (const counts of [group.counts, this.#totals]) {
+        counts.copies += row.copies;
+        counts[row.category] += row.copies;
+      }
+      for (const table of row.pinned_by ?? []) {
+        group.pinnedBy[table] = (group.pinnedBy[table] ?? 0) + row.copies;
+        this.#pinnedBy[table] = (this.#pinnedBy[table] ?? 0) + row.copies;
+      }
+      if (row.category === "removable") {
+        this.removed.source_records += row.copies;
+        this.removed.source_record_scopes += row.scopes;
+        this.removed.source_record_provenance += row.provenance;
+        this.removed.assertion_provenance += row.assertions;
+      }
+    }
+  }
+
+  result(rows: ReadonlyMap<string, number>): Readonly<{
+    groups: readonly CompactionRecordGroupPlan[];
+    totals: CompactionCopyCounts;
+    pinnedBy: Readonly<Record<string, number>>;
+    tables: readonly Removable[];
+  }> {
+    return {
+      groups: [...this.#groups.values()].sort((a, b) =>
+        a.integrationNamespace.localeCompare(b.integrationNamespace) || a.recordKind.localeCompare(b.recordKind)),
+      totals: this.#totals,
+      pinnedBy: this.#pinnedBy,
+      tables: Object.entries(this.removed).map(([table, removable]) => ({ table, rows: rows.get(table) ?? 0, removable })),
+    };
+  }
+}
+
+/** Phase C for one subject's count rows; the partition never crosses a subject. */
+async function planSubjectCounts(transaction: PGliteTransaction, subject: Subject): Promise<Removable> {
   const { rows: [row] } = await transaction.query<{ rows: number; removable: number }>(`
     SELECT count(*)::int AS rows, (count(*) FILTER (WHERE marked.repeats))::int AS removable FROM (
       SELECT count_row.occurrence_count <= MAX(count_row.occurrence_count) OVER (
@@ -506,8 +614,9 @@ async function planCountRows(transaction: PGliteTransaction): Promise<Omit<Compa
         FROM source_occurrence_group_counts count_row
         JOIN source_occurrence_group_coverages coverage ON coverage.coverage_id = count_row.coverage_id
         JOIN canonical_commits written ON written.commit_id = coverage.commit_id
+       WHERE ${subjectIs("coverage.source_subject_id", subject)}
     ) marked`);
-  return { table: "source_occurrence_group_counts", rows: row!.rows, removable: row!.removable };
+  return { table: COUNTS, rows: row!.rows, removable: row!.removable };
 }
 
 async function countRows(transaction: PGliteTransaction, tables: readonly string[]): Promise<Map<string, number>> {
@@ -517,10 +626,10 @@ async function countRows(transaction: PGliteTransaction, tables: readonly string
   return new Map(rows.map((row) => [row.table_name, row.rows]));
 }
 
-async function sizeTables(transaction: PGliteTransaction, tables: readonly Readonly<{ table: string }>[]): Promise<Map<string, number>> {
+async function sizeTables(transaction: PGliteTransaction, tables: readonly string[]): Promise<Map<string, number>> {
   const { rows } = await transaction.query<{ table_name: string; bytes: string }>(
     `SELECT name AS table_name, pg_total_relation_size(name::regclass)::text AS bytes FROM unnest($1::text[]) AS name`,
-    [tables.map(({ table }) => table)],
+    [tables],
   );
   return new Map(rows.map((row) => [row.table_name, Number(row.bytes)]));
 }

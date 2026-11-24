@@ -44,8 +44,6 @@ import type { PGliteStore } from "./transaction.ts";
 
 export const RESYNC_MODES = ["deposit", "card-route", "card-command", "einvoice", "investment", "loan"] as const;
 export type ResyncMode = (typeof RESYNC_MODES)[number];
-type Mode = ResyncMode;
-
 const token = (value: string) => `sha256:${createHash("sha256").update(value, "utf8").digest("base64url")}`;
 const day = (index: number) => new Date(Date.UTC(2026, 0, 1) + index * 86_400_000).toISOString().slice(0, 10);
 
@@ -53,11 +51,11 @@ const day = (index: number) => new Date(Date.UTC(2026, 0, 1) + index * 86_400_00
  * One bucket per day. The credit-card command reads its buckets, so it gets
  * a statement bucket for the day, which promises Billed Monotonicity (ADR 0062).
  */
-const bucketKey = (mode: Mode, date: string): string =>
+const bucketKey = (mode: ResyncMode, date: string): string =>
   mode === "card-command" ? encodeCreditCardQueryBucket({ kind: "statement", period: date }) : date;
 
 /** One complete bounded capture of the `rowCount` synthetic rows inside the window, which moves a day per sync. */
-function capture(rowCount: number, mode: Mode, sync: number): PGliteCanonicalFinancialCommitRequest {
+function capture(rowCount: number, mode: ResyncMode, sync: number): PGliteCanonicalFinancialCommitRequest {
   const captureId = `${mode}-capture-${sync}`;
   const startDate = day(sync - 1);
   const endDate = day(180 + sync);

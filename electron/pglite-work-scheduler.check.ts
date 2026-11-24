@@ -149,3 +149,42 @@ test("a coalesced read runs no query once every caller attached to it has cancel
   assert.deepEqual(outcomes, ["cancelled", "cancelled", "cancelled"]);
   assert.deepEqual(reads, ["financial.spending.recordPage:2026-12"]);
 });
+
+test("a stepped operation queues its steps, and queued work runs between them", async () => {
+  type Listener = (value: unknown) => void;
+  const listeners = { server: new Set<Listener>(), client: new Set<Listener>() };
+  const port = (self: keyof typeof listeners, peer: keyof typeof listeners) => ({
+    on: (_event: "message", listener: Listener) => { listeners[self].add(listener); },
+    off: (_event: "message", listener: Listener) => { listeners[self].delete(listener); },
+    postMessage: (value: unknown) => queueMicrotask(() => { for (const listener of listeners[peer]) listener(value); }),
+  });
+  const scheduler = createPGliteWorkScheduler();
+  const order: string[] = [];
+  const financial = {
+    async request(operation: string) {
+      if (operation !== "financial.canonical.compactionPlan") {
+        order.push(operation);
+        return [];
+      }
+      for (const step of [1, 2]) await scheduler.schedule("background", async () => {
+        order.push(`plan step ${step}`);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      });
+      return { status: "unrecognised-citations", problems: [] };
+    },
+  } as unknown as PGliteFinancialPort;
+  const server = createPGliteFinancialRpcServer(port("server", "client") as never, financial, { scheduler });
+  const client = createPGliteFinancialRpcClient(port("client", "server") as never);
+  try {
+    const plan = client.request("financial.canonical.compactionPlan", []);
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    const read = client.request("financial.canonical.resetRequired", []);
+    // Queued itself, the plan would wait on its own steps and never answer.
+    assert.deepEqual(await plan, { status: "unrecognised-citations", problems: [] });
+    await read;
+    assert.deepEqual(order, ["plan step 1", "financial.canonical.resetRequired", "plan step 2"]);
+  } finally {
+    client.close(new Error("test done"));
+    await server.close();
+  }
+});

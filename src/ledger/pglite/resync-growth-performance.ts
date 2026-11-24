@@ -26,10 +26,6 @@ import { commitResync, RESYNC_MODES, type ResyncMode } from "./resync-fixtures.t
 import { installFinancialStore } from "./store-layout.ts";
 import type { PGliteStore } from "./transaction.ts";
 
-const ALL_MODES = RESYNC_MODES;
-type Mode = ResyncMode;
-
-
 function positiveInteger(name: string, fallback: number, minimum: number): number {
   const value = Number(process.env[name] ?? fallback);
   if (!Number.isSafeInteger(value) || value < minimum) throw new Error(`${name} must be an integer of at least ${minimum}.`);
@@ -38,11 +34,11 @@ function positiveInteger(name: string, fallback: number, minimum: number): numbe
 
 const RECORDS = positiveInteger("PGLITE_RESYNC_RECORDS", 200, 20);
 const SYNCS = positiveInteger("PGLITE_RESYNC_SYNCS", 10, 2);
-const MODES: readonly Mode[] = (() => {
+const MODES: readonly ResyncMode[] = (() => {
   const mode = process.env.PGLITE_RESYNC_MODE ?? "all";
-  if (mode === "all") return ALL_MODES;
-  const chosen = ALL_MODES.find((candidate) => candidate === mode);
-  if (chosen === undefined) throw new Error(`PGLITE_RESYNC_MODE must be ${ALL_MODES.join(", ")} or all.`);
+  if (mode === "all") return RESYNC_MODES;
+  const chosen = RESYNC_MODES.find((candidate) => candidate === mode);
+  if (chosen === undefined) throw new Error(`PGLITE_RESYNC_MODE must be ${RESYNC_MODES.join(", ")} or all.`);
   return [chosen];
 })();
 
@@ -59,7 +55,6 @@ const ROWS_PER_RESYNC_BUDGET = 8;
  * are spread over its records. Storing each record again cost about 3,900.
  */
 const BYTES_PER_RECORD_BUDGET = 256;
-
 
 async function rowCounts(store: PGliteStore): Promise<Map<string, number>> {
   const tables = await store.query<{ name: string }>(
@@ -88,7 +83,7 @@ async function deadTuples(store: PGliteStore): Promise<number> {
   return Number(row!.dead);
 }
 
-async function measure(mode: Mode) {
+async function measure(mode: ResyncMode) {
   const store = await installFinancialStore(await PGlite.create());
   try {
     await commitResync(store, mode, 1, { rowCount: RECORDS });

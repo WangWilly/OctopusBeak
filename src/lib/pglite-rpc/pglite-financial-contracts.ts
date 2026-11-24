@@ -76,8 +76,10 @@ import { plainRecord } from "./pglite-worker-call.ts";
  * How the worker schedules an operation: interactive work answers a click and
  * runs before queued background work; a latest-wins read runs in the
  * background, and a newer request of the same operation replaces a queued one.
+ * A background-steps operation is not queued itself: it queues each of its
+ * short steps on the background lane, so other work runs between them.
  */
-export type PGliteFinancialLane = "interactive" | "background" | "latest-wins";
+export type PGliteFinancialLane = "interactive" | "background" | "latest-wins" | "background-steps";
 
 /**
  * Whether a workflow may call an operation over the child socket (ADR 0148).
@@ -89,10 +91,10 @@ export type PGliteFinancialLane = "interactive" | "background" | "latest-wins";
  */
 export type WorkflowAccess = "call" | "commit" | "resolve";
 
-/** A gated write is checked inside its scheduled task, which a latest-wins read never runs, so it cannot be latest-wins. */
+/** A gated write is checked inside its scheduled task, which a latest-wins read or a stepped operation never runs. */
 type FinancialOperationFlags =
   | Readonly<{ lane: PGliteFinancialLane; workflow?: "call" }>
-  | Readonly<{ lane: Exclude<PGliteFinancialLane, "latest-wins">; workflow: "commit" | "resolve" }>;
+  | Readonly<{ lane: "interactive" | "background"; workflow: "commit" | "resolve" }>;
 
 type FinancialOperationContract<Args extends readonly unknown[], Result> = FinancialOperationFlags & Readonly<{
   accepts(args: readonly unknown[]): boolean;
@@ -350,13 +352,13 @@ export const PGLITE_FINANCIAL_CONTRACTS = Object.freeze({
     { lane: "background" },
   ),
   /**
-   * What a ledger compaction would remove, read without changing anything.
-   * Host-only until the Settings action that shows it: no renderer route and
-   * no workflow access.
+   * What a ledger compaction would remove, read without changing anything,
+   * one short step at a time. Host-only until the Settings action that shows
+   * it: no renderer route and no workflow access.
    */
   "financial.canonical.compactionPlan": operation<[], CompactionPlanResult>(
     (args) => args.length === 0,
-    { lane: "background" },
+    { lane: "background-steps" },
   ),
 });
 

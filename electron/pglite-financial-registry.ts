@@ -78,6 +78,8 @@ export type PGliteFinancialRegistryOptions = Readonly<{
   today?: () => string;
   /** The Card identity secret workflows derive card identities from, read at each card commit (ADR 0149). */
   cardIdentitySecret?: () => CardIdentitySecret | undefined;
+  /** Queues one step of a stepped operation on the background lane; by default a step runs at once. */
+  runBackgroundStep?: <T>(step: () => Promise<T>) => Promise<T>;
 }>;
 
 export function createPGliteFinancialRegistry(
@@ -155,7 +157,8 @@ export function createPGliteFinancialRegistry(
     "financial.canonical.resetRequired": () =>
       canonicalResetRequiredNamespaces(store, options.cardIdentitySecret?.()),
     "financial.canonical.cardAccountNamespaces": () => cardAccountNamespaces(store),
-    "financial.canonical.compactionPlan": () => planLedgerCompaction(store),
+    "financial.canonical.compactionPlan": (_args, request) =>
+      planLedgerCompaction(store, { runStep: options.runBackgroundStep, signal: request?.signal }),
   });
 }
 

@@ -240,9 +240,13 @@ export function createPGliteFinancialRpcServer(
     if (!contract.accepts(args)) return undefined;
     const controller = new AbortController();
     controllers.set(id, controller);
-    const outcome = contract.lane === "latest-wins"
+    const lane = contract.lane;
+    const outcome = lane === "latest-wins"
       ? joinLatestRead(operation, args, controller.signal)
-      : scheduler.schedule(contract.lane, async () => {
+      // A stepped operation queues its own steps on the background lane; queuing it too would wait on itself.
+      : lane === "background-steps"
+      ? Promise.resolve().then(() => financial.request(operation, args as never, { signal: controller.signal }))
+      : scheduler.schedule(lane, async () => {
         if (controller.signal.aborted) throw new Error("PGlite financial operation was cancelled before execution.");
         if (isCommitAdmissible && (contract.workflow === "commit" || contract.workflow === "resolve")) {
           const admission = workflowWriteAdmission(isCommitAdmissible, diagnosticContext);
