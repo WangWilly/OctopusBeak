@@ -23,6 +23,7 @@ import { planLedgerCompactionJob, runLedgerCompaction } from "./compaction-job.t
 import { COUNTS, PHASE_A, planLedgerCompaction, type CompactionPlan } from "./compaction-plan.ts";
 import { addCaptureChain, captureOf, copyOf as copyIn, keyOf, legacyStore, MODES, ROWS, snapshot, SYNCS, writeDirectly } from "./compaction-fixtures.ts";
 import { canonicalState } from "./canonical-state-fixture.ts";
+import { captureSourceRecordIdsSql, captureSourceRecordsSql } from "./capture-manifest.ts";
 import { commitResync } from "./resync-fixtures.ts";
 import { PGliteStore } from "./transaction.ts";
 
@@ -849,6 +850,92 @@ test("a chunk reads the records it removes a copy of and the captures that own o
     assert.equal(result.digests.captureMembership?.rows, 3 * 6);
     assert.equal(result.digests.recordLatestCopy?.rows, 1);
     assert.equal(result.digests.recordLatestCopyHistory?.rows, 1);
+  } finally {
+    await store.close();
+  }
+});
+
+/** Every capture's members as the manifests store them: the records it owns, then each id its manifest packs, cut from the stored column. */
+const MEMBERS_AS_STORED = `
+  SELECT owned.capture_id, owned.source_record_id FROM source_records owned
+  UNION ALL
+  SELECT manifest.capture_id, substring(manifest.source_record_ids FROM slot * 16 + 1 FOR 16)
+    FROM ${MANIFESTS} manifest CROSS JOIN generate_series(0, manifest.record_count - 1) AS slot`;
+
+/** The capture membership reader's answer for the captures matching `where`, with each member looked up by its id. */
+const membershipLookedUpById = (where: string) => `
+  SELECT capture.capture_key, record.source_subject_id, record.record_kind, record.occurrence_key,
+         record.sequence_lexeme, record.provider_key, record.content_hash, record.collision_key, record.description,
+         encode(sha256(convert_to(record.payload_json, 'UTF8')), 'hex'),
+         record.occurrence_group_scope_key, record.occurrence_group_fingerprint, record.occurrence_group_partition_date,
+         record.occurrence_group_ordinal, record.occurrence_group_bucket_key,
+         record_commit.commit_sequence <= capture_commit.commit_sequence,
+         scope.account_id, scope.source_subject_id,
+         (SELECT string_agg(encode(provenance.assertion_id, 'hex'), ',' ORDER BY provenance.assertion_id)
+            FROM assertion_provenance provenance WHERE provenance.source_record_id = member.source_record_id)
+    FROM source_captures capture
+    JOIN canonical_commits capture_commit ON capture_commit.commit_id = capture.commit_id
+    JOIN (${MEMBERS_AS_STORED}) member ON member.capture_id = capture.capture_id
+    LEFT JOIN source_records record ON record.source_record_id = member.source_record_id
+    LEFT JOIN canonical_commits record_commit ON record_commit.commit_id = record.commit_id
+    LEFT JOIN source_record_scopes scope ON scope.source_record_id = member.source_record_id
+   WHERE ${where}`;
+
+test("a capture's members read with their rows are its members looked up by id, in every capture and in a chunk's", async () => {
+  const { store } = await legacyStore();
+  try {
+    compacted(await compactLedger(store));
+    // A manifest long enough to be stored out of line, on a capture that had none: 300 records of other captures,
+    // one of them twice, and one id that names no record.
+    const planted = "loan-capture-1";
+    assert.equal((await store.query(`SELECT 1 FROM ${MANIFESTS} WHERE capture_id = ${captureOf(planted)}`)).rows.length, 0);
+    await writeDirectly(store, `
+      INSERT INTO source_records(source_record_id, capture_id, source_subject_id, commit_id, record_kind, sequence_lexeme, occurrence_key, payload_json)
+      SELECT decode(md5('listed-' || n), 'hex'), capture_id, source_subject_id, commit_id, record_kind, 'listed-' || n, 'listed-' || n, '{}'
+        FROM source_records CROSS JOIN generate_series(1, 298) n
+       WHERE source_record_id = (SELECT min(source_record_id) FROM source_records WHERE capture_id = ${captureOf("deposit-capture-1")})`);
+    await writeDirectly(store, `
+      INSERT INTO ${MANIFESTS}(capture_id, source_record_ids, record_count, commit_id)
+      SELECT capture_id, (SELECT string_agg(decode(md5('listed-' || LEAST(n, 299)), 'hex'), ''::bytea ORDER BY n) FROM generate_series(0, 299) n), 300, commit_id
+        FROM source_captures WHERE capture_key = '${planted}'`);
+    const { rows: [stored] } = await store.query<{ bytes: number; stored: number }>(
+      `SELECT length(source_record_ids) AS bytes, pg_column_size(source_record_ids) AS stored FROM ${MANIFESTS} WHERE capture_id = ${captureOf(planted)}`);
+    assert.equal(stored!.bytes, 300 * 16);
+    assert.ok(stored!.stored > 2000, "the planted manifest is longer than a row holds in line");
+
+    const differing = async (left: string, right: string) => (await store.query<{ rows: number }>(
+      `SELECT count(*)::int AS rows FROM ((${left} EXCEPT ALL ${right}) UNION ALL (${right} EXCEPT ALL ${left})) differing`)).rows[0]!.rows;
+    const everyCapture = (members: string) => `(SELECT capture.capture_id, member.* FROM source_captures capture JOIN LATERAL (${members}) member ON TRUE)`;
+    assert.equal(await differing(everyCapture(captureSourceRecordIdsSql("capture.capture_id")), `(${MEMBERS_AS_STORED})`), 0);
+    assert.equal(await differing(
+      everyCapture(`SELECT member_id, source_record_id FROM (${captureSourceRecordsSql("capture.capture_id")}) rows`),
+      `(SELECT member.capture_id, member.source_record_id AS member_id, record.source_record_id
+          FROM (${MEMBERS_AS_STORED}) member LEFT JOIN source_records record ON record.source_record_id = member.source_record_id)`), 0);
+    // With an occurrence key, the members holding it: every key of every capture.
+    assert.equal(await differing(
+      `(SELECT capture.capture_id, key.occurrence_key, member.source_record_id
+          FROM source_captures capture
+         CROSS JOIN (SELECT DISTINCT occurrence_key FROM source_records WHERE occurrence_key IS NOT NULL) key
+          JOIN LATERAL (${captureSourceRecordIdsSql("capture.capture_id", "key.occurrence_key")}) member ON TRUE)`,
+      `(SELECT member.capture_id, record.occurrence_key, member.source_record_id
+          FROM (${MEMBERS_AS_STORED}) member JOIN source_records record ON record.source_record_id = member.source_record_id
+         WHERE record.occurrence_key IS NOT NULL)`), 0);
+
+    const digestOf = async (sql: string) => (await store.query<{ rows: number; sha256: string }>(
+      `SELECT count(*)::int AS rows,
+              encode(sha256(convert_to(COALESCE(string_agg(answer::text, E'\\n' ORDER BY answer::text), ''), 'UTF8')), 'hex') AS sha256
+         FROM (${sql}) answer`)).rows[0]!;
+    const readers = ["captureMembership"] as const;
+    const whole = (await readCompactionReaders(store, undefined, { readers })).captureMembership;
+    assert.deepEqual(whole, await digestOf(membershipLookedUpById("TRUE")));
+    // A chunk reads the captures that own a copy it removes; here, the captures with a manifest.
+    const withManifest = (column: string) => `${column} IN (SELECT capture_id FROM ${MANIFESTS})`;
+    const inChunk = (await readCompactionReaders(store, undefined, {
+      scope: { chain: () => "TRUE", record: () => "TRUE", capture: withManifest }, readers,
+    })).captureMembership;
+    assert.deepEqual(inChunk, await digestOf(membershipLookedUpById(withManifest("capture.capture_id"))));
+    // The planted manifest's 300 members are among them, the missing one without content; other captures are left out.
+    assert.ok(inChunk.rows > 300 && inChunk.rows < whole.rows, `${inChunk.rows} of ${whole.rows} members`);
   } finally {
     await store.close();
   }

@@ -330,6 +330,30 @@ export async function addCaptureChain(
   return kind;
 }
 
+/**
+ * Adds `captures` captures of one new chain to a `legacyStore`, each owning
+ * four records only it saw and each with a manifest that lists `records`
+ * records of the captures after it, as a store has once its captures reuse
+ * what they saw before. Compaction removes none of them. `records` is at most
+ * `4 * (captures - 1)`.
+ */
+export async function addListingCaptures(store: PGliteStore, { captures, records }: Readonly<{ captures: number; records: number }>): Promise<string> {
+  if (records > 4 * (captures - 1)) throw new Error("A manifest cannot list more records than the other captures own.");
+  const kind = await addCaptureChain(store, { name: "listing", captures, fresh: 4, steady: 0, steadyCaptures: 0 });
+  const listed = `decode(md5('listing-record-' || owner.n || '-fresh-' || owner.n || '-' || (1 + slot % 4)), 'hex')`;
+  await writeDirectly(store, `
+    INSERT INTO capture_source_record_manifests(capture_id, source_record_ids, record_count, commit_id)
+    SELECT capture.capture_id,
+           (SELECT string_agg(${listed}, ''::bytea ORDER BY slot)
+              FROM generate_series(0, ${records - 1}) slot
+             CROSS JOIN LATERAL (SELECT 1 + (n + slot / 4) % ${captures} AS n) owner),
+           ${records}, capture.commit_id
+      FROM generate_series(1, ${captures}) n
+      JOIN source_captures capture ON capture.capture_key = 'listing-capture-' || n`);
+  await store.exec("ANALYZE");
+  return kind;
+}
+
 /** Every row of every table, as a row count and a digest of the rows. */
 export async function snapshot(store: PGliteStore): Promise<Map<string, string>> {
   const { rows: tables } = await store.query<{ name: string }>(

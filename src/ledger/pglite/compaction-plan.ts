@@ -1,3 +1,4 @@
+import { manifestRecordIdsSql } from "./capture-manifest.ts";
 import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
 
 /**
@@ -497,8 +498,7 @@ export function recordCitationsSql(columns: FoundColumns, within: (column: strin
     citations.push(`SELECT decode(kept.cited, 'hex') AS cited_id, kept.citing_table FROM unnest($1::text[], $2::text[]) AS kept(cited, citing_table)`);
   citations.push(
     `SELECT member.cited_id, '${MANIFEST}' AS citing_table FROM (
-       SELECT substring(manifest.source_record_ids FROM slot * 16 + 1 FOR 16) AS cited_id
-         FROM ${MANIFEST} manifest CROSS JOIN generate_series(0, manifest.record_count - 1) AS slot
+       SELECT listed.source_record_id AS cited_id FROM (${manifestRecordIdsSql("TRUE")}) listed
      ) member WHERE ${within("member.cited_id")}`,
     `SELECT source_record_id AS cited_id, '${MIXED_PROVENANCE}' AS citing_table FROM assertion_provenance
       WHERE ${within("source_record_id")} AND (run_id IS NOT NULL OR enrichment_run_id IS NOT NULL OR coordinate_id IS NOT NULL)`,
@@ -527,7 +527,7 @@ export function recordCopiesSql(where: string, columns: FoundColumns, carried: b
       SELECT record.source_record_id, record.capture_id FROM source_records record WHERE ${where}
     ),
     cited AS (${citedCopiesSql(columns, ofSubject, carried)}),
-    ${classifiedCopiesSql(where, "subject_records", "cited")}`;
+    ${classifiedCopiesSql({ from: "source_records record", where }, "subject_records", "cited")}`;
 }
 
 /** The copies `within` admits that something cites, each once, with the tables that cite it. */
@@ -548,11 +548,20 @@ export function citedCopiesSql(columns: FoundColumns, within: (column: string) =
  * each copy.
  */
 export function stagedRecordCopiesSql(records: string, cited: string): string {
-  return `WITH ${classifiedCopiesSql(`record.source_record_id IN (SELECT source_record_id FROM ${records})`, records, cited)}`;
+  const listed = `${records} listed JOIN source_records record ON record.source_record_id = listed.source_record_id`;
+  return `WITH ${classifiedCopiesSql({ from: listed, where: "TRUE" }, records, cited)}`;
 }
 
-/** The CTEs after `WITH` that classify the copies matching `where`, which `records` lists and `cited` pins. */
-function classifiedCopiesSql(where: string, records: string, cited: string): string {
+/**
+ * The CTEs after `WITH` that classify the copies `records` lists and `cited`
+ * pins. `copies` is where their `source_records` rows (`record`) come from:
+ * a `FROM` item and a condition. Starting from the listed copies reads only
+ * those. A condition on `source_records` alone is applied last, since the
+ * query joins more tables than the planner reorders (`join_collapse_limit`):
+ * every record of the store is first joined to its capture, commit and
+ * satellite rows.
+ */
+function classifiedCopiesSql(copies: Readonly<{ from: string; where: string }>, records: string, cited: string): string {
   const ofSubject = (column: string) => `${column} IN (SELECT source_record_id FROM ${records})`;
   return `
     shape AS (
@@ -585,7 +594,7 @@ function classifiedCopiesSql(where: string, records: string, cited: string): str
              EXISTS (SELECT 1 FROM ${MANIFEST} manifest WHERE manifest.capture_id = record.capture_id) AS manifest_capture,
              cited.pinned_by,
              (scope.source_record_id IS NOT NULL)::int AS scopes, COALESCE(provenance.rows, 0) AS provenance, COALESCE(backed.rows, 0) AS assertions
-        FROM source_records record
+        FROM ${copies.from}
         JOIN source_captures capture ON capture.capture_id = record.capture_id
         JOIN source_connections connection ON connection.source_connection_id = capture.source_connection_id
         JOIN canonical_commits written ON written.commit_id = record.commit_id
@@ -594,7 +603,7 @@ function classifiedCopiesSql(where: string, records: string, cited: string): str
         LEFT JOIN provenance ON provenance.source_record_id = record.source_record_id
         LEFT JOIN backed ON backed.source_record_id = record.source_record_id
         LEFT JOIN ${cited} cited ON cited.cited_id = record.source_record_id
-       WHERE ${where}
+       WHERE ${copies.where}
     ),
     chained AS (
       SELECT copy.*, ROW_NUMBER() OVER chain AS position,

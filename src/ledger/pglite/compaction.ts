@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { latestCardDetailsByRevisionSql } from "./card-details-sql.ts";
-import { captureSourceRecordIdsSql } from "./capture-manifest.ts";
+import { captureSourceRecordsSql } from "./capture-manifest.ts";
 import {
   citedCopiesSql,
   COUNTS,
@@ -424,25 +424,27 @@ function compactionReaders(scope: CompactionScope) {
       "record.source_record_id DESC",
     ),
     /**
-     * What each capture saw, through `captureSourceRecordIdsSql` as
-     * withdrawal by omission and counterparty evidence read it: each member
-     * by occurrence key, with its content, its scope row's account and
+     * What each capture saw, the records `captureSourceRecordIdsSql` gives
+     * withdrawal by omission and counterparty evidence: each member by
+     * occurrence key, with its content, its scope row's account and
      * subject, every assertion it backs, and whether it was known by the
      * capture's commit. Not distinct, so a member listed twice shows, and a
-     * member whose copy is gone keeps a row with no content.
+     * member whose copy is gone keeps a row with no content. The members
+     * come with their rows (`captureSourceRecordsSql`): looked up by id
+     * afterwards, a chunk whose captures hold many records read every record
+     * of the store to find them.
      */
     captureMembership: `
       SELECT capture.capture_key, record.source_subject_id, record.record_kind, record.occurrence_key, ${recordContent},
              record_commit.commit_sequence <= capture_commit.commit_sequence AS known_at_capture,
              scope.account_id, scope.source_subject_id AS scope_subject_id,
              (SELECT string_agg(encode(provenance.assertion_id, 'hex'), ',' ORDER BY provenance.assertion_id)
-                FROM assertion_provenance provenance WHERE provenance.source_record_id = member.source_record_id) AS assertions
+                FROM assertion_provenance provenance WHERE provenance.source_record_id = record.member_id) AS assertions
         FROM source_captures capture
         JOIN canonical_commits capture_commit ON capture_commit.commit_id = capture.commit_id
-        JOIN LATERAL (${captureSourceRecordIdsSql("capture.capture_id")}) member ON TRUE
-        LEFT JOIN source_records record ON record.source_record_id = member.source_record_id
+        JOIN LATERAL (${captureSourceRecordsSql("capture.capture_id")}) record ON TRUE
         LEFT JOIN canonical_commits record_commit ON record_commit.commit_id = record.commit_id
-        LEFT JOIN source_record_scopes scope ON scope.source_record_id = member.source_record_id
+        LEFT JOIN source_record_scopes scope ON scope.source_record_id = record.member_id
        WHERE ${scope.capture("capture.capture_id")}`,
   } as const;
 }

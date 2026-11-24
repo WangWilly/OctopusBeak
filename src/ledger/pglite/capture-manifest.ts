@@ -54,21 +54,55 @@ export function applyPgliteCaptureManifestSchema(store: PGliteStore): Promise<vo
  * `(capture_id, occurrence_key)` index instead of the whole capture.
  */
 export function captureSourceRecordIdsSql(captureId: string, occurrenceKey?: string): string {
-  const reusedId = "substring(manifest.source_record_ids FROM slot * 16 + 1 FOR 16)";
   const owned = `SELECT owned.source_record_id
             FROM source_records owned
            WHERE owned.capture_id = ${captureId}`;
-  const reused = `SELECT ${occurrenceKey ? "reused.source_record_id" : reusedId}
-            FROM capture_source_record_manifests manifest
-            CROSS JOIN generate_series(0, manifest.record_count - 1) AS slot`;
+  const listed = `(${manifestRecordIdsSql(`capture_id = ${captureId}`)}) listed`;
   return occurrenceKey
     ? `${owned} AND owned.occurrence_key = ${occurrenceKey}
           UNION ALL
-          ${reused}
-            JOIN source_records reused ON reused.source_record_id = ${reusedId}
-           WHERE manifest.capture_id = ${captureId} AND reused.occurrence_key = ${occurrenceKey}`
+          SELECT reused.source_record_id
+            FROM ${listed}
+            JOIN source_records reused ON reused.source_record_id = listed.source_record_id
+           WHERE reused.occurrence_key = ${occurrenceKey}`
     : `${owned}
           UNION ALL
-          ${reused}
-           WHERE manifest.capture_id = ${captureId}`;
+          SELECT listed.source_record_id
+            FROM ${listed}`;
+}
+
+/**
+ * One row per record a manifest lists, as `capture_id` and
+ * `source_record_id`, for the manifests matching `where`, a condition on the
+ * table's own columns.
+ *
+ * Each manifest's packed ids are read into memory once, by the inner query:
+ * `OFFSET 0` keeps the planner from merging it into the outer one, and the
+ * concatenation yields a value held in memory. A manifest of more than about
+ * a hundred records is stored out of line, and `substring` on the stored
+ * column fetches a slice of it from the TOAST table for every record listed.
+ */
+export function manifestRecordIdsSql(where: string): string {
+  return `SELECT manifest.capture_id, substring(manifest.packed_ids FROM slot * 16 + 1 FOR 16) AS source_record_id
+            FROM (SELECT capture_id, source_record_ids || ''::bytea AS packed_ids, record_count
+                    FROM capture_source_record_manifests
+                   WHERE ${where}
+                  OFFSET 0) manifest
+           CROSS JOIN generate_series(0, manifest.record_count - 1) AS slot`;
+}
+
+/**
+ * `captureSourceRecordIdsSql` with each record's row: `member_id`, the id as
+ * the Capture owns or lists it, then every `source_records` column, all NULL
+ * for a listed record that is not stored. An owned record is read once, where
+ * it is found, not looked up again by its id.
+ */
+export function captureSourceRecordsSql(captureId: string): string {
+  return `SELECT owned.source_record_id AS member_id, owned.*
+            FROM source_records owned
+           WHERE owned.capture_id = ${captureId}
+          UNION ALL
+          SELECT listed.source_record_id AS member_id, reused.*
+            FROM (${manifestRecordIdsSql(`capture_id = ${captureId}`)}) listed
+            LEFT JOIN source_records reused ON reused.source_record_id = listed.source_record_id`;
 }
