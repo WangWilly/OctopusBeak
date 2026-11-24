@@ -150,6 +150,19 @@ test("a coalesced read runs no query once every caller attached to it has cancel
   assert.deepEqual(reads, ["financial.spending.recordPage:2026-12"]);
 });
 
+test("a step queued from inside a scheduled job is refused instead of waiting behind that job", async () => {
+  const scheduler = createPGliteWorkScheduler();
+  await assert.rejects(
+    scheduler.schedule("background", () => scheduler.scheduleStep(async () => "never")),
+    /cannot run inside a scheduled job/u,
+  );
+  // Outside a job, and once the job has ended, steps queue as usual.
+  assert.equal(await scheduler.scheduleStep(async () => "step"), "step");
+  // Work a job leaves queued without awaiting it is not refused.
+  const { later } = await scheduler.schedule("background", async () => ({ later: scheduler.schedule("background", async () => "queued") }));
+  assert.equal(await later, "queued");
+});
+
 test("a stepped operation queues its steps, and queued work runs between them", async () => {
   type Listener = (value: unknown) => void;
   const listeners = { server: new Set<Listener>(), client: new Set<Listener>() };
@@ -166,7 +179,7 @@ test("a stepped operation queues its steps, and queued work runs between them", 
         order.push(operation);
         return [];
       }
-      for (const step of [1, 2]) await scheduler.schedule("background", async () => {
+      for (const step of [1, 2]) await scheduler.scheduleStep(async () => {
         order.push(`plan step ${step}`);
         await new Promise((resolve) => setTimeout(resolve, 5));
       });

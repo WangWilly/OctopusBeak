@@ -41,7 +41,7 @@ export function createPGliteLedgerHost(
     previewVisibility,
     today: clock.today,
     cardIdentitySecret,
-    runBackgroundStep: (step) => scheduler.schedule("background", step),
+    runBackgroundStep: (step) => scheduler.scheduleStep(step),
   });
   const views = createPGliteFinancialLiveViews(
     registry,

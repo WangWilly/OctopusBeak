@@ -353,8 +353,10 @@ export const PGLITE_FINANCIAL_CONTRACTS = Object.freeze({
   ),
   /**
    * What a ledger compaction would remove, read without changing anything,
-   * one short step at a time. Host-only until the Settings action that shows
-   * it: no renderer route and no workflow access.
+   * one step at a time. Host-only: no renderer route and no workflow access.
+   * Do not wire it to the UI or call it on the live worker until a subject
+   * step is split further, for example by record kind or occurrence-key
+   * range; one large subject's step can hold the ledger for tens of seconds.
    */
   "financial.canonical.compactionPlan": operation<[], CompactionPlanResult>(
     (args) => args.length === 0,

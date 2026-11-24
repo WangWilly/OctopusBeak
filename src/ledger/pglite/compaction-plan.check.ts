@@ -122,11 +122,18 @@ const keyOf = (captureKey: string, n: number) =>
 const copyOf = (captureKey: string, key: string) =>
   `(SELECT source_record_id FROM source_records WHERE capture_id = ${captureOf(captureKey)} AND occurrence_key = ${key})`;
 
-/** An assertion row on `copy` that also names an enrichment run, beside the source row it repeats. */
+/**
+ * An assertion row on `copy` that also names an enrichment run, for an
+ * assertion its source rows do not back, so the run row must neither count
+ * as a backed assertion nor leave the copy removable.
+ */
 const mixedProvenance = (copy: string) => `
   INSERT INTO assertion_provenance(assertion_id, source_record_id, run_id, enrichment_run_id, coordinate_id, commit_id)
-  SELECT assertion_id, source_record_id, NULL, decode(md5('mixed' || encode(source_record_id, 'hex')), 'hex'), NULL, commit_id
-    FROM assertion_provenance WHERE source_record_id = ${copy} AND run_id IS NULL AND enrichment_run_id IS NULL AND coordinate_id IS NULL
+  SELECT (SELECT other.assertion_id FROM assertions other
+           WHERE other.assertion_id NOT IN (SELECT backed.assertion_id FROM assertion_provenance backed WHERE backed.source_record_id = source.source_record_id)
+           ORDER BY other.assertion_id LIMIT 1),
+         source_record_id, NULL, decode(md5('mixed' || encode(source_record_id, 'hex')), 'hex'), NULL, commit_id
+    FROM assertion_provenance source WHERE source_record_id = ${copy} AND run_id IS NULL AND enrichment_run_id IS NULL AND coordinate_id IS NULL
    LIMIT 1`;
 
 /**

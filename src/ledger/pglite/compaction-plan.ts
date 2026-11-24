@@ -291,7 +291,16 @@ type KeptCitation = Readonly<{ cited: string; table: string }>;
 /** A source subject as hex, or `null` for the records that have none. */
 type Subject = string | null;
 
-/** Plan the compaction of `store` without changing it. */
+/**
+ * Plan the compaction of `store` without changing it.
+ *
+ * Not ready for the live worker: one source subject is one step, and on a
+ * real store one large subject dominates, so a step can hold the ledger for
+ * seconds, and for tens of seconds on a store of several GB. Do not wire it
+ * to the UI or call it on the live worker until a subject step is split
+ * further, for example by record kind or occurrence-key range. The npm
+ * script plans on a copy and is unaffected.
+ */
 export async function planLedgerCompaction(store: PGliteStore, options: CompactionPlanOptions = {}): Promise<CompactionPlanResult> {
   const runStep = options.runStep ?? (<T>(step: () => Promise<T>) => step());
   const read = <T>(body: (transaction: PGliteTransaction) => Promise<T>): Promise<T> =>

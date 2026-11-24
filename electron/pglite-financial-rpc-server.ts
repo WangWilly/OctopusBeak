@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { PGliteCanonicalEInvoiceAdmissionError } from "../src/ledger/pglite/einvoice.ts";
 import { PGliteCanonicalCreditCardAdmissionError } from "../src/ledger/pglite/credit-card.ts";
 import { PGliteCanonicalSourceAdmissionError } from "../src/ledger/pglite/source-admission-validation.ts";
@@ -131,10 +132,17 @@ export type PGliteFinancialRpcServerOptions = Readonly<{
  */
 export type PGliteWorkScheduler = Readonly<{
   schedule<T>(lane: "interactive" | "background", task: () => Promise<T>): Promise<T>;
+  /**
+   * Queues one step of a stepped operation on the background lane. Throws
+   * when called from inside one of this scheduler's jobs: the step would
+   * wait behind the very job that awaits it.
+   */
+  scheduleStep<T>(step: () => Promise<T>): Promise<T>;
 }>;
 
 export function createPGliteWorkScheduler(): PGliteWorkScheduler {
   const queued = { interactive: [] as Array<() => Promise<void>>, background: [] as Array<() => Promise<void>> };
+  const insideJob = new AsyncLocalStorage<true>();
   let running = false;
   let pumpScheduled = false;
   // A query blocks this thread, so requests that arrived meanwhile are still
@@ -157,10 +165,16 @@ export function createPGliteWorkScheduler(): PGliteWorkScheduler {
     });
   };
   const schedule = <T>(lane: keyof typeof queued, task: () => Promise<T>) => new Promise<T>((resolve, reject) => {
-    queued[lane].push(() => Promise.resolve().then(task).then(resolve, reject));
+    queued[lane].push(() => insideJob.run(true, () => Promise.resolve().then(task)).then(resolve, reject));
     schedulePump();
   });
-  return Object.freeze({ schedule });
+  const scheduleStep = <T>(step: () => Promise<T>): Promise<T> => {
+    if (insideJob.getStore()) {
+      return Promise.reject(new Error("A stepped operation cannot run inside a scheduled job: its first step would wait behind that job."));
+    }
+    return schedule("background", step);
+  };
+  return Object.freeze({ schedule, scheduleStep });
 }
 
 type CoalescedRead = {
