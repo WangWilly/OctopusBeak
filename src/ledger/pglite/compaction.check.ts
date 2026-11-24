@@ -896,7 +896,7 @@ test("a capture's members read with their rows are its members looked up by id, 
        WHERE source_record_id = (SELECT min(source_record_id) FROM source_records WHERE capture_id = ${captureOf("deposit-capture-1")})`);
     await writeDirectly(store, `
       INSERT INTO ${MANIFESTS}(capture_id, source_record_ids, record_count, commit_id)
-      SELECT capture_id, (SELECT string_agg(decode(md5('listed-' || LEAST(n, 299)), 'hex'), ''::bytea ORDER BY n) FROM generate_series(0, 299) n), 300, commit_id
+      SELECT capture_id, (SELECT string_agg(decode(md5('listed-' || LEAST(n, 298)), 'hex'), ''::bytea ORDER BY n) FROM generate_series(0, 299) n), 300, commit_id
         FROM source_captures WHERE capture_key = '${planted}'`);
     const { rows: [stored] } = await store.query<{ bytes: number; stored: number }>(
       `SELECT length(source_record_ids) AS bytes, pg_column_size(source_record_ids) AS stored FROM ${MANIFESTS} WHERE capture_id = ${captureOf(planted)}`);
