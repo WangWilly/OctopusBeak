@@ -6,7 +6,7 @@ Accepted amendment: [ADR 0055](./0055-revisable-payload-fields-continue-admitted
 
 Accepted amendment: [ADR 0144](./0144-a-store-removes-derived-kinds-a-refresh-wrote-again-unchanged.md) adds a one-time hard delete of derived Kind assertions a refresh wrote again unchanged, keeping the first of each run so the Kind at every commit stays the same.
 
-Accepted amendment: [ADR 0154](./0154-compaction-removes-the-copies-and-repeats-an-unchanged-re-sync-no-longer-writes.md) adds a third hard delete, an owner-started compaction of the record copies, domain rows and count rows an unchanged re-sync no longer writes, keeping every reader's answer.
+Accepted amendment: [ADR 0154](./0154-compaction-removes-the-copies-and-repeats-an-unchanged-re-sync-no-longer-writes.md) adds a third hard delete, an owner-started compaction of the record copies, domain rows and count rows an unchanged re-sync no longer writes, verified against the readers' answers at every knowledge point.
 
 Accepted amendment: [ADR 0152](./0152-an-unchanged-re-sync-reuses-stored-source-records.md) lets a later Capture reuse an unchanged stored Source Record through its manifest instead of storing another copy.
 

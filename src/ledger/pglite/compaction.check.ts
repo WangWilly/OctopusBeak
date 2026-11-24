@@ -17,7 +17,7 @@ import {
   type LedgerCompactionResult,
 } from "./compaction.ts";
 import { COUNTS, PHASE_A, planLedgerCompaction, type CompactionPlan } from "./compaction-plan.ts";
-import { legacyStore, MODES, ROWS, snapshot, SYNCS } from "./compaction-fixtures.ts";
+import { legacyStore, MODES, ROWS, snapshot, SYNCS, writeDirectly } from "./compaction-fixtures.ts";
 import { canonicalState } from "./canonical-state-fixture.ts";
 import { commitResync } from "./resync-fixtures.ts";
 import { PGliteStore } from "./transaction.ts";
@@ -109,13 +109,13 @@ test("later syncs leave a compacted store as they leave an uncompacted copy", as
     const states: Record<string, readonly string[]>[] = [];
     for (const target of [uncompacted, store]) {
       const before = await rowCounts(target);
-      for (const mode of MODES) {
-        const sync = commitResync(target, mode, mode === "deposit" ? SYNCS + 2 : SYNCS + 1, { rowCount: ROWS });
-        // The count row the fixture raised by one member is kept, so both
-        // stores' member-loss guards refuse the next investment sync alike.
-        if (mode === "investment") await assert.rejects(sync, /cannot lose members/u);
-        else await sync;
-      }
+      for (const mode of MODES) await commitResync(target, mode, mode === "deposit" ? SYNCS + 2 : SYNCS + 1, { rowCount: ROWS });
+      // Every mode committed, the investment sync too, whose name writer compares with the kept name rows.
+      const { rows: [committed] } = await target.query<{ captures: number }>(
+        `SELECT count(*)::int AS captures FROM source_captures WHERE capture_key = ANY($1::text[])`,
+        [MODES.map((mode) => `${mode}-capture-${mode === "deposit" ? SYNCS + 2 : SYNCS + 1}`)],
+      );
+      assert.equal(committed!.captures, MODES.length);
       const after = await rowCounts(target);
       grown.push(Object.fromEntries(COMPACTED_TABLES.map((table) => [table, after[table] - before[table]])) as Record<CompactedTable, number>);
       states.push(await canonicalState(target, Object.fromEntries(Object.entries(COMPACTION_READERS).map(([reader, sql]) =>
@@ -162,10 +162,32 @@ test("a second compaction removes nothing", async () => {
 const seqByCapture = (alias: string) =>
   `JOIN source_captures ${alias}_capture ON ${alias}_capture.capture_id = ${alias}.capture_id
    JOIN canonical_commits ${alias}_commit ON ${alias}_commit.commit_id = ${alias}_capture.commit_id`;
+const seqByCommit = (alias: string) => `JOIN canonical_commits ${alias}_commit ON ${alias}_commit.commit_id = ${alias}.commit_id`;
 
 /**
- * Selections that each remove a row the readers need, with the readers that
- * must see it. Each returns `row_ctid` and `repeats` as a table's selection does.
+ * Marks the first row of each run that has a later row, a row the real
+ * selection keeps: the latest row stays, so only an earlier knowledge point
+ * sees the difference.
+ */
+const firstOfRun = (table: string, join: string, partition: string, order: string) => `
+  SELECT domain.ctid AS row_ctid,
+         ROW_NUMBER() OVER (PARTITION BY ${partition} ORDER BY ${order}) = 1 AND count(*) OVER (PARTITION BY ${partition}) > 1 AS repeats
+    FROM ${table} domain ${join}`;
+
+/** Marks every row but the latest of each key: the last of each run is kept instead of the first. */
+const allButLatest = (table: string, join: string, partition: string, latestFirst: string) => `
+  SELECT domain.ctid AS row_ctid, ROW_NUMBER() OVER (PARTITION BY ${partition} ORDER BY ${latestFirst}) > 1 AS repeats
+    FROM ${table} domain ${join}`;
+
+const commitOf = (captureKey: string) => `(SELECT commit_id FROM source_captures WHERE capture_key = '${captureKey}')`;
+
+/** The invoice whose second sync this check makes observe one revision fewer than its first and third. */
+const ABA_INVOICE = `(SELECT invoice_id FROM einvoice_invoice_revisions WHERE revision_id = decode(md5('revised'), 'hex'))`;
+
+/**
+ * Selections that each remove a row the real selection keeps, with the
+ * readers that must see it. Each returns `row_ctid` and `repeats` as a
+ * table's selection does.
  */
 const MUTATIONS: readonly Readonly<{
   name: string;
@@ -174,13 +196,10 @@ const MUTATIONS: readonly Readonly<{
   readers: readonly CompactionReader[];
 }>[] = [
   {
-    // The latest answer stays: only the name at the knowledge points between the first row and its repeat changes.
     name: "the first security name of a run instead of its repeats",
     table: "investment_security_name_observations",
-    selection: `SELECT domain.ctid AS row_ctid,
-        ROW_NUMBER() OVER history = 1 AND count(*) OVER (PARTITION BY domain.security_id) > 1 AS repeats
-      FROM investment_security_name_observations domain JOIN canonical_commits domain_commit ON domain_commit.commit_id = domain.commit_id
-    WINDOW history AS (PARTITION BY domain.security_id ORDER BY domain_commit.commit_sequence, domain.capture_id)`,
+    selection: firstOfRun("investment_security_name_observations", seqByCommit("domain"), "domain.security_id",
+      "domain_commit.commit_sequence, domain.capture_id"),
     readers: ["securityNamesAtEveryKnowledgePoint"],
   },
   {
@@ -190,15 +209,51 @@ const MUTATIONS: readonly Readonly<{
     selection: `SELECT domain.ctid AS row_ctid,
         ROW_NUMBER() OVER (PARTITION BY domain.transaction_id ORDER BY domain_commit.commit_sequence DESC, domain.lifecycle_event_id DESC) = 1 AS repeats
       FROM canonical_credit_card_transaction_lifecycle domain ${seqByCapture("domain")}`,
-    readers: ["cardLifecycleLatest", "cardLifecycleLatestByAccount"],
+    readers: ["cardLifecycleLatest", "cardLifecycleLatestByAccount", "cardLifecycleHistory"],
   },
   {
-    name: "every details row of one purchase",
+    name: "the last lifecycle row of each run instead of the first",
+    table: "canonical_credit_card_transaction_lifecycle",
+    selection: allButLatest("canonical_credit_card_transaction_lifecycle", seqByCapture("domain"), "domain.transaction_id",
+      "domain_commit.commit_sequence DESC, domain.lifecycle_event_id DESC"),
+    readers: ["cardLifecycleHistory"],
+  },
+  {
+    name: "the last details row of each run instead of the first",
     table: "canonical_credit_card_transaction_details",
-    selection: `SELECT ctid AS row_ctid,
-        transaction_id = (SELECT min(transaction_id) FROM canonical_credit_card_transaction_details) AS repeats
-      FROM canonical_credit_card_transaction_details`,
-    readers: ["cardDetailsLatestByRevision", "cardDetailsLatestByTransaction", "cardDetailsDateMatch"],
+    selection: allButLatest("canonical_credit_card_transaction_details", seqByCapture("domain"), "domain.transaction_id",
+      "domain_commit.commit_sequence DESC, domain.source_record_id DESC"),
+    readers: ["cardDetailsHistory"],
+  },
+  {
+    name: "the last statement summary of each run instead of the first",
+    table: "canonical_credit_card_statement_summary_evidence",
+    selection: allButLatest("canonical_credit_card_statement_summary_evidence", seqByCapture("domain"), "domain.statement_revision_id",
+      "domain_commit.commit_sequence DESC, domain.evidence_source_record_id DESC"),
+    readers: ["cardStatementSummaryHistory"],
+  },
+  {
+    name: "the first evidence of an instrument instead of its repeats",
+    table: "canonical_credit_card_instrument_evidence",
+    selection: firstOfRun("canonical_credit_card_instrument_evidence", seqByCapture("domain"), "domain.instrument_id",
+      "domain_commit.commit_sequence, domain.source_record_id"),
+    readers: ["cardInstrumentEvidenceHistory"],
+  },
+  {
+    name: "the first evidence of one relation instead of its repeats",
+    table: "transaction_relation_provenance",
+    selection: `SELECT marked.row_ctid, marked.repeats AND marked.relation_id = (SELECT min(relation_id) FROM transaction_relation_provenance) AS repeats
+      FROM (${firstOfRun("transaction_relation_provenance", seqByCommit("domain"), "domain.relation_id",
+        "domain_commit.commit_sequence, domain.source_record_id").replace("SELECT domain.ctid AS row_ctid,", "SELECT domain.ctid AS row_ctid, domain.relation_id,")}) marked`,
+    readers: ["relationEvidenceHistory"],
+  },
+  {
+    name: "the first sighting of one account identifier instead of its repeats",
+    table: "financial_account_identifier_observations",
+    selection: `SELECT marked.row_ctid, marked.repeats AND marked.account_id = (SELECT min(account_id) FROM financial_account_identifier_observations) AS repeats
+      FROM (${firstOfRun("financial_account_identifier_observations", seqByCommit("domain"), "domain.account_id",
+        "domain_commit.commit_sequence, domain.observation_id").replace("SELECT domain.ctid AS row_ctid,", "SELECT domain.ctid AS row_ctid, domain.account_id,")}) marked`,
+    readers: ["accountIdentifierFirstSightings"],
   },
   {
     name: "the count row that raised its partition's maximum",
@@ -208,46 +263,51 @@ const MUTATIONS: readonly Readonly<{
           coverage.scope_key, coverage.contract_version, count_row.partition_date, count_row.fingerprint) AS repeats
       FROM source_occurrence_group_counts count_row
       JOIN source_occurrence_group_coverages coverage ON coverage.coverage_id = count_row.coverage_id`,
-    readers: ["occurrenceCountMaxima"],
+    readers: ["occurrenceCountMaxima", "occurrenceCountHistory"],
   },
   {
     name: "every observation of one revision",
     table: "einvoice_revision_observations",
     selection: `SELECT ctid AS row_ctid, revision_id = (SELECT min(revision_id) FROM einvoice_revision_observations) AS repeats
       FROM einvoice_revision_observations`,
-    readers: ["einvoiceLatestObserved", "einvoiceObservedRevisions"],
+    readers: ["einvoiceLatestObserved", "einvoiceObservedRevisions", "einvoiceObservedHistory"],
   },
   {
-    name: "every sighting of an account identifier",
-    table: "financial_account_identifier_observations",
-    selection: `SELECT ctid AS row_ctid, true AS repeats FROM financial_account_identifier_observations`,
-    readers: ["accountIdentifiers"],
+    // Observed sets A, B, A: removing B keeps the latest set and every observed revision.
+    name: "the observing commit between two equal ones, whose set differs",
+    table: "einvoice_revision_observations",
+    selection: `SELECT observation.ctid AS row_ctid,
+        revision.invoice_id = ${ABA_INVOICE} AND observation.commit_id = ${commitOf("einvoice-capture-2")} AS repeats
+      FROM einvoice_revision_observations observation
+      JOIN einvoice_invoice_revisions revision ON revision.revision_id = observation.revision_id`,
+    readers: ["einvoiceObservedHistory"],
   },
   {
-    name: "the evidence of an instrument",
-    table: "canonical_credit_card_instrument_evidence",
-    selection: `SELECT ctid AS row_ctid, true AS repeats FROM canonical_credit_card_instrument_evidence`,
-    readers: ["cardInstrumentEvidenceLatest"],
-  },
-  {
-    name: "the latest summary of a statement",
-    table: "canonical_credit_card_statement_summary_evidence",
-    selection: `SELECT domain.ctid AS row_ctid,
-        ROW_NUMBER() OVER (PARTITION BY domain.statement_revision_id ORDER BY domain_commit.commit_sequence DESC) = 1 AS repeats
-      FROM canonical_credit_card_statement_summary_evidence domain ${seqByCapture("domain")}`,
-    readers: ["cardStatementSummaryLatest"],
-  },
-  {
-    name: "the evidence of a relation",
-    table: "transaction_relation_provenance",
-    selection: `SELECT ctid AS row_ctid, true AS repeats FROM transaction_relation_provenance`,
-    readers: ["relationEvidenceLatest"],
+    name: "the issued and revoked events",
+    table: "einvoice_revision_events",
+    selection: `SELECT ctid AS row_ctid, event_kind <> 'observed' AS repeats FROM einvoice_revision_events`,
+    readers: ["einvoiceNonObservedEvents"],
   },
 ];
+
+/**
+ * The revised invoice's first and third syncs also observe its new revision,
+ * so its observed sets are A, B and A over the three syncs.
+ */
+async function observeRevisedInvoiceAroundItsSecondSync(store: PGliteStore): Promise<number> {
+  return writeDirectly(store, `
+    INSERT INTO einvoice_revision_observations(revision_id, source_record_id, capture_id, commit_id)
+    SELECT decode(md5('revised'), 'hex'), observation.source_record_id, observation.capture_id, observation.commit_id
+      FROM einvoice_revision_observations observation
+      JOIN einvoice_invoice_revisions revision ON revision.revision_id = observation.revision_id
+     WHERE revision.invoice_id = ${ABA_INVOICE} AND revision.revision_id <> decode(md5('revised'), 'hex')
+       AND observation.commit_id IN (${commitOf("einvoice-capture-1")}, ${commitOf("einvoice-capture-3")})`);
+}
 
 test("a selection that would change a reader's answer rolls back and changes nothing", async () => {
   const { store } = await legacyStore();
   try {
+    assert.equal(await observeRevisedInvoiceAroundItsSecondSync(store), 2);
     const before = await snapshot(store);
     for (const mutation of MUTATIONS) {
       await assert.rejects(

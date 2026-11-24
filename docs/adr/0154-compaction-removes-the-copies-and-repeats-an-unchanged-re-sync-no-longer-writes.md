@@ -12,7 +12,7 @@ ADR 0152 stopped an unchanged re-sync from writing a record copy, a domain row o
 | B, record copies | 151,187 of 169,770 | 458 MB |
 | C, count rows | 53,295 of 54,180 | 19 MB |
 
-ADR 0008 keeps lineage append-only. Its hard deletes are the Contract Purge and the one-time Kind cleanup of [ADR 0144](./0144-a-store-removes-derived-kinds-a-refresh-wrote-again-unchanged.md). **This ADR adds a third hard delete: compaction removes the record copies, domain rows and count rows that the ADR 0152 writers would not have written, and keeps every answer a reader gives.**
+ADR 0008 keeps lineage append-only. Its hard deletes are the Contract Purge and the one-time Kind cleanup of [ADR 0144](./0144-a-store-removes-derived-kinds-a-refresh-wrote-again-unchanged.md). **This ADR adds a third hard delete: compaction removes the record copies, domain rows and count rows that the ADR 0152 writers would not have written, and keeps the answers its verifier compares, the e-invoice lineage lists excepted.**
 
 ## The owner's decisions
 
@@ -24,7 +24,7 @@ ADR 0008 keeps lineage append-only. Its hard deletes are the Contract Purge and 
 
 ## Target state
 
-The target is the store the ADR 0152 writers would have produced. In every table, the first row of each run of equal values, in the reader's own order, is kept, and its repeats are removed. Keeping the first, not the last, keeps the answer at every earlier knowledge point, for the reason ADR 0144 gives.
+The target is the store the ADR 0152 writers would have produced. In every table, the first row of each run of equal values, in the reader's own order, is kept, and its repeats are removed. Keeping the first, not the last, keeps the answer at every earlier knowledge point, for the reason ADR 0144 gives. The verifier checks this for every compacted table: it compares each table's history at every knowledge point, not only its latest row.
 
 ### Phase A: domain rows
 
@@ -59,19 +59,21 @@ Captures, scopes, pages, coverages, commits, revisions, assertions, transitions,
 
 ## Safety
 
-- **One verified transaction.** Before deleting, the compaction reads every reader the removed rows feed and takes a SHA-256 digest of its rows, sorted as text. After deleting, it reads them again. Any difference throws, and the transaction rolls back. The digests are exact; the prototype's sums of 60-bit hashes are not used. The readers:
+- **One verified transaction.** Before deleting, the compaction reads each of the answers listed below and takes a SHA-256 digest of its rows, sorted as text. After deleting, it reads them again. Any difference throws, and the transaction rolls back. The digests are exact; the prototype's sums of 60-bit hashes are not used. What is compared is this list, not every query that touches the tables:
   - card details, latest by revision (`latestCardDetailsByRevisionSql`) and latest by transaction (the card command);
   - card details, the distinct revision and consume date pairs the spending date match reads;
   - card lifecycle, latest by transaction (`listLatestLifecycle`) and by namespace, account and transaction (the card command);
   - instrument evidence and statement summary evidence, latest;
-  - security names at every knowledge point (the overview and the investment command);
   - relation provenance, latest (the loan command);
-  - account identifiers, the distinct set (account identity continuity, ADR 0049);
-  - e-invoices, each invoice's latest observed revisions and the revisions that have an observation (`provenanceComplete`);
-  - count rows, the maximum of each partition.
+  - account identifiers, the distinct set (account identity continuity, ADR 0049), and the commit that first saw each;
+  - e-invoices, each invoice's latest observed revisions, the revisions that have an observation (`provenanceComplete`), and every event that is not `observed`, with all its columns;
+  - count rows, the maximum of each partition;
+  - at every knowledge point: the value as of each commit for card details, card lifecycle, instrument evidence, statement summary evidence, security names (the overview and the investment command), relation provenance, and each invoice's observed set, and each count partition's running maximum.
+
+  The e-invoice lineage lists are the one answer that changes, by the owner's decision: they lose the `observed` observations and events of the removed commits.
 
   Each delete must also remove exactly the rows that were selected.
-- **Triggers and foreign keys.** The deletes run with `SET LOCAL session_replication_role = replica`, as ADR 0144 does, and with the purge guard setting on. This skips the per-row foreign-key checks, the append-only guards, and the pairing refresh on each card details delete. The latest details the pairing reads do not change. The compaction first refuses a store where any table has a foreign key to a compacted table, or where any trigger on one would still fire in replication mode.
+- **Triggers and foreign keys.** The deletes run with `SET LOCAL session_replication_role = replica`, as ADR 0144 does, and with the purge guard setting on. This skips the per-row foreign-key checks, the append-only guards, and the pairing refresh on each card details delete. The latest details the pairing reads do not change. The compaction first refuses a store where any table has a foreign key to a compacted table, or where any trigger on one is not in the default mode that replication mode turns off. A disabled trigger is refused too, so the compaction only skips the triggers the schema installs.
 - **Markers and idempotence.** The compaction writes its marker in `pglite_operational_migrations` in the same transaction. A later run finds the marker and removes nothing. Without the marker, the selection also finds nothing, because the rows it keeps differ from their neighbours. The worker job adds a second marker once the tables are rewritten, as ADR 0144 does.
 - **Never in the open path.** ADR 0144 runs on store open, because its delete is small and bounded. Compaction is not. On a synthetic store of 4 GB, phases A to C took about two minutes in one transaction, and on a real store the dry run alone holds the ledger for seconds per source. An open that waits for it would look like a hang, and a failure there would block the app. The owner starts it from Settings, and the worker runs it on its background lane in chunks per source subject. Partitions never cross a subject.
 - **Returning the space.** Deleted rows only free pages for reuse. The worker job then rewrites the touched tables with `VACUUM (FULL, ANALYZE)`, which cannot run inside a transaction.
@@ -90,7 +92,7 @@ Captures, scopes, pages, coverages, commits, revisions, assertions, transitions,
 - **Keep the old rows.** Rejected. They are about a third of a real store, and they slow every read that scans a whole history.
 - **Keep the last row of each run.** Rejected. An earlier knowledge point would see no row, as ADR 0144 explains.
 - **Run on store open, as ADR 0144 does.** Rejected for the reasons above.
-- **Back up by default.** Rejected. It needs as much free space as the store itself, and the verification already rolls back any change a reader could see.
+- **Back up by default.** Rejected. It needs as much free space as the store itself, and the verification already rolls back any change to the answers it compares, latest and at every knowledge point.
 - **Check only that each removed row equals a kept row.** Rejected as the only check. Equal rows can still change a reader's answer, for example the name at a knowledge point between them. The readers' answers are what must hold.
 
 ## Consequences
@@ -98,4 +100,4 @@ Captures, scopes, pages, coverages, commits, revisions, assertions, transitions,
 - ADR 0008's hard deletes become three: the Contract Purge, the Kind cleanup of ADR 0144, and this compaction.
 - ADR 0152's "copies already stored stay as they are" holds only until the owner compacts the store.
 - Domain history no longer shows each sync that repeated an unchanged row. Nothing reads those rows.
-- The marker survives a Canonical Reset, which keeps `pglite_operational_migrations`. That is safe because the current writers write no repeats.
+- The marker survives a Canonical Reset, which keeps `pglite_operational_migrations`, and a second run is a no-op while it exists. The commands write no repeats, but loan repayment resolution (`relations.ts`) still writes relation provenance without comparing it with the latest row, so such repeats can collect after a compaction. Compacting them, or any repeat a future writer adds, needs a new marker key (`-v2`).

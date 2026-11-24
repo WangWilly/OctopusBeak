@@ -222,14 +222,15 @@ export async function legacyStore(database?: PGlite): Promise<Legacy> {
     financial_account_identifier_observations: await repeatAccountIdentifiers(store),
     source_occurrence_group_counts: await repeatCountRows(store),
   };
-  // One repeated count row that saw one more member raises its partition's maximum.
+  // One repeated count row that saw one more member raises its partition's maximum. It is the
+  // window's first day, which the next investment sync no longer covers, so that sync still commits.
   await writeDirectly(store, `
     UPDATE source_occurrence_group_counts SET occurrence_count = occurrence_count + 1
      WHERE observation_id = (
        SELECT count_row.observation_id FROM source_occurrence_group_counts count_row
          JOIN source_occurrence_group_coverages coverage ON coverage.coverage_id = count_row.coverage_id
          JOIN source_captures capture ON capture.capture_id = coverage.capture_id AND capture.capture_key = 'investment-capture-${SYNCS}'
-        ORDER BY count_row.observation_id LIMIT 1)`);
+        ORDER BY count_row.partition_date, count_row.observation_id LIMIT 1)`);
   await numberLoanRecordsByPosition(store);
   await giveLastCardCaptureAManifest(store);
   await commitResync(store, "deposit", SYNCS + 1, { rowCount: ROWS });

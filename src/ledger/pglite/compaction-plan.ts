@@ -615,7 +615,6 @@ class CopyTally {
   }
 }
 
-/** Phase C for one subject's count rows; the partition never crosses a subject. */
 /**
  * Phase C: every count row `where` admits, as `row_ctid`, and whether it
  * fails to raise the maximum stored before it in its partition (`repeats`).
@@ -634,6 +633,7 @@ export function phaseCMarkedSql(where = "TRUE"): string {
            WHERE ${where}`;
 }
 
+/** Phase C for one subject's count rows; the partition never crosses a subject. */
 async function planSubjectCounts(transaction: PGliteTransaction, subject: Subject): Promise<Removable> {
   const { rows: [row] } = await transaction.query<{ rows: number; removable: number }>(`
     SELECT count(*)::int AS rows, (count(*) FILTER (WHERE marked.repeats))::int AS removable
