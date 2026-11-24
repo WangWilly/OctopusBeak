@@ -537,10 +537,11 @@ export function citedCopiesSql(columns: FoundColumns, within: (column: string) =
 }
 
 /**
- * `recordCopiesSql` over two tables the caller has filled and analyzed:
- * `records`, the `source_record_id` and `capture_id` of every copy to
- * classify, and `cited`, `citedCopiesSql` of those copies. The planner then
- * knows how many copies and citations there are. Inside one query it
+ * `recordCopiesSql` over two tables the caller has filled: `records`, the
+ * `source_record_id` and `capture_id` of every copy to classify, and
+ * `cited`, `citedCopiesSql` of those copies, each with a unique key. The
+ * planner then knows how many copies and citations there are from the
+ * tables' sizes. Inside one query it
  * estimates a chain's copies from the store's average, which can be one row
  * for a chain of tens of thousands, and then scans every citation again for
  * each copy.
