@@ -269,7 +269,8 @@ async function readFolderBytes(options: LedgerReclaimOptions): Promise<number | 
  * file, and a power loss before that file is on the disk would leave a store
  * that cannot open. Refuses before it starts when the disk cannot hold the
  * largest rewrite. The signal is honoured between tables; a table being
- * rewritten finishes first.
+ * rewritten finishes first. Never rejects: a failed read, rewrite,
+ * checkpoint or flush ends the run as `failed`, with what it reclaimed.
  */
 export async function reclaimLedgerSpace(store: PGliteStore, options: LedgerReclaimOptions = {}): Promise<LedgerReclaimResult> {
   const runStep = options.runStep ?? runAtOnce;
@@ -290,9 +291,8 @@ export async function reclaimLedgerSpace(store: PGliteStore, options: LedgerRecl
   let estimate: LedgerReclaimEstimate;
   try {
     estimate = await estimateLedgerReclaim(store, options);
-  } catch (error) {
-    if (options.signal?.aborted) return summary("stopped");
-    throw error;
+  } catch {
+    return summary(options.signal?.aborted ? "stopped" : "failed");
   }
   if (estimate.tables.length === 0) return { status: "nothing-to-reclaim" };
   if (estimate.freeBytes !== null && estimate.freeBytes < estimate.requiredFreeBytes) {
@@ -300,27 +300,34 @@ export async function reclaimLedgerSpace(store: PGliteStore, options: LedgerRecl
   }
   folderBytesBefore = await readFolderBytes(options);
   const count = estimate.tables.length;
-  let unsynced = false;
-  try {
+  // Every rewrite, checkpoint and flush either finishes or ends the run as
+  // `failed` with what was reclaimed so far; nothing here rejects.
+  const rewriteAll = async (): Promise<"reclaimed" | "stopped" | "failed"> => {
     for (const [position, { table }] of estimate.tables.entries()) {
-      if (options.signal?.aborted) return await summary("stopped");
+      if (options.signal?.aborted) return "stopped";
       options.onProgress?.({ index: position + 1, count, table, ...bytes() });
       try {
         done.push(await runStep(() => rewrite(store, table)));
+        await runStep(() => store.exec("CHECKPOINT"));
+        // Off the queue: a flush can take seconds and needs no lock. The next table waits for it.
+        if (table.startsWith("pg_catalog.")) await options.syncToDisk?.();
       } catch {
-        return await summary("failed");
+        return "failed";
       }
-      const catalog = table.startsWith("pg_catalog.");
-      await runStep(() => store.exec("CHECKPOINT"));
-      // Off the queue: a flush can take seconds and needs no lock. The next table waits for it.
-      if (catalog) await options.syncToDisk?.();
-      unsynced = !catalog;
     }
-  } finally {
-    // A store table's checkpoint reaches only the OS cache; however the reclaim ends, flush it too.
-    if (unsynced && options.syncToDisk) await options.syncToDisk().catch(() => undefined);
+    return "reclaimed";
+  };
+  let status = await rewriteAll();
+  // A store table's checkpoint reaches only the OS cache; however the reclaim ends, flush it too.
+  const lastTable = done.at(-1)?.table;
+  if (lastTable !== undefined && !lastTable.startsWith("pg_catalog.") && options.syncToDisk) {
+    try {
+      await options.syncToDisk();
+    } catch {
+      status = "failed";
+    }
   }
-  return summary("reclaimed");
+  return summary(status);
 }
 
 export type LedgerReclaimer = Readonly<{

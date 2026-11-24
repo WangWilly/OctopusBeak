@@ -360,3 +360,41 @@ test("a live query subscribed across the catalog rewrites hears commits during a
     await store.close();
   }
 });
+
+test("a flush or checkpoint that fails ends the run as failed with what it reclaimed, and that is how it ended", async () => {
+  {
+    const { store } = await openStore();
+    try {
+      await bloat(store);
+      const reclaimer = createLedgerReclaimer(store, { syncToDisk: async () => { throw new Error("EIO"); } });
+      const result = await reclaimer.reclaim();
+      assert.equal(result.status, "failed", "the last flush failed");
+      if (result.status !== "failed") return;
+      assert.equal(result.tables.length, 2, "both tables were rewritten before it");
+      assert.ok(result.bytesBefore > result.bytesAfter);
+      assert.deepEqual(reclaimer.status(), { running: false, last: result });
+    } finally {
+      await store.close();
+    }
+  }
+  {
+    const { store } = await openStore();
+    try {
+      await bloat(store);
+      const exec = store.exec.bind(store);
+      store.exec = async (query: string) => {
+        if (query === "CHECKPOINT") throw new Error("could not write to file");
+        return exec(query);
+      };
+      const reclaimer = createLedgerReclaimer(store);
+      const result = await reclaimer.reclaim();
+      assert.equal(result.status, "failed");
+      if (result.status !== "failed") return;
+      assert.equal(result.tables.length, 1, "the first table was rewritten; its checkpoint failed and the next did not start");
+      assert.ok(result.bytesBefore > result.bytesAfter);
+      assert.deepEqual(reclaimer.status(), { running: false, last: result });
+    } finally {
+      await store.close();
+    }
+  }
+});
