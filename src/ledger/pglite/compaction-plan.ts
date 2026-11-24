@@ -3,10 +3,10 @@ import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
 /**
  * A dry run of the ledger compaction: what it would remove from a store
  * written before ADR 0152, without changing anything. ADR 0152 left the
- * copies stored before it in place; this report is the first step of
- * compacting them, so the owner can measure real stores before any delete
- * exists. The compaction and its ADR follow it. Compaction is planned in
- * three phases, and this reports each one:
+ * copies stored before it in place, and ADR 0154 compacts them; this report
+ * lets the owner measure a store first. `compaction.ts` removes the rows it
+ * marks in phases A and C. Compaction is planned in three phases, and this
+ * reports each one:
  *
  * - A, domain rows: in each table a command now writes only on change, a row
  *   that repeats the row before it for the same key, in the order its reader
@@ -80,14 +80,16 @@ const EINVOICE_REPEATS = `
                      WHERE created.invoice_id = marked.invoice_id AND created.commit_id = marked.commit_id)`;
 
 /**
- * Phase A, one query per table: every row, the record it cites as
- * `cited_id`, and whether it repeats the row before it (`repeats`). Each
- * compares the columns its ADR 0152 writer compares, in its reader's order.
+ * Phase A, one query per table: every row, as `row_ctid`, the record it
+ * cites as `cited_id`, and whether it repeats the row before it (`repeats`).
+ * Each compares the columns its ADR 0152 writer compares, in its reader's
+ * order. The compaction deletes the rows these mark, so the dry run and the
+ * compaction select the same rows.
  */
-const PHASE_A: Readonly<Record<string, Readonly<{ column: string; marked: string }>>> = {
+export const PHASE_A = {
   canonical_credit_card_transaction_details: {
     column: "source_record_id",
-    marked: `SELECT domain.source_record_id AS cited_id,
+    marked: `SELECT domain.ctid AS row_ctid, domain.source_record_id AS cited_id,
         ROW_NUMBER() OVER history > 1
           AND ROW(domain.revision_id, domain.instrument_id, domain.billing_status, domain.consume_date, domain.posting_date, domain.effective_date_basis, domain.statement_key)
               IS NOT DISTINCT FROM LAG(ROW(domain.revision_id, domain.instrument_id, domain.billing_status, domain.consume_date, domain.posting_date, domain.effective_date_basis, domain.statement_key)) OVER history
@@ -97,7 +99,7 @@ const PHASE_A: Readonly<Record<string, Readonly<{ column: string; marked: string
   },
   canonical_credit_card_transaction_lifecycle: {
     column: "source_record_id",
-    marked: `SELECT domain.source_record_id AS cited_id,
+    marked: `SELECT domain.ctid AS row_ctid, domain.source_record_id AS cited_id,
         ROW_NUMBER() OVER history > 1
           AND ROW(domain.revision_id, domain.instrument_id, domain.billing_status, domain.statement_key)
               IS NOT DISTINCT FROM LAG(ROW(domain.revision_id, domain.instrument_id, domain.billing_status, domain.statement_key)) OVER history
@@ -108,7 +110,7 @@ const PHASE_A: Readonly<Record<string, Readonly<{ column: string; marked: string
   },
   canonical_credit_card_instrument_evidence: {
     column: "source_record_id",
-    marked: `SELECT domain.source_record_id AS cited_id,
+    marked: `SELECT domain.ctid AS row_ctid, domain.source_record_id AS cited_id,
         ROW_NUMBER() OVER history > 1
           AND evidence.occurrence_key IS NOT DISTINCT FROM LAG(evidence.occurrence_key) OVER history AS repeats
       FROM canonical_credit_card_instrument_evidence domain ${seqByCapture("domain")}
@@ -117,7 +119,7 @@ const PHASE_A: Readonly<Record<string, Readonly<{ column: string; marked: string
   },
   canonical_credit_card_statement_summary_evidence: {
     column: "evidence_source_record_id",
-    marked: `SELECT domain.evidence_source_record_id AS cited_id,
+    marked: `SELECT domain.ctid AS row_ctid, domain.evidence_source_record_id AS cited_id,
         ROW_NUMBER() OVER history > 1
           AND ROW(domain.statement_revision_id, domain.evidence_key)
               IS NOT DISTINCT FROM LAG(ROW(domain.statement_revision_id, domain.evidence_key)) OVER history AS repeats
@@ -127,7 +129,7 @@ const PHASE_A: Readonly<Record<string, Readonly<{ column: string; marked: string
   },
   investment_security_name_observations: {
     column: "source_record_id",
-    marked: `SELECT domain.source_record_id AS cited_id,
+    marked: `SELECT domain.ctid AS row_ctid, domain.source_record_id AS cited_id,
         ROW_NUMBER() OVER history > 1
           AND ROW(domain.name, domain.contract_version) IS NOT DISTINCT FROM LAG(ROW(domain.name, domain.contract_version)) OVER history AS repeats
       FROM investment_security_name_observations domain ${seqByCommit("domain")}
@@ -135,7 +137,7 @@ const PHASE_A: Readonly<Record<string, Readonly<{ column: string; marked: string
   },
   transaction_relation_provenance: {
     column: "source_record_id",
-    marked: `SELECT domain.source_record_id AS cited_id,
+    marked: `SELECT domain.ctid AS row_ctid, domain.source_record_id AS cited_id,
         ROW_NUMBER() OVER history > 1
           AND ROW(domain.evidence_source_record_key, domain.evidence_relation_id, domain.evidence_contract_version)
               IS NOT DISTINCT FROM LAG(ROW(domain.evidence_source_record_key, domain.evidence_relation_id, domain.evidence_contract_version)) OVER history
@@ -145,7 +147,7 @@ const PHASE_A: Readonly<Record<string, Readonly<{ column: string; marked: string
   },
   financial_account_identifier_observations: {
     column: "source_record_id",
-    marked: `SELECT domain.source_record_id AS cited_id,
+    marked: `SELECT domain.ctid AS row_ctid, domain.source_record_id AS cited_id,
         ROW_NUMBER() OVER (
           PARTITION BY domain.account_id, domain.identifier_kind, domain.identifier_value, domain.evidence_version, domain.source_field
           ORDER BY domain_commit.commit_sequence, domain.observation_id
@@ -154,18 +156,20 @@ const PHASE_A: Readonly<Record<string, Readonly<{ column: string; marked: string
   },
   einvoice_revision_observations: {
     column: "source_record_id",
-    marked: `SELECT domain.source_record_id AS cited_id, repeated.invoice_id IS NOT NULL AS repeats
+    marked: `SELECT domain.ctid AS row_ctid, domain.source_record_id AS cited_id, repeated.invoice_id IS NOT NULL AS repeats
       FROM einvoice_revision_observations domain
       JOIN einvoice_invoice_revisions revision ON revision.revision_id = domain.revision_id
       LEFT JOIN (${EINVOICE_REPEATS}) repeated ON repeated.invoice_id = revision.invoice_id AND repeated.commit_id = domain.commit_id`,
   },
   einvoice_revision_events: {
     column: "source_record_id",
-    marked: `SELECT domain.source_record_id AS cited_id, repeated.invoice_id IS NOT NULL AS repeats
+    marked: `SELECT domain.ctid AS row_ctid, domain.source_record_id AS cited_id, repeated.invoice_id IS NOT NULL AS repeats
       FROM einvoice_revision_events domain
       LEFT JOIN (${EINVOICE_REPEATS}) repeated ON repeated.invoice_id = domain.invoice_id AND repeated.commit_id = domain.commit_id`,
   },
-};
+} as const satisfies Readonly<Record<string, Readonly<{ column: string; marked: string }>>>;
+
+export type PhaseATable = keyof typeof PHASE_A;
 
 const SATELLITES = ["source_record_scopes", "source_record_provenance", "assertion_provenance"] as const;
 
@@ -321,7 +325,7 @@ export async function planLedgerCompaction(store: PGliteStore, options: Compacti
 
   const phaseA: Removable[] = [];
   const kept = new Map<Subject, KeptCitation[]>();
-  for (const table of Object.keys(PHASE_A)) {
+  for (const table of Object.keys(PHASE_A) as PhaseATable[]) {
     const planned = await read((transaction) => planDomainTable(transaction, table));
     phaseA.push(planned.table);
     for (const { subject, cited } of planned.kept) kept.set(subject, [...(kept.get(subject) ?? []), { cited, table }]);
@@ -414,7 +418,7 @@ async function readCitingColumns(transaction: PGliteTransaction): Promise<Readon
 }
 
 
-const COUNTS = "source_occurrence_group_counts";
+export const COUNTS = "source_occurrence_group_counts";
 
 /** `column` belongs to `subject`. A subject is hex the store encoded, so it is safe to inline. */
 function subjectIs(column: string, subject: Subject): string {
@@ -435,12 +439,12 @@ async function listSubjects(transaction: PGliteTransaction): Promise<Subject[]> 
 }
 
 /** One phase A table: its removable rows, and the records its kept rows cite, by subject. */
-async function planDomainTable(transaction: PGliteTransaction, table: string): Promise<Readonly<{
+async function planDomainTable(transaction: PGliteTransaction, table: PhaseATable): Promise<Readonly<{
   table: Removable;
   kept: readonly Readonly<{ subject: Subject; cited: string }>[];
 }>> {
   const { rows: [row] } = await transaction.query<{ rows: number; removable: number; kept: { subject: Subject; cited: string }[] }>(`
-    WITH marked AS MATERIALIZED (${PHASE_A[table]!.marked})
+    WITH marked AS MATERIALIZED (${PHASE_A[table].marked})
     SELECT (SELECT count(*)::int FROM marked) AS rows,
            (SELECT (count(*) FILTER (WHERE repeats))::int FROM marked) AS removable,
            (SELECT COALESCE(json_agg(json_build_object('subject', encode(record.source_subject_id, 'hex'), 'cited', encode(kept.cited_id, 'hex'))), '[]')
@@ -612,19 +616,28 @@ class CopyTally {
 }
 
 /** Phase C for one subject's count rows; the partition never crosses a subject. */
+/**
+ * Phase C: every count row `where` admits, as `row_ctid`, and whether it
+ * fails to raise the maximum stored before it in its partition (`repeats`).
+ * The first row of a partition never repeats: its window is empty.
+ */
+export function phaseCMarkedSql(where = "TRUE"): string {
+  return `SELECT count_row.ctid AS row_ctid,
+                 COALESCE(count_row.occurrence_count <= MAX(count_row.occurrence_count) OVER (
+                   PARTITION BY coverage.source_subject_id, coverage.record_kind, coverage.scope_key, coverage.contract_version,
+                                count_row.partition_date, count_row.fingerprint
+                   ORDER BY written.commit_sequence, count_row.observation_id
+                   ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), false) AS repeats
+            FROM source_occurrence_group_counts count_row
+            JOIN source_occurrence_group_coverages coverage ON coverage.coverage_id = count_row.coverage_id
+            JOIN canonical_commits written ON written.commit_id = coverage.commit_id
+           WHERE ${where}`;
+}
+
 async function planSubjectCounts(transaction: PGliteTransaction, subject: Subject): Promise<Removable> {
   const { rows: [row] } = await transaction.query<{ rows: number; removable: number }>(`
-    SELECT count(*)::int AS rows, (count(*) FILTER (WHERE marked.repeats))::int AS removable FROM (
-      SELECT count_row.occurrence_count <= MAX(count_row.occurrence_count) OVER (
-               PARTITION BY coverage.source_subject_id, coverage.record_kind, coverage.scope_key, coverage.contract_version,
-                            count_row.partition_date, count_row.fingerprint
-               ORDER BY written.commit_sequence, count_row.observation_id
-               ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS repeats
-        FROM source_occurrence_group_counts count_row
-        JOIN source_occurrence_group_coverages coverage ON coverage.coverage_id = count_row.coverage_id
-        JOIN canonical_commits written ON written.commit_id = coverage.commit_id
-       WHERE ${subjectIs("coverage.source_subject_id", subject)}
-    ) marked`);
+    SELECT count(*)::int AS rows, (count(*) FILTER (WHERE marked.repeats))::int AS removable
+      FROM (${phaseCMarkedSql(subjectIs("coverage.source_subject_id", subject))}) marked`);
   return { table: COUNTS, rows: row!.rows, removable: row!.removable };
 }
 
