@@ -21,7 +21,7 @@ type Copy = Readonly<{
 const COPY: Readonly<Record<"zh-TW" | "en", Copy>> = {
   "zh-TW": {
     title: "OctopusBeak",
-    message: "本機帳本損壞，無法安全開啟",
+    message: "本機帳本毀損，無法安全開啟",
     detail: (backupPath) => [
       "帳本的索引壞了，無法檢查或修復。照常開啟可能讓同一筆交易被收集兩次，所以 OctopusBeak 沒有開啟它。",
       "重試：再檢查並嘗試修復一次。只有在問題是暫時性的時候才有幫助。",
@@ -174,7 +174,7 @@ const STUCK_COPY: Readonly<Record<"zh-TW" | "en", Readonly<{
       "再試一次：再開啟一次備份帳本。",
       from === "settings"
         ? "換回原本的帳本：放回還原前的帳本。"
-        : "換回原本的帳本：放回的是損壞的帳本，之後會再次出現帳本損壞的對話框。",
+        : "換回原本的帳本：放回的是毀損的帳本，之後會再次出現帳本毀損的對話框。",
       "如果還原後 OctopusBeak 曾經開啟、而你輸入了資料，那些資料會留在備份裡，備份保留期間可以從設定再還原；否則換回不會遺失任何資料。",
     ].join("\n\n"),
     retry: "再試一次",

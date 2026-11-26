@@ -90,6 +90,7 @@ assert.deepEqual([...invokedBy.values()].sort(), [
   "settings:cleanUpLedger",
   "settings:cleanupBackup",
   "settings:collectAllSources",
+  "settings:damagedLedgerSummary",
   "settings:deleteCleanupBackup",
   "settings:ledgerCleanupEstimate",
   "settings:ledgerCleanupStatus",

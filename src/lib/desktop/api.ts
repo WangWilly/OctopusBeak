@@ -194,6 +194,30 @@ export type CleanupBackupDto = Readonly<{
   restorable: boolean;
 }>;
 
+/**
+ * The damaged ledgers the unusable-ledger dialog set aside (ADR 0150), as
+ * Reset ledger offers them: how many, their total size, and whether a
+ * restore file keeps them. No path or name reaches the renderer.
+ */
+export type DamagedLedgerSummaryDto = Readonly<{
+  count: number;
+  /** null when one of them could not be measured; they can still be deleted. */
+  bytes: number | null;
+  /** Why they cannot be deleted on their own for now, or null. */
+  hold: DamagedLedgerHold | null;
+}>;
+
+/**
+ * Why the damaged ledgers cannot be deleted on their own for now.
+ * - `restore-under-way`: a restore not yet finished names one.
+ * - `restore-unreadable`: a restore file that is no longer a request cannot
+ *   be read, so it may name one; deleting financial data removes them with
+ *   the restore's files.
+ * - `restore-request-unreadable`: the restore request itself cannot be read,
+ *   so the main process refuses every reset until a launch settles it.
+ */
+export type DamagedLedgerHold = "restore-under-way" | "restore-unreadable" | "restore-request-unreadable";
+
 /** How the last Cleanup Restore ended (ADR 0157); `takenAt` is the restored backup's time. No path reaches the renderer. */
 export type CleanupRestoreOutcomeDto =
   | Readonly<{ status: "restored"; takenAt: string }>
@@ -328,6 +352,8 @@ export type OctopusBeakApi = {
     restoreCleanupBackup(): Promise<void>;
     /** How the last restore ended, once; null when there is nothing new to say. */
     takeCleanupRestoreOutcome(): Promise<CleanupRestoreOutcomeDto | null>;
+    /** The damaged ledgers Reset ledger can delete, or null when there is none. */
+    damagedLedgerSummary(): Promise<DamagedLedgerSummaryDto | null>;
     /** Starts every enabled source, as scheduled collection would. */
     collectAllSources(): Promise<AutomationRunManyResult>;
   };

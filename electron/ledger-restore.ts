@@ -12,6 +12,7 @@ import {
   parseLedgerBackupVersions,
   type LedgerBackupVersions,
 } from "../src/ledger/pglite/data-dir-backup.ts";
+import type { DamagedLedgerHold } from "../src/lib/desktop/api.ts";
 
 /**
  * The Cleanup Restore of ADR 0157: the backup takes the ledger's place at
@@ -266,6 +267,48 @@ export async function ledgerRestoreRequested(dataDir: string, fs: LedgerRestoreF
   // A file that cannot be read may still be one; the next launch settles it.
   const pending = parsePending(dataDir, text);
   return pending === null || pending.state === "requested";
+}
+
+/**
+ * Why a restore file keeps the folder `name` beside the ledger, or null when
+ * none does. A restore from the unusable-ledger dialog names its `.damaged-`
+ * folder, which a swap back puts in the ledger's place again, so Settings
+ * deletes none of these on their own.
+ *
+ * - `restore-request-unreadable`: the pending file cannot be read or parsed.
+ *   It may name anything, and `ledgerRestoreRequested` treats it as a request,
+ *   so Settings refuses every reset until a launch settles it.
+ * - `restore-unreadable`: a kept unreadable file exists, or the opened file
+ *   cannot be read or parsed. It may name anything; a Canonical Reset
+ *   removes it with the folders.
+ * - `restore-under-way`: a pending or opened file names it as its backup or
+ *   aside.
+ */
+export async function restoreHold(dataDir: string, name: string, fs: LedgerRestoreFs = NODE_RESTORE_FS): Promise<DamagedLedgerHold | null> {
+  dataDir = resolve(dataDir);
+  const names = (restore: PendingRestore) => restore.aside === name || restore.backup === name;
+  let pending: PendingRestore | null = null;
+  try {
+    const text = await fs.readText(ledgerRestorePendingPath(dataDir));
+    if (text !== null) {
+      pending = parsePending(dataDir, text);
+      if (!pending) return "restore-request-unreadable";
+    }
+  } catch {
+    return "restore-request-unreadable";
+  }
+  try {
+    if (await fs.kind(ledgerRestoreUnreadablePath(dataDir)) !== null) return "restore-unreadable";
+    const text = await fs.readText(ledgerRestoreOpenedPath(dataDir));
+    if (text !== null) {
+      const opened = parsePending(dataDir, text);
+      if (!opened) return "restore-unreadable";
+      if (names(opened)) return "restore-under-way";
+    }
+  } catch {
+    return "restore-unreadable";
+  }
+  return pending && names(pending) ? "restore-under-way" : null;
 }
 
 function parseOutcome(text: string | null): LedgerRestoreOutcome | null {

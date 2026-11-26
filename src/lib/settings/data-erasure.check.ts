@@ -28,6 +28,7 @@ function recordingSteps(events: string[], failing: LedgerResetPart | null = null
   return {
     financial: step("financial", "store reset"),
     preview: step("preview", "preview data deleted"),
+    damaged: step("damaged", "damaged ledgers deleted"),
     manual: step("manual", "manual assets deleted"),
     "sign-in": step("sign-in", "sign-in details erased"),
   };
@@ -46,29 +47,49 @@ test("every part runs in the fixed order, with collection stopped once around al
     recordingCollection(events),
     recordingSteps(events),
     recordingVersions(events),
-    new Set(["sign-in", "manual", "preview"] as const),
+    new Set(["sign-in", "manual", "damaged", "preview"] as const),
   );
   assert.deepEqual(events, [
     "schedules paused",
     "runs cancelled and terminal",
     "preview data deleted",
     "preview-data-changed",
+    "damaged ledgers deleted",
     "manual assets deleted",
     "sign-in details erased",
     "sign-in-data-cleared",
     "runs may start",
     "schedules resumed",
   ]);
-  assert.deepEqual(result, { done: ["preview", "manual", "sign-in"], failed: null, notRun: [] });
+  assert.deepEqual(result, { done: ["preview", "damaged", "manual", "sign-in"], failed: null, notRun: [] });
 });
 
-test("the Canonical Reset already deletes preview data, so preview data asked for beside it is not deleted again", async () => {
+test("the damaged ledgers on their own are deleted with collection stopped, and mark no view stale", async () => {
+  const events: string[] = [];
+  const result = await resetLedger(recordingCollection(events), recordingSteps(events), recordingVersions(events), new Set(["damaged"] as const));
+  assert.deepEqual(events, ["schedules paused", "runs cancelled and terminal", "damaged ledgers deleted", "runs may start", "schedules resumed"]);
+  assert.deepEqual(result, { done: ["damaged"], failed: null, notRun: [] });
+});
+
+test("damaged ledgers that cannot be deleted stop the rest and are reported as failed", async () => {
+  const events: string[] = [];
+  const result = await resetLedger(
+    recordingCollection(events),
+    recordingSteps(events, "damaged"),
+    recordingVersions(events),
+    new Set(["preview", "damaged", "manual"] as const),
+  );
+  assert.deepEqual(result, { done: ["preview"], failed: "damaged", notRun: ["manual"] });
+  assert.equal(events.includes("manual assets deleted"), false);
+});
+
+test("the Canonical Reset already deletes preview data and the damaged ledgers, so neither asked for beside it runs again", async () => {
   const events: string[] = [];
   const result = await resetLedger(
     recordingCollection(events),
     recordingSteps(events),
     recordingVersions(events),
-    new Set(["preview", "financial"] as const),
+    new Set(["damaged", "preview", "financial"] as const),
   );
   assert.deepEqual(events, [
     "schedules paused",
@@ -78,7 +99,7 @@ test("the Canonical Reset already deletes preview data, so preview data asked fo
     "runs may start",
     "schedules resumed",
   ]);
-  assert.deepEqual(result, { done: ["financial", "preview"], failed: null, notRun: [] });
+  assert.deepEqual(result, { done: ["financial", "preview", "damaged"], failed: null, notRun: [] });
 });
 
 test("a part that fails stops the rest; what finished stays marked stale and collection resumes", async () => {
@@ -106,9 +127,9 @@ test("a first part that fails reports nothing done", async () => {
     recordingCollection(events),
     recordingSteps(events, "financial"),
     recordingVersions(events),
-    new Set(["financial", "preview"] as const),
+    new Set(["financial", "preview", "damaged"] as const),
   );
-  assert.deepEqual(result, { done: [], failed: "financial", notRun: ["preview"] });
+  assert.deepEqual(result, { done: [], failed: "financial", notRun: ["preview", "damaged"] });
   assert.deepEqual(events, ["schedules paused", "runs cancelled and terminal", "runs may start", "schedules resumed"]);
 });
 

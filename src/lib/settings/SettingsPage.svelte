@@ -73,7 +73,14 @@
     downloadPercent,
     type AppUpdateUiContext,
   } from "$lib/shared-shell/app-update-context.ts";
-  import type { CleanupBackupDto, CleanupRestoreOutcomeDto, LedgerResetPart, SettingsFocus, SignInDataStatus } from "$lib/desktop/api.ts";
+  import type {
+    CleanupBackupDto,
+    CleanupRestoreOutcomeDto,
+    DamagedLedgerSummaryDto,
+    LedgerResetPart,
+    SettingsFocus,
+    SignInDataStatus,
+  } from "$lib/desktop/api.ts";
   import { signInDataGuidance } from "$lib/automation/credentials-unreadable.ts";
   import { activeSectionAt } from "$lib/settings/section-spy.ts";
 
@@ -139,7 +146,10 @@
   let resetPending = false;
   let resetTicked: ReadonlySet<LedgerResetPart> = new Set();
   let resetOutcome: LedgerResetOutcome | null = null;
-  $: resetChoices = ledgerResetChoices(resetTicked);
+  /** The damaged ledgers set aside (ADR 0150), read from the main process when the dialog opens; null for none. */
+  let damagedSummary: DamagedLedgerSummaryDto | null = null;
+  let damagedSummaryRead = 0;
+  $: resetChoices = ledgerResetChoices(resetTicked, damagedSummary);
   /** Unknown until read; a failed read shows nothing extra rather than a guess. */
   let signInStatus: SignInDataStatus | null = null;
   let signInStatusRead = 0;
@@ -425,12 +435,14 @@
     resetOpen = true;
     // Whether clearing sign-in data would also need the financial data deleted.
     void readSignInStatus();
+    void readDamagedSummary();
   }
 
   async function resetLedger() {
     if (!resetChoices.canConfirm) return;
     resetPending = true;
     collectStatus = "idle";
+    // Fixed at the click: a summary read that lands while the reset runs changes the boxes, never what is sent.
     const parts = resetChoices.parts;
     const outcome = await runLedgerReset(window.octopusBeak.settings, parts);
     resetPending = false;
@@ -438,7 +450,20 @@
     resetOutcome = outcome;
     // The reset removes the Cleanup Backup before it empties the store, so even a failed one may have removed it.
     if (parts.includes("financial")) void readCleanupBackup();
+    // Even a failed damaged-ledger part may have removed some of them.
+    void readDamagedSummary();
     await readSignInStatus();
+  }
+
+  async function readDamagedSummary() {
+    const read = ++damagedSummaryRead;
+    try {
+      const next = await window.octopusBeak.settings.damagedLedgerSummary();
+      // A slower earlier read must not overwrite a later one, such as the read after a reset.
+      if (read === damagedSummaryRead) damagedSummary = next;
+    } catch {
+      // Keeps what was read last; the main process refuses a deletion a restore keeps whatever the dialog shows.
+    }
   }
 
   /** Names for a list of parts, in the person's language. */
@@ -1240,20 +1265,29 @@
                 <fieldset class="reset-options" disabled={resetPending}>
                   <legend class="visually-hidden">{$t.settings.resetLedgerChoose}</legend>
                   {#each resetChoices.options as option (option.part)}
-                    <label class="reset-option" class:locked={option.locked}>
+                    <label class="reset-option" class:locked={option.locked || option.held !== null}>
                       <input
                         id={`reset-ledger-${option.part}`}
                         type="checkbox"
                         checked={option.checked}
-                        disabled={option.locked}
-                        aria-describedby={`reset-ledger-${option.part}-hint`}
+                        disabled={option.locked || option.held !== null}
+                        aria-describedby={option.held
+                          ? `reset-ledger-${option.part}-hint reset-ledger-${option.part}-held`
+                          : `reset-ledger-${option.part}-hint`}
                         onchange={(event) => (resetTicked = tickLedgerResetPart(resetTicked, option.part, event.currentTarget.checked))}
                       />
                       <span class="reset-option-text">
-                        <span class="reset-option-label">{$t.settings.resetLedgerParts[option.part]}</span>
+                        <span class="reset-option-label">
+                          {option.part === "damaged" && damagedSummary
+                            ? $t.settings.resetLedgerDamagedLabel(damagedSummary.count, damagedSummary.bytes === null ? null : megabytes(damagedSummary.bytes))
+                            : $t.settings.resetLedgerParts[option.part]}
+                        </span>
                         <small id={`reset-ledger-${option.part}-hint`} class="setting-hint">
                           {$t.settings.resetLedgerPartHints[option.part]}{#if option.locked}{" "}{$t.settings.resetLedgerPreviewIncluded}{/if}
                         </small>
+                        {#if option.held}
+                          <small id={`reset-ledger-${option.part}-held`} class="setting-hint warning-hint" role="status">{$t.settings.resetLedgerDamagedHeld[option.held]}</small>
+                        {/if}
                         {#if option.part === "sign-in" && option.checked && !resetTicked.has("financial") && signInGuidance.resetWarning}
                           <small id="reset-ledger-sign-in-warning" class="setting-hint warning-hint" role="status">{$t.settings.resetLedgerSignInWarning}</small>
                         {/if}

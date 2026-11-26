@@ -13,6 +13,7 @@ import type { LedgerCleanupEstimate } from "../../../ledger/pglite/cleanup-estim
 import type {
   CleanupBackupDto,
   CleanupRestoreOutcomeDto,
+  DamagedLedgerSummaryDto,
   LedgerCleanupEstimateDto,
   LedgerCleanupProgressDto,
   LedgerCleanupResultDto,
@@ -61,6 +62,10 @@ export type SettingsDesktopServiceDeps = Readonly<{
     reveal(path: string): void;
     remove(path: string): Promise<void>;
   }>;
+  /** The damaged ledgers the unusable-ledger dialog set aside (ADR 0150), as Reset ledger offers them; null for none. */
+  damagedLedgerSummary(): Promise<DamagedLedgerSummaryDto | null>;
+  /** Codes only, to the main log: an error's message may carry a path. */
+  log: (code: string, detail?: string) => void;
   /** The Cleanup Restore (ADR 0157): the request the next launch carries out, and how the last one ended. */
   cleanupRestore: Readonly<{
     /** Whether a restore has been asked for and has not ended. */
@@ -147,6 +152,12 @@ function cleanupBackupDto(backup: LedgerCleanupBackup | null): CleanupBackupDto 
   return backup && { bytes: backup.bytes, takenAt: backup.takenAt, expiresAt: backup.expiresAt, restorable: backup.restorable };
 }
 
+/** The errno code of a filesystem error, never its message, which carries the path. */
+function errorCode(error: unknown): string {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return typeof code === "string" && /^[A-Z0-9_]{1,32}$/u.test(code) ? code : "unknown";
+}
+
 export type SettingsDesktopService = ReturnType<typeof createSettingsDesktopService>;
 
 export function createSettingsDesktopService(deps: SettingsDesktopServiceDeps) {
@@ -220,8 +231,15 @@ export function createSettingsDesktopService(deps: SettingsDesktopServiceDeps) {
       if ((await deps.ledgerCleanup.status()).running) throw new Error("A backup cannot be deleted while a cleanup runs.");
       await assertNoRestore("A backup cannot be deleted");
       // At most one exists, but a version before ADR 0156 could leave several; none stays.
-      for (let backup = await deps.cleanupBackup.newest(); backup; backup = await deps.cleanupBackup.newest()) {
-        await deps.cleanupBackup.remove(backup.path);
+      try {
+        for (let backup = await deps.cleanupBackup.newest(); backup; backup = await deps.cleanupBackup.newest()) {
+          await deps.cleanupBackup.remove(backup.path);
+        }
+      } catch (error) {
+        // The message names the backup's path: only its code leaves the host or reaches the log.
+        const code = errorCode(error);
+        deps.log("cleanup-backup-delete-failed", code);
+        throw new Error(`cleanup-backup-delete-failed: ${code}`);
       }
       return null;
     },
@@ -252,6 +270,8 @@ export function createSettingsDesktopService(deps: SettingsDesktopServiceDeps) {
       deps.cleanupRestore.restart();
     },
     takeCleanupRestoreOutcome: () => deps.cleanupRestore.takeOutcome(),
+    // Read when the Reset ledger dialog opens; deleting them is that dialog's `damaged` part, which runs inside the reset.
+    damagedLedgerSummary: () => deps.damagedLedgerSummary(),
     getVersion: () => dataVersions.snapshot(),
     acknowledgeVersion(version: unknown) {
       if (typeof version !== "number" || !Number.isSafeInteger(version) || version < 0) {

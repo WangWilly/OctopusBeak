@@ -28,5 +28,5 @@ Other refusals to open, such as a schema that does not match its manifest, still
 
 ## Consequences
 
-- A backup stays until the person removes it or runs a Canonical Reset, which deletes it with the rest of the financial data, the hand-entered data only it holds included ([ADR 0156](./0156-one-cleanup-action-compacts-then-reclaims.md)). Nothing lists it in the App yet.
+- A backup stays until the person removes it or runs a Canonical Reset, which deletes it with the rest of the financial data, the hand-entered data only it holds included ([ADR 0156](./0156-one-cleanup-action-compacts-then-reclaims.md)). "Reset ledger" in Settings offers the damaged ledgers as an option of their own, shown only while one exists, with how many there are and their total size; ticked alone it deletes every damaged ledger and leaves the ledger in use alone, and ticking the financial data locks it in, as the reset removes them anyway ([ADR 0156](./0156-one-cleanup-action-compacts-then-reclaims.md)). None expires like a Cleanup Backup, since one can hold the only copy of data the person entered by hand.
 - Data recorded only in the App, and history the sources no longer serve, is not restored automatically after a rebuild.

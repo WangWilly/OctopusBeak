@@ -175,7 +175,7 @@ test("the stuck-restore question defaults to trying again, quits when closed, an
       /the damaged-ledger dialog will appear again/u],
     ["zh-TW", ["再試一次", "換回原本的帳本", "結束"],
       /如果還原後 OctopusBeak 曾經開啟、而你輸入了資料，那些資料會留在備份裡，備份保留期間可以從設定再還原；否則換回不會遺失任何資料/u,
-      /損壞的帳本，之後會再次出現帳本損壞的對話框/u],
+      /毀損的帳本，之後會再次出現帳本毀損的對話框/u],
   ] as const) {
     for (const from of ["settings", "unusable"] as const) {
       const asked: Parameters<LedgerRecoveryDeps["ask"]>[0][] = [];

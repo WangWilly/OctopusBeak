@@ -116,6 +116,7 @@ const en = {
     resetLedgerParts: {
       financial: "Financial data from financial institutions",
       preview: "Preview data (financial institutions)",
+      damaged: "Damaged ledger records",
       manual: "Financial data you entered by hand",
       "sign-in": "Sign-in data for financial institutions",
     },
@@ -123,12 +124,21 @@ const en = {
       financial:
         "Every account, transaction, and statement collected from every source, including e-invoices, which do not come from a financial institution, and the categories and transfer pairings you set on them. The cleanup backup is deleted too, and so is any damaged ledger set aside earlier, with everything in it: manual assets and other data you entered that only it still holds cannot be recovered afterwards. Sources, schedules, exchange rates, and settings are kept.",
       preview: "Every balance and transaction preview sources collected. Verified data is kept, and preview sources collect again on their next sync.",
+      damaged: "Records of damaged ledgers set aside earlier. They cannot be recovered once deleted. Contact support to try to repair the damaged data.",
       manual:
         "Every asset you entered by hand, with its valuations and transactions. Categories and pairings you set on collected transactions belong to financial data from financial institutions.",
       "sign-in":
         "Every source's sign-in details, signed-in sessions, and trusted-device registrations. Each source needs them again, and device registration where required, before it syncs again. Financial data, sources, and schedules are kept.",
     },
     resetLedgerPreviewIncluded: "Included in financial data from financial institutions.",
+    resetLedgerDamagedLabel: (count: number, megabytes: string | null) =>
+      `${count} damaged ledger ${count === 1 ? "record" : "records"}${megabytes === null ? "" : ` (about ${megabytes} MB)`}`,
+    resetLedgerDamagedHeld: {
+      "restore-under-way": "A restore has not finished yet, so these cannot be deleted for now.",
+      "restore-unreadable":
+        "A restore record cannot be read, so these are not deleted on their own to be safe. Ticking financial data from financial institutions removes them too.",
+      "restore-request-unreadable": "A restore record cannot be read, so these are not deleted on their own to be safe.",
+    },
     resetLedgerSignInWarning:
       "Clearing also replaces the key that tells your credit cards apart. Credit card sources then need financial data from financial institutions deleted before they sync again, so no card is collected twice. Tick financial data from financial institutions too to do both now.",
     resetLedgerWillDelete: "Deletes:",
@@ -140,6 +150,8 @@ const en = {
       `${failed} could not be deleted.${done ? ` Deleted: ${done}.` : " Nothing was deleted."}${notRun ? ` Not deleted: ${notRun}.` : ""} You can try again.`,
     resetLedgerFinancialFailed: (notRun: string | null) =>
       `The reset of financial data from financial institutions did not finish, and the cleanup backup may already be removed.${notRun ? ` Not deleted: ${notRun}.` : ""} Try again.`,
+    resetLedgerDamagedFailed: (done: string | null, notRun: string | null) =>
+      `Not every damaged ledger record was deleted; some of them may already be gone.${done ? ` Deleted: ${done}.` : ""}${notRun ? ` Not deleted: ${notRun}.` : ""} Try again.`,
     resetLedgerNotRun: "The ledger could not be reset. Try again.",
     resetLedgerList: (parts: readonly string[]) => parts.join(", "),
     cleanUpAppData: "Clean up app data",
@@ -340,16 +352,24 @@ const zh: typeof en = {
     resetLedgerParts: {
       financial: "金融機構的財務資料",
       preview: "預覽資料（金融機構）",
+      damaged: "毀損的帳本紀錄",
       manual: "人工填入的財務資料",
       "sign-in": "金融機構的登入資料",
     },
     resetLedgerPartHints: {
-      financial: "所有來源收集的帳戶、交易與帳單，包括不是來自金融機構的電子發票，以及你在這些交易上設定的分類與轉帳配對；清理應用資料的備份也會一併刪除；先前因損壞而移到一旁的帳本也會連同裡面所有內容刪除，只存在那裡的手動資產與其他你輸入的資料之後無法取回。來源、排程、匯率與設定會保留。",
+      financial: "所有來源收集的帳戶、交易與帳單，包括不是來自金融機構的電子發票，以及你在這些交易上設定的分類與轉帳配對；清理應用資料的備份也會一併刪除；先前因毀損而移到一旁的帳本也會連同裡面所有內容刪除，只存在那裡的手動資產與其他你輸入的資料之後無法取回。來源、排程、匯率與設定會保留。",
       preview: "預覽來源收集的所有餘額與交易。已驗證的資料會保留，預覽來源下次同步時會重新收集。",
+      damaged: "毀損的帳本備援紀錄，刪除後無法取回。聯繫客服嘗試修復毀損的資料。",
       manual: "你手動輸入的所有資產，以及估值與收支紀錄。你在收集的交易上設定的分類與配對屬於「金融機構的財務資料」。",
       "sign-in": "所有來源的登入資料、登入狀態與信任裝置註冊。每個來源都要重新輸入登入資料，需要時也要重新註冊裝置，才能再次同步。保留財務資料、來源與排程。",
     },
     resetLedgerPreviewIncluded: "已包含在「金融機構的財務資料」中。",
+    resetLedgerDamagedLabel: (count, megabytes) => `${count} 個毀損的帳本紀錄${megabytes === null ? "" : `（約 ${megabytes} MB）`}`,
+    resetLedgerDamagedHeld: {
+      "restore-under-way": "還原尚未完成，暫時無法刪除。",
+      "restore-unreadable": "有一份無法讀取的還原紀錄，為了安全不會單獨刪除。勾選「金融機構的財務資料」會一併清除。",
+      "restore-request-unreadable": "有一份無法讀取的還原紀錄，為了安全不會單獨刪除。",
+    },
     resetLedgerSignInWarning: "清除時也會換掉用來辨識信用卡的金鑰。之後信用卡來源要先刪除金融機構的財務資料才能再同步，同一張卡才不會被收集兩次。可以一併勾選「金融機構的財務資料」，一次完成。",
     resetLedgerWillDelete: "將刪除：",
     resetLedgerIrreversible: "此動作無法復原。",
@@ -360,6 +380,8 @@ const zh: typeof en = {
       `無法刪除${failed}。${done ? `已刪除：${done}。` : "沒有刪除任何資料。"}${notRun ? `未刪除：${notRun}。` : ""}可以再試一次。`,
     resetLedgerFinancialFailed: (notRun) =>
       `金融機構的財務資料沒有重置完成，清理應用資料的備份可能已經刪除。${notRun ? `未刪除：${notRun}。` : ""}請再試一次。`,
+    resetLedgerDamagedFailed: (done, notRun) =>
+      `毀損的帳本紀錄沒有全部刪除，其中一部分可能已經刪除。${done ? `已刪除：${done}。` : ""}${notRun ? `未刪除：${notRun}。` : ""}請再試一次。`,
     resetLedgerNotRun: "無法重置帳本，請再試一次。",
     resetLedgerList: (parts) => parts.join("、"),
     cleanUpAppData: "清理應用資料",

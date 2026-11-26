@@ -9,11 +9,12 @@ export type CollectionControl = Readonly<{
 
 /**
  * What Reset ledger can delete, in the order it deletes them: the Canonical
- * Reset, Preview Financial Data, Manual Assets, and the Sign-in Erasure. The
- * reset goes first, so a sign-in erasure that replaces the Card identity
- * secret after it finds no card account to split.
+ * Reset, Preview Financial Data, the damaged ledgers set aside (ADR 0150),
+ * Manual Assets, and the Sign-in Erasure. The reset goes first, so a
+ * sign-in erasure that replaces the Card identity secret after it finds no
+ * card account to split.
  */
-export const LEDGER_RESET_PARTS = ["financial", "preview", "manual", "sign-in"] as const;
+export const LEDGER_RESET_PARTS = ["financial", "preview", "damaged", "manual", "sign-in"] as const;
 export type LedgerResetPart = (typeof LEDGER_RESET_PARTS)[number];
 
 /** Each deletion on its own; none stops collection, which the batch does once. */
@@ -30,6 +31,8 @@ export type LedgerResetResult = Readonly<{
 const STALE: Readonly<Record<LedgerResetPart, DataVersionReason | null>> = {
   financial: "financial-data-deleted",
   preview: "preview-data-changed",
+  // Folders beside the ledger: no view reads them.
+  damaged: null,
   manual: null,
   "sign-in": "sign-in-data-cleared",
 };
@@ -38,8 +41,9 @@ const STALE: Readonly<Record<LedgerResetPart, DataVersionReason | null>> = {
  * Reset ledger from Settings. Collection stops once for the whole batch and
  * no collection starts afterwards. The parts run in their fixed order and
  * the first that fails stops the rest; each part that finished marks its
- * views stale. The Canonical Reset already deletes Preview Financial Data,
- * so preview data asked for beside it is done once the reset is.
+ * views stale. The Canonical Reset already deletes Preview Financial Data
+ * and the damaged ledgers, so either asked for beside it is done once the
+ * reset is.
  */
 export async function resetLedger(
   collection: CollectionControl,
@@ -54,7 +58,7 @@ export async function resetLedger(
   try {
     await collection.whileStopped(async () => {
       for (const part of order) {
-        if (part === "preview" && done.includes("financial")) {
+        if ((part === "preview" || part === "damaged") && done.includes("financial")) {
           done.push(part);
           continue;
         }
