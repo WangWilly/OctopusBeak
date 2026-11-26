@@ -68,6 +68,12 @@ function harness(stored: AutomationSettingsFile = {}, overrides: Partial<Setting
       reveal: () => {},
       remove: async () => {},
     },
+    cleanupRestore: {
+      requested: async () => false,
+      request: async (path) => { calls.push(["restore.request", path]); },
+      restart: () => { calls.push(["restore.restart"]); },
+      takeOutcome: async () => null,
+    },
     ...overrides,
   });
   return { service, calls, writes, dataVersions, file: () => file };
@@ -382,4 +388,112 @@ test("the main process refuses to delete the Cleanup Backup while a cleanup runs
   running = false;
   assert.equal(await service.deleteCleanupBackup(), null);
   assert.deepEqual(removed, [backup.path], "and still deleted");
+});
+
+const RESTORABLE = {
+  path: "/data/pglite.before-compaction-2026-11-01T00-00-00Z",
+  bytes: 9,
+  takenAt: "2026-11-01T00:00:00.000Z",
+  expiresAt: "2026-12-31T00:00:00.000Z",
+  restorable: true,
+};
+
+/** A restore request the service records, and whether one is recorded, as the main process's pending file says. */
+function restoreDeps(calls: Array<[string, ...unknown[]]>) {
+  let requested = false;
+  return {
+    requested: async () => requested,
+    request: async (path: string) => {
+      calls.push(["restore.request", path]);
+      requested = true;
+    },
+    restart: () => { calls.push(["restore.restart"]); },
+    takeOutcome: async () => null,
+  };
+}
+
+test("a restore stops collection, records the backup the main process read, and restarts through the quit", async () => {
+  const calls: Array<[string, ...unknown[]]> = [];
+  const { service, calls: serviceCalls } = harness({}, {
+    cleanupBackup: { newest: async () => RESTORABLE, reveal: () => {}, remove: async () => {} },
+    cleanupRestore: restoreDeps(calls),
+  });
+  await service.restoreCleanupBackup();
+  assert.deepEqual(serviceCalls, [["collection.pauseSchedules"], ["collection.whileStopped"]], "collection stops first and never resumes");
+  assert.deepEqual(calls, [["restore.request", RESTORABLE.path], ["restore.restart"]], "the request is written before the restart");
+  await assert.rejects(() => service.cleanUpLedger({ backup: true, keepBackup: true }), /once a restore is asked for/u,
+    "a cleanup would take a new backup in place of the one being restored");
+  await assert.rejects(() => service.resetLedger(["financial"]), /once a restore is asked for/u,
+    "a reset would remove the backup being restored");
+  await assert.rejects(() => service.deleteCleanupBackup(), /once a restore is asked for/u);
+  await assert.rejects(() => service.restoreCleanupBackup(), /once a restore is asked for/u, "one request only");
+  assert.equal(calls.filter(([call]) => call === "restore.request").length, 1);
+});
+
+test("a restore is refused while a cleanup runs, while a reset runs, and for a backup that cannot be restored", async () => {
+  for (const [label, backup, running, refusal] of [
+    ["a cleanup runs", RESTORABLE, true, /while a cleanup runs/u],
+    ["no backup", null, false, /no backup that can be restored/u],
+    ["a backup of other versions", { ...RESTORABLE, restorable: false }, false, /no backup that can be restored/u],
+  ] as const) {
+    const calls: Array<[string, ...unknown[]]> = [];
+    const { service, calls: serviceCalls } = harness({}, {
+      ledgerCleanup: {
+        estimate: async () => { throw new Error("unused"); },
+        run: async () => ({ status: "already-running" }),
+        status: async () => (running ? { running: true, progress: null } : { running: false, last: null }),
+        stop: async () => true,
+      },
+      cleanupBackup: { newest: async () => backup, reveal: () => {}, remove: async () => {} },
+      cleanupRestore: restoreDeps(calls),
+    });
+    await assert.rejects(() => service.restoreCleanupBackup(), refusal, label);
+    assert.deepEqual(calls, [], `${label}: nothing is recorded and the App does not restart`);
+    assert.ok(!serviceCalls.some(([call]) => call === "collection.whileStopped"), `${label}: collection is not stopped`);
+    // Refused, it leaves cleanup open again.
+    if (!running) await assert.doesNotReject(() => service.cleanUpLedger({ backup: false, keepBackup: false }));
+  }
+
+  let releaseReset!: () => void;
+  const calls: Array<[string, ...unknown[]]> = [];
+  const { service } = harness({}, {
+    ledgerReset: {
+      financial: () => new Promise<void>((resolve) => { releaseReset = resolve; }),
+      preview: async () => {},
+      manual: async () => {},
+      "sign-in": async () => {},
+    },
+    cleanupBackup: { newest: async () => RESTORABLE, reveal: () => {}, remove: async () => {} },
+    cleanupRestore: restoreDeps(calls),
+  });
+  const reset = service.resetLedger(["financial"]);
+  await new Promise((resolve) => setImmediate(resolve));
+  await assert.rejects(() => service.restoreCleanupBackup(), /while the ledger is being reset/u);
+  releaseReset();
+  await reset;
+  assert.deepEqual(calls, []);
+});
+
+test("a request that cannot be written resumes collection and leaves the App running", async () => {
+  const { service, calls } = harness({}, {
+    cleanupBackup: { newest: async () => RESTORABLE, reveal: () => {}, remove: async () => {} },
+    cleanupRestore: {
+      requested: async () => false,
+      request: async () => { throw new Error("disk full"); },
+      restart: () => { throw new Error("must not restart"); },
+      takeOutcome: async () => null,
+    },
+  });
+  await assert.rejects(() => service.restoreCleanupBackup(), /disk full/u);
+  assert.deepEqual(calls.at(-1), ["collection.resume"]);
+  await assert.doesNotReject(() => service.cleanUpLedger({ backup: false, keepBackup: false }), "nothing was asked for");
+});
+
+test("the restore's outcome reaches the renderer as the host gives it, without a path", async () => {
+  const outcomes = [{ status: "restored", takenAt: RESTORABLE.takenAt } as const, null];
+  const { service } = harness({}, {
+    cleanupRestore: { requested: async () => false, request: async () => {}, restart: () => {}, takeOutcome: async () => outcomes.shift() ?? null },
+  });
+  assert.deepEqual(await service.takeCleanupRestoreOutcome(), { status: "restored", takenAt: RESTORABLE.takenAt });
+  assert.equal(await service.takeCleanupRestoreOutcome(), null, "said once");
 });

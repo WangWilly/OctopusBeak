@@ -130,6 +130,8 @@ export const SETTINGS_SERVICE_CHANNELS = {
   "settings:cleanupBackup": "cleanupBackup",
   "settings:revealCleanupBackup": "revealCleanupBackup",
   "settings:deleteCleanupBackup": "deleteCleanupBackup",
+  "settings:restoreCleanupBackup": "restoreCleanupBackup",
+  "settings:takeCleanupRestoreOutcome": "takeCleanupRestoreOutcome",
   "data:getVersion": "getVersion",
   "data:acknowledgeVersion": "acknowledgeVersion",
 } as const satisfies { readonly [Channel in InvokeChannel]?: ChannelMethod<Channel> };

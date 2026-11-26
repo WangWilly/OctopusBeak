@@ -23,9 +23,13 @@
   import {
     cleanupEstimateView,
     cleanupProgressBar,
+    cleanupRestoreView,
     megabytes,
+    requestCleanupRestore,
     resumeLedgerCleanup,
     runLedgerCleanup,
+    takeCleanupRestoreNotice,
+    type CleanupRestoreView,
     type LedgerCleanupView,
   } from "$lib/settings/ledger-cleanup.ts";
   import {
@@ -69,7 +73,7 @@
     downloadPercent,
     type AppUpdateUiContext,
   } from "$lib/shared-shell/app-update-context.ts";
-  import type { CleanupBackupDto, LedgerResetPart, SettingsFocus, SignInDataStatus } from "$lib/desktop/api.ts";
+  import type { CleanupBackupDto, CleanupRestoreOutcomeDto, LedgerResetPart, SettingsFocus, SignInDataStatus } from "$lib/desktop/api.ts";
   import { signInDataGuidance } from "$lib/automation/credentials-unreadable.ts";
   import { activeSectionAt } from "$lib/settings/section-spy.ts";
 
@@ -151,9 +155,15 @@
   let cleanupRequest = { backup: true, keepBackup: true };
   let cleanupBackup: CleanupBackupDto | null = null;
   let cleanupBackupStatus: "idle" | "confirming" | "pending" | "error" = "idle";
+  // ADR 0157: "Restore" beside a backup the App can open; the App restarts to carry it out.
+  let cleanupRestore: CleanupRestoreView = { kind: "none" };
+  let cleanupRestorePending = false;
+  /** How the last restore ended, said once after the restart. */
+  let cleanupRestoreNotice: CleanupRestoreOutcomeDto | null = null;
   $: cleanupBusy = cleanupView.kind === "checking" || cleanupView.kind === "running";
   $: cleanupBar = cleanupView.kind === "running" ? cleanupProgressBar(cleanupView.progress) : null;
-  $: dataActionPending = resetPending || cleanupBusy || cleanupBackupStatus === "pending";
+  $: dataActionPending = resetPending || cleanupBusy || cleanupBackupStatus === "pending" || cleanupRestorePending
+    || cleanupRestore.kind === "restarting";
   let saveStatus: "idle" | "pending" | "success" | "error" = "idle";
   let saveError = "";
   let saveVersion = 0;
@@ -190,6 +200,7 @@
     displayScaleAvailable = supportsDisplayScale(window.octopusBeak);
     void readSignInStatus();
     void readCleanupBackup();
+    void takeCleanupRestoreNotice(window.octopusBeak.settings).then((notice) => (cleanupRestoreNotice = notice));
     // A cleanup started before Settings was left is still running in the worker, and its dialog shows again;
     // a failed one shows until the person starts again, across restarts.
     void resumeLedgerCleanup(window.octopusBeak.settings, showCleanup, { signal: cleanupFollow.signal });
@@ -476,9 +487,18 @@
   async function readCleanupBackup() {
     try {
       cleanupBackup = await window.octopusBeak.settings.cleanupBackup();
+      cleanupRestore = cleanupRestoreView(cleanupBackup, cleanupRestore);
     } catch {
       // Shows what was read last; the next run or visit reads again.
     }
+  }
+
+  async function restoreCleanupBackup() {
+    cleanupRestorePending = true;
+    cleanupRestore = await requestCleanupRestore(window.octopusBeak.settings, cleanupRestore);
+    cleanupRestorePending = false;
+    // Refused, the backup may have gone or changed meanwhile.
+    if (cleanupRestore.kind === "refused") void readCleanupBackup();
   }
 
   async function revealCleanupBackup() {
@@ -914,6 +934,11 @@
             <div class="setting-label-group">
               <span class="setting-label">{$t.settings.cleanUpAppData}</span>
               <small class="setting-hint">{$t.settings.cleanUpAppDataHint}</small>
+              {#if cleanupRestoreNotice?.status === "restored"}
+                <small id="cleanup-restore-done" class="setting-hint" role="status">
+                  {$t.settings.cleanupRestoreDone(backupDate(cleanupRestoreNotice.takenAt, $systemTimezone))}
+                </small>
+              {/if}
               {#if cleanupBackup}
                 <small id="cleanup-backup-status" class="setting-hint">
                   {cleanupBackup.bytes === null
@@ -926,6 +951,15 @@
               {/if}
             </div>
             <div class="onboarding-setting-actions">
+              {#if cleanupBackup && cleanupBackupStatus !== "confirming" && cleanupRestore.kind !== "none"}
+                <button
+                  id="restore-cleanup-backup"
+                  class="button"
+                  type="button"
+                  disabled={dataActionPending}
+                  onclick={() => cleanupRestore.kind !== "none" && (cleanupRestore = { kind: "confirming", takenAt: cleanupRestore.takenAt })}
+                >{$t.settings.cleanupBackupRestore}</button>
+              {/if}
               {#if cleanupBackup && cleanupBackupStatus !== "confirming"}
                 <button
                   id="reveal-cleanup-backup"
@@ -981,6 +1015,50 @@
               <CircleAlert size={16} strokeWidth={2.25} aria-hidden="true" />
               <span>{$t.settings.cleanupBackupDeleteFailed}</span>
             </div>
+          {/if}
+          {#if cleanupRestore.kind === "refused"}
+            <div id="cleanup-restore-refused" class="settings-error" role="alert">
+              <CircleAlert size={16} strokeWidth={2.25} aria-hidden="true" />
+              <span>{$t.settings.cleanupRestoreRefused}</span>
+            </div>
+          {/if}
+          {#if cleanupRestoreNotice?.status === "failed"}
+            <div id="cleanup-restore-failed" class="settings-error" role="alert">
+              <CircleAlert size={16} strokeWidth={2.25} aria-hidden="true" />
+              <span>{$t.settings.cleanupRestoreFailed}</span>
+            </div>
+          {/if}
+          {#if cleanupRestore.kind === "confirming" || cleanupRestore.kind === "restarting"}
+            {@const restarting = cleanupRestore.kind === "restarting" || cleanupRestorePending}
+            <Modal
+              titleId="cleanup-restore-title"
+              title={$t.settings.cleanupRestoreTitle(backupDate(cleanupRestore.takenAt, $systemTimezone))}
+              width="min(480px, 100%)"
+              closable={!restarting}
+              showClose={!restarting}
+              onClose={() => cleanupRestore.kind === "confirming" && (cleanupRestore = { kind: "offered", takenAt: cleanupRestore.takenAt })}
+            >
+              <div class="modal-body cleanup-restore">
+                <p id="cleanup-restore-body">{$t.settings.cleanupRestoreBody}</p>
+                <div class="onboarding-setting-actions">
+                  <button
+                    class="button"
+                    type="button"
+                    disabled={restarting}
+                    onclick={() => cleanupRestore.kind === "confirming" && (cleanupRestore = { kind: "offered", takenAt: cleanupRestore.takenAt })}
+                  >{$t.common.cancel}</button>
+                  <button
+                    id="confirm-restore-cleanup-backup"
+                    class="button danger"
+                    type="button"
+                    disabled={restarting || resetPending || cleanupBusy || cleanupBackupStatus === "pending"}
+                    aria-busy={restarting}
+                    aria-describedby="cleanup-restore-body"
+                    onclick={restoreCleanupBackup}
+                  >{restarting ? $t.settings.cleanupRestoreRestarting : $t.settings.cleanupRestoreAction}</button>
+                </div>
+              </div>
+            </Modal>
           {/if}
           {#if cleanupView.kind === "estimated"}
             {@const total = cleanupView.redundantBytes + cleanupView.temporaryBytes}
@@ -1766,6 +1844,16 @@
   }
 
   .cleanup-run .onboarding-setting-actions { justify-content: flex-end; }
+
+  .cleanup-restore {
+    display: grid;
+    gap: var(--space-4);
+    padding: var(--space-5);
+  }
+
+  .cleanup-restore p { margin: 0; }
+
+  .cleanup-restore .onboarding-setting-actions { justify-content: flex-end; }
 
   .reset-ledger {
     display: grid;

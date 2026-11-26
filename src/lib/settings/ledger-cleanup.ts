@@ -1,4 +1,6 @@
 import type {
+  CleanupBackupDto,
+  CleanupRestoreOutcomeDto,
   LedgerCleanupEstimateDto,
   LedgerCleanupProgressDto,
   LedgerCleanupResultDto,
@@ -179,4 +181,47 @@ export async function runLedgerCleanup(
   const view = result ? cleanupResultView(result) : FAILED;
   show(view);
   return view;
+}
+
+/**
+ * What the row offers for the Cleanup Restore (ADR 0157). "Restore" shows
+ * only beside a backup the App can open; `confirming` is its dialog, and
+ * `restarting` stays once the request is recorded, while the App quits.
+ */
+export type CleanupRestoreView =
+  | Readonly<{ kind: "none" }>
+  | Readonly<{ kind: "offered" | "confirming" | "restarting" | "refused"; takenAt: string }>;
+
+/** Offers "Restore" for a backup that can be restored, keeping a step under way for the same backup. */
+export function cleanupRestoreView(backup: CleanupBackupDto | null, current: CleanupRestoreView = { kind: "none" }): CleanupRestoreView {
+  if (!backup?.restorable) return { kind: "none" };
+  if (current.kind !== "none" && current.takenAt === backup.takenAt) return current;
+  return { kind: "offered", takenAt: backup.takenAt };
+}
+
+export type CleanupRestoreBridge = Readonly<{ restoreCleanupBackup(): Promise<void> }>;
+
+/** Asks the host for the restore. The App restarts once it is recorded; a refusal changes nothing. */
+export async function requestCleanupRestore(
+  bridge: CleanupRestoreBridge,
+  view: CleanupRestoreView,
+): Promise<CleanupRestoreView> {
+  if (view.kind === "none") return view;
+  try {
+    await bridge.restoreCleanupBackup();
+    return { kind: "restarting", takenAt: view.takenAt };
+  } catch {
+    return { kind: "refused", takenAt: view.takenAt };
+  }
+}
+
+/** What the row says once after a restart: the restore's outcome, read and forgotten by the host. A failed read says nothing. */
+export async function takeCleanupRestoreNotice(
+  bridge: Readonly<{ takeCleanupRestoreOutcome(): Promise<CleanupRestoreOutcomeDto | null> }>,
+): Promise<CleanupRestoreOutcomeDto | null> {
+  try {
+    return await bridge.takeCleanupRestoreOutcome();
+  } catch {
+    return null;
+  }
 }

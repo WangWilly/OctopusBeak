@@ -23,9 +23,10 @@ import {
   PGLITE_SOURCE_CONTRACT_CATALOG_GUARDS_SQL,
 } from "./source-contract-catalog.ts";
 import type { PGliteStore } from "./transaction.ts";
+import { PGLITE_BASELINE_VERSION } from "./baseline-versions.ts";
 
 /** The first PGlite schema is a consolidated, fresh-start baseline. */
-export const PGLITE_BASELINE_VERSION = 5;
+export { PGLITE_BASELINE_VERSION };
 export const CANONICAL_SQLITE_SCHEMA_VERSION = 28;
 
 /**

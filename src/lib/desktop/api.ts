@@ -194,6 +194,11 @@ export type CleanupBackupDto = Readonly<{
   restorable: boolean;
 }>;
 
+/** How the last Cleanup Restore ended (ADR 0157); `takenAt` is the restored backup's time. No path reaches the renderer. */
+export type CleanupRestoreOutcomeDto =
+  | Readonly<{ status: "restored"; takenAt: string }>
+  | Readonly<{ status: "failed" }>;
+
 /** The part of Settings a notification or another page opens. */
 export type SettingsFocus = "financial-data-deletion" | "sign-in-data" | "app-updates";
 
@@ -319,6 +324,10 @@ export type OctopusBeakApi = {
     revealCleanupBackup(): Promise<void>;
     /** Deletes the Cleanup Backup; resolves with what is left, which is nothing. Refused while a cleanup runs. */
     deleteCleanupBackup(): Promise<CleanupBackupDto | null>;
+    /** Asks to put the Cleanup Backup in the ledger's place and restarts the App to do it. Refused while a cleanup or a reset runs. */
+    restoreCleanupBackup(): Promise<void>;
+    /** How the last restore ended, once; null when there is nothing new to say. */
+    takeCleanupRestoreOutcome(): Promise<CleanupRestoreOutcomeDto | null>;
     /** Starts every enabled source, as scheduled collection would. */
     collectAllSources(): Promise<AutomationRunManyResult>;
   };

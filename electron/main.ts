@@ -49,7 +49,15 @@ import { applyOctopusBeakAppIdentity } from "./app-identity.ts";
 import { openSafeStorageCredentialStore } from "./credential-codec.ts";
 import { recoverUnusableLedger } from "./ledger-recovery.ts";
 import { isLedgerUnusable } from "./ledger-unusable.ts";
-import { removeLedgerBackup } from "../src/ledger/pglite/data-dir-backup.ts";
+import { readLedgerCleanupBackup, removeLedgerBackup } from "../src/ledger/pglite/data-dir-backup.ts";
+import { LEDGER_BASELINE_VERSIONS } from "../src/ledger/pglite/baseline-versions.ts";
+import {
+  ledgerRestoreRequested,
+  requestLedgerRestore,
+  resumeLedgerRestore,
+  takeLedgerRestoreOutcome,
+  type LedgerRestoreLaunch,
+} from "./ledger-restore.ts";
 import { CARD_IDENTITY_VERIFIER_FILE } from "../src/lib/automation/server/card-identity-verifier.ts";
 import { createExchangeRateScheduler, createScheduledCollectionScheduler } from "./daily-scheduler.ts";
 import { requestNotificationTarget, takeNotificationTarget } from "./notification-target.ts";
@@ -143,6 +151,10 @@ let automationRuntime: AutomationRuntime | null = null;
 let automationRuntimeFatalHandled = false;
 /** The ledger refused to open and the person is choosing what to do; nothing else ends the App meanwhile. */
 let ledgerRecoveryPending = false;
+/** A Cleanup Restore whose backup the worker is opening; cleared once the worker is ready or has failed (ADR 0157). */
+let ledgerRestoreOpening: Extract<LedgerRestoreLaunch, { kind: "opening" }> | null = null;
+/** The restored backup did not open, and the App is starting again to swap back; nothing else ends the App meanwhile. */
+let ledgerRestoreSwappingBack = false;
 
 function handleAutomationRuntimeFatal(details: {
   code: string;
@@ -152,7 +164,7 @@ function handleAutomationRuntimeFatal(details: {
   taskId?: string;
   runId?: string | null;
 }) {
-  if (automationRuntimeFatalHandled || ledgerRecoveryPending) return;
+  if (automationRuntimeFatalHandled || ledgerRecoveryPending || ledgerRestoreSwappingBack) return;
   automationRuntimeFatalHandled = true;
   console.error("automation-runtime-fatal", details);
   automationRuntime?.abortAll();
@@ -411,6 +423,13 @@ async function start() {
   migrateAutomationEnvFile({ envPath: path.join(userData, ".env"), settings: automationSettings, credentials });
   migrateStatementSelectionIds(automationSettings.path);
   const ledgerDataDir = path.join(userData, "data", "pglite");
+  // Before anything opens the folder: a restore asked for last session swaps it now, or one a crash cut short goes on.
+  // A launch step that could not put the ledger back throws, and the App does not start on a missing ledger.
+  const ledgerRestore = await resumeLedgerRestore(ledgerDataDir, {
+    current: LEDGER_BASELINE_VERSIONS,
+    log: (code) => console.error(code),
+  });
+  if (ledgerRestore.kind === "opening") ledgerRestoreOpening = ledgerRestore;
   const operationalRuntime = createPGliteOperationalRuntime({
     dataDir: ledgerDataDir,
     cardIdentityVerifierPath,
@@ -419,6 +438,17 @@ async function start() {
     settings: automationSettings,
   });
   pgliteOperationalRuntime = operationalRuntime;
+  // Registered first, so the restore is settled before any other reader of readiness acts.
+  void operationalRuntime.worker.ready.then(() => {
+    const restore = ledgerRestoreOpening;
+    ledgerRestoreOpening = null;
+    if (restore) {
+      void restore.opened().then(
+        () => console.error("pglite-ledger-restored"),
+        (error: unknown) => console.error("pglite-ledger-restore-finish-failed", error instanceof Error ? error.message : String(error)),
+      );
+    }
+  }, () => undefined);
   const runtime = createAutomationRuntime(operationalRuntime.provider, {
     credentials,
     settings: automationSettings,
@@ -449,27 +479,71 @@ async function start() {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.destroy();
     app.exit(code);
   };
+  /**
+   * The worker could not open a restored backup, for any reason. From
+   * Settings, the App records the swap back and starts again, and the next
+   * launch puts the replaced ledger back; a second failure there is handled
+   * as without a restore. Returns whether the failure is handled here.
+   */
+  const failLedgerRestore = (error: unknown): boolean => {
+    const restore = ledgerRestoreOpening;
+    if (ledgerRestoreSwappingBack) return true;
+    if (!restore) return false;
+    ledgerRestoreOpening = null;
+    console.error("pglite-ledger-restore-failed", error instanceof Error ? error.message : String(error));
+    if (!restore.canSwapBack) {
+      // From the unusable-ledger dialog there is nothing to go back to: the failure is handled as any other.
+      void restore.failed().catch(() => console.error("pglite-ledger-restore-abandon-failed"));
+      return false;
+    }
+    ledgerRestoreSwappingBack = true;
+    hostServices?.stop();
+    automationRuntime?.abortAll();
+    void restore.failed().then(
+      () => {
+        app.relaunch();
+        exitForLedgerRecovery(0);
+      },
+      // Unrecorded, the next launch opens the backup once more and swaps back when that fails too.
+      () => {
+        console.error("pglite-ledger-restore-swap-back-failed");
+        app.relaunch();
+        exitForLedgerRecovery(1);
+      },
+    );
+    return true;
+  };
   /** Asks the person what to do with a ledger that refused to open; only the first refusal asks. */
   const recoverLedger = (error: unknown) => {
-    if (ledgerRecoveryPending || automationRuntimeFatalHandled) return;
+    if (ledgerRecoveryPending || automationRuntimeFatalHandled || ledgerRestoreSwappingBack) return;
     ledgerRecoveryPending = true;
     console.error("pglite-ledger-unusable", error instanceof Error ? error.message : String(error));
     // Schedules would only fail against the refused ledger while the person decides.
     hostServices?.stop();
     automationRuntime?.abortAll();
-    void recoverUnusableLedger(ledgerDataDir, {
-      locale: app.getLocale().startsWith("zh") ? "zh-TW" : "en",
-      ask: async (options) => {
-        const owner = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
-        if (owner?.isMinimized()) owner.restore();
-        owner?.show();
-        return (await (owner ? dialog.showMessageBox(owner, options) : dialog.showMessageBox(options))).response;
-      },
-      showError: (title, message) => dialog.showErrorBox(title, message),
-      relaunch: () => app.relaunch(),
-      exit: exitForLedgerRecovery,
-      now: () => new Date(),
-    }).then(
+    void (async () => {
+      // Read by the main process itself: the worker refused the ledger (ADR 0157).
+      const backup = await readLedgerCleanupBackup(ledgerDataDir, LEDGER_BASELINE_VERSIONS).catch(() => null);
+      return recoverUnusableLedger(ledgerDataDir, {
+        restore: backup?.restorable
+          ? {
+            takenAt: new Date(backup.takenAt),
+            request: (aside) => requestLedgerRestore(ledgerDataDir, backup.path, { from: "unusable", aside, current: LEDGER_BASELINE_VERSIONS }),
+          }
+          : null,
+        locale: app.getLocale().startsWith("zh") ? "zh-TW" : "en",
+        ask: async (options) => {
+          const owner = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+          if (owner?.isMinimized()) owner.restore();
+          owner?.show();
+          return (await (owner ? dialog.showMessageBox(owner, options) : dialog.showMessageBox(options))).response;
+        },
+        showError: (title, message) => dialog.showErrorBox(title, message),
+        relaunch: () => app.relaunch(),
+        exit: exitForLedgerRecovery,
+        now: () => new Date(),
+      });
+    })().then(
       (choice) => console.error("pglite-ledger-recovery", choice),
       (failure: unknown) => {
         console.error("pglite-ledger-recovery-failed", failure instanceof Error ? failure.message : String(failure));
@@ -479,10 +553,12 @@ async function start() {
   };
   // A worker restarted mid-session after a crash checks the ledger again and may refuse it too.
   operationalRuntime.worker.onError((error) => {
+    if (failLedgerRestore(error)) return;
     if (isLedgerUnusable(error)) recoverLedger(error);
   });
   void automationRuntimeReady.catch((error) => {
     // Registered before any other reader of this promise, so the flag is set before they report it as fatal.
+    if (failLedgerRestore(error)) return;
     if (isLedgerUnusable(error)) {
       recoverLedger(error);
       return;
@@ -675,11 +751,21 @@ async function start() {
       status: () => operationalRuntime.worker.financial.request("financial.canonical.compactionStatus", []),
       stop: () => operationalRuntime.worker.financial.request("financial.canonical.compactionStop", []),
     },
-    // The worker names the backup; the renderer never sees where it is.
+    // The main process reads the backup itself, so a restore checks what Settings showed; the renderer never sees where it is.
     cleanupBackup: {
-      newest: () => operationalRuntime.worker.financial.request("financial.ledger.cleanupBackup", []),
+      newest: () => readLedgerCleanupBackup(ledgerDataDir, LEDGER_BASELINE_VERSIONS),
       reveal: (backup) => shell.showItemInFolder(backup),
       remove: removeLedgerBackup,
+    },
+    cleanupRestore: {
+      requested: () => ledgerRestoreRequested(ledgerDataDir),
+      request: (backup) => requestLedgerRestore(ledgerDataDir, backup, { from: "settings", current: LEDGER_BASELINE_VERSIONS }),
+      // The ordinary quit closes the ledger cleanly before the App starts again.
+      restart: () => {
+        app.relaunch();
+        app.quit();
+      },
+      takeOutcome: () => takeLedgerRestoreOutcome(ledgerDataDir),
     },
   });
   const rendererUrl = RENDERER_URL;

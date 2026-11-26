@@ -4,10 +4,13 @@ import type { LedgerCleanupEstimateDto, LedgerCleanupResultDto, LedgerCleanupSta
 import {
   cleanupEstimateView,
   cleanupProgressBar,
+  cleanupRestoreView,
   cleanupResultView,
   megabytes,
+  requestCleanupRestore,
   resumeLedgerCleanup,
   runLedgerCleanup,
+  takeCleanupRestoreNotice,
   type LedgerCleanupView,
 } from "./ledger-cleanup.ts";
 
@@ -159,4 +162,36 @@ test("following stops once Settings closes", async () => {
   const after = reads;
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(reads, after);
+});
+
+const backup = (restorable: boolean, takenAt = "2026-11-01T02:03:04.000Z") =>
+  ({ bytes: 9, takenAt, expiresAt: "2026-12-31T02:03:04.000Z", restorable });
+
+test("Restore is offered only beside a backup the App can open", () => {
+  assert.deepEqual(cleanupRestoreView(null), { kind: "none" });
+  assert.deepEqual(cleanupRestoreView(backup(false)), { kind: "none" }, "a backup of other versions says it can no longer be restored instead");
+  assert.deepEqual(cleanupRestoreView(backup(true)), { kind: "offered", takenAt: "2026-11-01T02:03:04.000Z" });
+  const confirming = { kind: "confirming", takenAt: "2026-11-01T02:03:04.000Z" } as const;
+  assert.deepEqual(cleanupRestoreView(backup(true), confirming), confirming, "reading the backup again keeps its dialog open");
+  assert.deepEqual(cleanupRestoreView(backup(true, "2026-11-02T00:00:00.000Z"), confirming),
+    { kind: "offered", takenAt: "2026-11-02T00:00:00.000Z" }, "a different backup is offered afresh, never confirmed for the one before");
+  assert.deepEqual(cleanupRestoreView(null, confirming), { kind: "none" }, "a backup that went takes its dialog with it");
+});
+
+test("a restore asked for stays restarting; a refused one says so and changes nothing", async () => {
+  const confirming = { kind: "confirming", takenAt: "2026-11-01T02:03:04.000Z" } as const;
+  let asked = 0;
+  assert.deepEqual(await requestCleanupRestore({ restoreCleanupBackup: async () => { asked += 1; } }, confirming),
+    { kind: "restarting", takenAt: confirming.takenAt });
+  assert.equal(asked, 1);
+  assert.deepEqual(await requestCleanupRestore({ restoreCleanupBackup: async () => { throw new Error("a cleanup runs"); } }, confirming),
+    { kind: "refused", takenAt: confirming.takenAt });
+  assert.deepEqual(await requestCleanupRestore({ restoreCleanupBackup: async () => { asked += 1; } }, { kind: "none" }), { kind: "none" });
+  assert.equal(asked, 1, "nothing to restore asks for nothing");
+});
+
+test("the restore's outcome is read once, and a failed read says nothing", async () => {
+  const outcome = { status: "restored", takenAt: "2026-11-01T02:03:04.000Z" } as const;
+  assert.deepEqual(await takeCleanupRestoreNotice({ takeCleanupRestoreOutcome: async () => outcome }), outcome);
+  assert.equal(await takeCleanupRestoreNotice({ takeCleanupRestoreOutcome: async () => { throw new Error("gone"); } }), null);
 });
