@@ -4,7 +4,9 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { damagedLedgerPath, recoverUnusableLedger, type LedgerRecoveryDeps } from "./ledger-recovery.ts";
+import { askAboutStuckRestore, damagedLedgerPath, recoverUnusableLedger, type LedgerRecoveryDeps } from "./ledger-recovery.ts";
+import { requestLedgerRestore, resumeLedgerRestore } from "./ledger-restore.ts";
+import { readLedgerCleanupBackup } from "../src/ledger/pglite/data-dir-backup.ts";
 
 const NOW = new Date("2026-11-23T05:12:34.567Z");
 
@@ -90,3 +92,112 @@ test("a rebuild that cannot move the ledger says so, changes nothing, and quits"
   assert.equal(calls[1], "exit 1", "it does not relaunch into the same refusal");
   assert.ok(existsSync(join(dataDir, "PG_VERSION")));
 }));
+
+const VERSIONS = { canonical: 5, operational: 5 };
+
+/** A restorable Cleanup Backup beside the ledger, offered as main.ts offers it. */
+async function restoreOffer(dataDir: string) {
+  const backup = `${dataDir}.before-compaction-2026-11-01T02-03-04Z`;
+  mkdirSync(backup);
+  writeFileSync(join(backup, "PG_VERSION"), "backup\n");
+  writeFileSync(`${backup}.versions.json`, JSON.stringify(VERSIONS));
+  const newest = await readLedgerCleanupBackup(dataDir, VERSIONS);
+  assert.ok(newest?.restorable);
+  return {
+    backup,
+    restore: {
+      takenAt: new Date(newest.takenAt),
+      request: (aside: string) => requestLedgerRestore(dataDir, newest.path, { from: "unusable", aside, current: VERSIONS, appVersion: "1.0.0", now: () => NOW }),
+    },
+  };
+}
+
+test("without a restorable backup the dialog offers no restore", async () => {
+  for (const restore of [undefined, null]) {
+    const asked: Parameters<LedgerRecoveryDeps["ask"]>[0][] = [];
+    await recoverUnusableLedger("/nonexistent", { ...deps(2, [], asked), ...(restore === undefined ? {} : { restore }) });
+    assert.deepEqual(asked[0]?.buttons, ["Retry", "Back up and rebuild", "Quit"]);
+    assert.doesNotMatch(asked[0]!.detail, /Restore the backup/u);
+  }
+});
+
+test("restore moves the unusable ledger aside as damaged and puts the backup in its place at the next launch", () => withLedger(async (dataDir) => {
+  const { backup, restore } = await restoreOffer(dataDir);
+  const calls: string[] = [];
+  const asked: Parameters<LedgerRecoveryDeps["ask"]>[0][] = [];
+  assert.equal(await recoverUnusableLedger(dataDir, { ...deps(2, calls, asked), restore }), "restore");
+  const options = asked[0]!;
+  assert.equal(options.buttons.length, 4);
+  assert.match(options.buttons[2]!, /^Restore the backup from \d{4}\/\d{2}\/\d{2}$/u);
+  assert.equal(options.cancelId, 3, "closing the dialog still quits");
+  assert.equal(options.defaultId, 0, "the default still changes nothing");
+  const damaged = `${dataDir}.damaged-2026-11-23T05-12-34Z`;
+  assert.ok(options.detail.includes(`Restore the backup from`), "the restore is explained before it is chosen");
+  assert.match(options.detail, /Data added since the backup is lost/u);
+  assert.equal(options.detail.split(damaged).length - 1, 2, "it names the same path the rebuild would");
+  assert.deepEqual(calls, ["relaunch", "exit 0"]);
+  assert.ok(existsSync(join(dataDir, "PG_VERSION")), "the dialog only records the restore; nothing opens the folders until the next launch");
+
+  const launch = await resumeLedgerRestore(dataDir, { current: VERSIONS, now: () => NOW });
+  assert.equal(launch.kind, "opening");
+  assert.equal(readFileSync(join(damaged, "PG_VERSION"), "utf8"), "17\n", "the unusable ledger is set aside untouched");
+  assert.equal(readFileSync(join(dataDir, "PG_VERSION"), "utf8"), "backup\n");
+  assert.equal(launch.kind === "opening" && launch.canSwapBack, false, "there is no ledger to go back to");
+  if (launch.kind === "opening") await launch.opened();
+  assert.equal(existsSync(backup), false, "the backup is used up");
+  assert.ok(existsSync(damaged), "the damaged ledger stays, as after a rebuild");
+}));
+
+test("the dialog offers the restore in Traditional Chinese too", () => withLedger(async (dataDir) => {
+  const { restore } = await restoreOffer(dataDir);
+  const asked: Parameters<LedgerRecoveryDeps["ask"]>[0][] = [];
+  await recoverUnusableLedger(dataDir, { ...deps(3, [], asked), locale: "zh-TW", restore, formatDate: () => "2026/11/01" });
+  assert.equal(asked[0]!.buttons[2], "還原 2026/11/01 的備份", "the day as Settings writes it, in the App's time zone");
+  assert.match(asked[0]!.detail, /備份之後新增或收集的資料會遺失/u);
+}));
+
+test("a restore that cannot be recorded says so, changes nothing, and quits", () => withLedger(async (dataDir) => {
+  const calls: string[] = [];
+  const choice = await recoverUnusableLedger(dataDir, {
+    ...deps(2, calls),
+    restore: { takenAt: NOW, request: async () => { throw new Error("disk full"); } },
+  });
+  assert.equal(choice, "restore-failed");
+  assert.match(calls[0]!, /^error The backup could not be restored: disk full/u);
+  assert.equal(calls[1], "exit 1");
+  assert.ok(existsSync(join(dataDir, "PG_VERSION")));
+}));
+
+test("the stuck-restore question defaults to trying again, quits when closed, and says switching back loses nothing", async () => {
+  for (const [locale, buttons, conditional, damaged] of [
+    ["en", ["Try again", "Switch back to the original ledger", "Quit"],
+      /If OctopusBeak did open after the restore and you entered data, that data stays in the backup[^.]*while the backup is kept\. Otherwise switching back loses nothing/u,
+      /the damaged-ledger dialog will appear again/u],
+    ["zh-TW", ["再試一次", "換回原本的帳本", "結束"],
+      /如果還原後 OctopusBeak 曾經開啟、而你輸入了資料，那些資料會留在備份裡，備份保留期間可以從設定再還原；否則換回不會遺失任何資料/u,
+      /損壞的帳本，之後會再次出現帳本損壞的對話框/u],
+  ] as const) {
+    for (const from of ["settings", "unusable"] as const) {
+      const asked: Parameters<LedgerRecoveryDeps["ask"]>[0][] = [];
+      await askAboutStuckRestore({ locale, takenAt: NOW, from, ask: async (options) => { asked.push(options); return 0; } });
+      assert.match(asked[0]!.detail, conditional, `${locale} ${from}: it does not claim what it cannot know`);
+      if (from === "unusable") assert.match(asked[0]!.detail, damaged, `${locale}: the damaged ledger comes back`);
+      else assert.doesNotMatch(asked[0]!.detail, damaged);
+    }
+    for (const [index, choice] of [[0, "retry"], [1, "swap-back"], [2, "quit"], [7, "quit"]] as const) {
+      const asked: Parameters<LedgerRecoveryDeps["ask"]>[0][] = [];
+      const result = await askAboutStuckRestore({
+        locale,
+        takenAt: NOW,
+        from: "settings",
+        formatDate: () => "2026/11/01",
+        ask: async (options) => { asked.push(options); return index; },
+      });
+      assert.equal(result, choice, `${locale}: button ${index}`);
+      assert.deepEqual(asked[0]!.buttons, buttons);
+      assert.equal(asked[0]!.defaultId, 0);
+      assert.equal(asked[0]!.cancelId, 2);
+      assert.ok(asked[0]!.detail.includes("2026/11/01"));
+    }
+  }
+});

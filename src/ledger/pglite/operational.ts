@@ -3,6 +3,7 @@ import {
   type PGlitePreviewFinancialDataPort,
 } from "./preview-financial-data.ts";
 import { randomUUID } from "node:crypto";
+import { PGLITE_OPERATIONAL_BASELINE_VERSION } from "./baseline-versions.ts";
 import { readExchangeRateRows } from "./exchange-rate-rows.ts";
 import {
   createHumanAssistanceContract,
@@ -61,7 +62,7 @@ import {
   type PGliteMaicoinPersistencePort,
 } from "./maicoin-operational.ts";
 
-export const PGLITE_OPERATIONAL_BASELINE_VERSION = 5;
+export { PGLITE_OPERATIONAL_BASELINE_VERSION };
 
 const OPERATIONAL_TABLES = [
   "automation_task_runs",

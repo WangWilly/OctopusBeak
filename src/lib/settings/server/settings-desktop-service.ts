@@ -12,6 +12,7 @@ import type { LedgerCleanupBackup } from "../../../ledger/pglite/data-dir-backup
 import type { LedgerCleanupEstimate } from "../../../ledger/pglite/cleanup-estimate.ts";
 import type {
   CleanupBackupDto,
+  CleanupRestoreOutcomeDto,
   LedgerCleanupEstimateDto,
   LedgerCleanupProgressDto,
   LedgerCleanupResultDto,
@@ -59,6 +60,17 @@ export type SettingsDesktopServiceDeps = Readonly<{
     newest(): Promise<LedgerCleanupBackup | null>;
     reveal(path: string): void;
     remove(path: string): Promise<void>;
+  }>;
+  /** The Cleanup Restore (ADR 0157): the request the next launch carries out, and how the last one ended. */
+  cleanupRestore: Readonly<{
+    /** Whether a restore has been asked for and has not ended. */
+    requested(): Promise<boolean>;
+    /** Records, and flushes, that the backup at `path` takes the ledger's place at the next launch. */
+    request(path: string): Promise<void>;
+    /** Starts the App again through the ordinary quit, which closes the ledger cleanly. */
+    restart(): void;
+    /** How the last restore ended, once; the host forgets it as it is read. */
+    takeOutcome(): Promise<CleanupRestoreOutcomeDto | null>;
   }>;
 }>;
 
@@ -141,6 +153,11 @@ export function createSettingsDesktopService(deps: SettingsDesktopServiceDeps) {
   const { settingsFile, usagePing, dataVersions } = deps;
   // Set before the cleanup's status is read, so a cleanup asked for meanwhile is refused too.
   let resetting = false;
+  // Set once a restore is being asked for; it stays set, since the App restarts.
+  let restoring = false;
+  const assertNoRestore = async (action: string) => {
+    if (restoring || await deps.cleanupRestore.requested()) throw new Error(`${action} once a restore is asked for.`);
+  };
   return {
     load: () => systemSettings(settingsFile.read()),
     async save(input: SystemSettingsDto) {
@@ -170,6 +187,8 @@ export function createSettingsDesktopService(deps: SettingsDesktopServiceDeps) {
       if (resetting) throw new Error("The ledger is already being reset.");
       resetting = true;
       try {
+        // A reset removes the Cleanup Backup, which a restore asked for is about to use.
+        await assertNoRestore("The ledger cannot be reset");
         if ((await deps.ledgerCleanup.status()).running) throw new Error("The ledger cannot be reset while a cleanup runs.");
         return await resetLedger(deps.collection, deps.ledgerReset, dataVersions, parts);
       } finally {
@@ -181,6 +200,8 @@ export function createSettingsDesktopService(deps: SettingsDesktopServiceDeps) {
     async cleanUpLedger(request: unknown): Promise<LedgerCleanupResultDto> {
       const parsed = cleanupRequest(request);
       if (resetting) throw new Error("A cleanup cannot start while the ledger is being reset.");
+      // A cleanup takes a new backup, which replaces the one a restore asked for.
+      await assertNoRestore("A cleanup cannot start");
       return cleanupResultDto(await deps.ledgerCleanup.run(parsed));
     },
     async ledgerCleanupStatus(): Promise<LedgerCleanupStatusDto> {
@@ -197,12 +218,40 @@ export function createSettingsDesktopService(deps: SettingsDesktopServiceDeps) {
     async deleteCleanupBackup(): Promise<CleanupBackupDto | null> {
       // A running cleanup may be taking or removing a backup; the renderer's own guard is not the only one.
       if ((await deps.ledgerCleanup.status()).running) throw new Error("A backup cannot be deleted while a cleanup runs.");
+      await assertNoRestore("A backup cannot be deleted");
       // At most one exists, but a version before ADR 0156 could leave several; none stays.
       for (let backup = await deps.cleanupBackup.newest(); backup; backup = await deps.cleanupBackup.newest()) {
         await deps.cleanupBackup.remove(backup.path);
       }
       return null;
     },
+    /**
+     * Asks for the Cleanup Restore of ADR 0157 and restarts the App to carry
+     * it out. Refused while a cleanup or a reset runs, and when the backup
+     * cannot be restored. Collection stops first and does not start again:
+     * the App quits once the request is flushed.
+     */
+    async restoreCleanupBackup(): Promise<void> {
+      if (resetting) throw new Error("The backup cannot be restored while the ledger is being reset.");
+      if (restoring) throw new Error("The backup cannot be restored again once a restore is asked for.");
+      // Set before anything is read, so a reset or a cleanup asked for meanwhile is refused.
+      restoring = true;
+      let resume: (() => void) | null = null;
+      try {
+        if (await deps.cleanupRestore.requested()) throw new Error("The backup cannot be restored again once a restore is asked for.");
+        if ((await deps.ledgerCleanup.status()).running) throw new Error("The backup cannot be restored while a cleanup runs.");
+        const backup = await deps.cleanupBackup.newest();
+        if (!backup?.restorable) throw new Error("There is no backup that can be restored.");
+        resume = deps.collection.pauseSchedules();
+        await deps.collection.whileStopped(() => deps.cleanupRestore.request(backup.path));
+      } catch (error) {
+        restoring = false;
+        resume?.();
+        throw error;
+      }
+      deps.cleanupRestore.restart();
+    },
+    takeCleanupRestoreOutcome: () => deps.cleanupRestore.takeOutcome(),
     getVersion: () => dataVersions.snapshot(),
     acknowledgeVersion(version: unknown) {
       if (typeof version !== "number" || !Number.isSafeInteger(version) || version < 0) {

@@ -431,6 +431,10 @@ _Avoid_: Compaction (in product copy), purge, reset, data deletion, cache cleari
 A whole copy of the ledger as it was just before an App Data Cleanup, kept beside the ledger for a bounded time so a person can go back to it if the cleanup caused a problem. At most one exists; it expires on its own, and a person may remove it earlier. It is not an export, an archive, or a general backup of the App.
 _Avoid_: Ledger export, snapshot, archive, automatic backup, damaged-ledger backup
 
+**Cleanup restore**:
+A person's choice to put a Cleanup Backup in the ledger's place, returning collected financial data and Manual Assets to their state just before that App Data Cleanup and losing what was added since. It uses the backup up, and it cannot bring back data a Canonical Reset removed, because the reset removes the backup.
+_Avoid_: Rollback, undo cleanup, ledger import, rebuild
+
 **Canonical retention**:
 Accepted Captures, compact Records, identities, revisions, Assertions, transitions, provenance, Statements, and Measurement History have no time-based expiration and remain available for Historical Financial Projection, Lineage Inspection, and deterministic rebuild until an explicit Contract Purge, Canonical Reset, or separately specified user data-deletion action removes them. Disconnection, configuration change, Assertion withdrawal, or loss of current authority never implies deletion; only operational checkpoints, staging data, logs, and retired projections may have bounded retention.
 _Avoid_: Rolling financial TTL, disconnect-as-delete, projection compaction, expired lineage

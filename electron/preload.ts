@@ -124,6 +124,8 @@ const INVOKE_CHANNELS = {
     cleanupBackup: "settings:cleanupBackup",
     revealCleanupBackup: "settings:revealCleanupBackup",
     deleteCleanupBackup: "settings:deleteCleanupBackup",
+    restoreCleanupBackup: "settings:restoreCleanupBackup",
+    takeCleanupRestoreOutcome: "settings:takeCleanupRestoreOutcome",
     signInDataStatus: "settings:signInDataStatus",
     collectAllSources: "settings:collectAllSources",
   },

@@ -77,6 +77,8 @@ const PARTIAL_SUFFIX = ".partial";
 const PID_SUFFIX = ".pid";
 /** Beside a finished backup: the baseline versions of the store it copied. */
 const VERSIONS_SUFFIX = ".versions.json";
+/** Beside the ledger while a Cleanup Restore is under way (ADR 0157): it names the backup being restored. */
+const RESTORE_PENDING_SUFFIX = ".restore-pending";
 
 /** How long a backup is kept, counted from the UTC time in its name (ADR 0156). */
 export const LEDGER_BACKUP_RETENTION_DAYS = 60;
@@ -131,18 +133,113 @@ export async function removePartialLedgerBackups(dataDir: string): Promise<void>
     await rm(`${partial}${PID_SUFFIX}`, { force: true });
   }
   // A versions file whose backup is gone: written before a rename that never came, or left by a removal cut short.
+  // A restore under way has renamed its backup into the ledger's place, and keeps that one's file until it ends.
+  const restoring = await pendingRestoreBackup(dataDir);
   for (const name of names.filter((name) => name.startsWith(prefix) && name.endsWith(VERSIONS_SUFFIX))) {
     const backup = join(dirname(dataDir), name.slice(0, -VERSIONS_SUFFIX.length));
-    if (!(await exists(backup))) await rm(join(dirname(dataDir), name), { force: true });
+    if (backup !== restoring && !(await exists(backup))) await rm(join(dirname(dataDir), name), { force: true });
   }
 }
 
 const STAMP = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})Z(?:-\d+)?$/u;
 
+/**
+ * The time in the name of a backup of `dataDir`, or null when `name` is not
+ * one: a bare name of the form `ledgerBackupPath` gives, with no separator,
+ * so it can only name a sibling of the ledger.
+ */
+export function ledgerBackupTakenAt(dataDir: string, name: string): Date | null {
+  const prefix = `${basename(resolve(dataDir))}${BACKUP_INFIX}`;
+  if (!name.startsWith(prefix)) return null;
+  const stamp = STAMP.exec(name.slice(prefix.length));
+  if (!stamp) return null;
+  const takenAt = new Date(`${stamp[1]}T${stamp[2]}:${stamp[3]}:${stamp[4]}Z`);
+  return Number.isNaN(takenAt.getTime()) ? null : takenAt;
+}
+
+/** The file beside a backup that records the versions of the store it copied. */
+export function ledgerBackupVersionsPath(backup: string): string {
+  return `${backup}${VERSIONS_SUFFIX}`;
+}
+
+/** Where a Cleanup Restore records its request and how far it got (ADR 0157). */
+export function ledgerRestorePendingPath(dataDir: string): string {
+  return `${resolve(dataDir)}${RESTORE_PENDING_SUFFIX}`;
+}
+
+/** The pending file once the restored store has opened: renamed, so the signal needs no free space. */
+export function ledgerRestoreOpenedPath(dataDir: string): string {
+  return `${resolve(dataDir)}.restore-opened`;
+}
+
+/**
+ * A restore file that could not be read, kept: it may have named a
+ * `.replaced-` ledger, so while it exists no launch removes one. Only a
+ * Canonical Reset removes it.
+ */
+export function ledgerRestoreUnreadablePath(dataDir: string): string {
+  return `${resolve(dataDir)}.restore-unreadable`;
+}
+
+/** How the last restore ended, kept until Settings reads it. */
+export function ledgerRestoreOutcomePath(dataDir: string): string {
+  return `${resolve(dataDir)}.restore-outcome`;
+}
+
+const REPLACED_INFIX = ".replaced-";
+
+/** Whether `name` is a bare name of the form a restore from Settings sets the ledger aside under. */
+export function isReplacedLedgerName(dataDir: string, name: string): boolean {
+  const prefix = `${basename(resolve(dataDir))}${REPLACED_INFIX}`;
+  return name.startsWith(prefix) && STAMP.test(name.slice(prefix.length));
+}
+
+/**
+ * Removes what a Cleanup Restore leaves beside the ledger: its files first,
+ * so nothing names a folder any more, then every ledger a restore set aside
+ * as `.replaced-`, which holds the financial data of before the restore.
+ */
+export async function removeLedgerRestoreLeftovers(dataDir: string): Promise<void> {
+  dataDir = resolve(dataDir);
+  for (const file of [
+    ledgerRestorePendingPath(dataDir),
+    ledgerRestoreOpenedPath(dataDir),
+    ledgerRestoreOutcomePath(dataDir),
+    ledgerRestoreUnreadablePath(dataDir),
+  ]) {
+    await rm(file, { force: true });
+    await rm(`${file}.tmp`, { force: true });
+  }
+  let names: string[];
+  try {
+    names = await readdir(dirname(dataDir));
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (isReplacedLedgerName(dataDir, name)) await rm(join(dirname(dataDir), name), { recursive: true, force: true });
+  }
+}
+
+/**
+ * The backup a Cleanup Restore under way names, or null when none is under
+ * way. Nothing that removes backups touches it: it is the restore's to use
+ * up or to give back.
+ */
+export async function pendingRestoreBackup(dataDir: string): Promise<string | null> {
+  dataDir = resolve(dataDir);
+  let name: unknown;
+  try {
+    name = (JSON.parse(await readFile(ledgerRestorePendingPath(dataDir), "utf8")) as { backup?: unknown } | null)?.backup;
+  } catch {
+    return null;
+  }
+  return typeof name === "string" && ledgerBackupTakenAt(dataDir, name) ? join(dirname(dataDir), name) : null;
+}
+
 /** The finished backups beside `dataDir`, newest first. A name without a readable time is not one of them. */
 export async function listLedgerBackups(dataDir: string): Promise<LedgerBackupEntry[]> {
   dataDir = resolve(dataDir);
-  const prefix = `${basename(dataDir)}${BACKUP_INFIX}`;
   let names: string[];
   try {
     names = await readdir(dirname(dataDir));
@@ -151,12 +248,10 @@ export async function listLedgerBackups(dataDir: string): Promise<LedgerBackupEn
   }
   const backups: LedgerBackupEntry[] = [];
   for (const name of names) {
-    if (!name.startsWith(prefix)) continue;
-    const stamp = STAMP.exec(name.slice(prefix.length));
-    if (!stamp) continue;
-    const takenAt = new Date(`${stamp[1]}T${stamp[2]}:${stamp[3]}:${stamp[4]}Z`);
+    const takenAt = ledgerBackupTakenAt(dataDir, name);
+    if (!takenAt) continue;
     const path = join(dirname(dataDir), name);
-    if (Number.isNaN(takenAt.getTime()) || !(await stat(path).then((entry) => entry.isDirectory(), () => false))) continue;
+    if (!(await stat(path).then((entry) => entry.isDirectory(), () => false))) continue;
     backups.push({ path, takenAt });
   }
   return backups.sort((a, b) => b.takenAt.getTime() - a.takenAt.getTime() || b.path.localeCompare(a.path));
@@ -183,20 +278,33 @@ export async function removeLedgerBackup(backup: string): Promise<void> {
   await rm(`${backup}${VERSIONS_SUFFIX}`, { force: true });
 }
 
-/** Removes every finished backup but `keep`: at most one is kept (ADR 0156). */
+/** Removes every finished backup but `keep`, and but one a restore under way names: at most one is kept (ADR 0156). */
 export async function removeOtherLedgerBackups(dataDir: string, keep: string): Promise<void> {
-  for (const { path } of await listLedgerBackups(dataDir)) if (path !== resolve(keep)) await removeLedgerBackup(path);
-}
-
-/** Removes every backup whose time is `LEDGER_BACKUP_RETENTION_DAYS` or more before `now`. */
-export async function removeExpiredLedgerBackups(dataDir: string, now: Date): Promise<void> {
-  for (const { path, takenAt } of await listLedgerBackups(dataDir)) {
-    if (ledgerBackupExpiresAt(takenAt).getTime() <= now.getTime()) await removeLedgerBackup(path);
+  const restoring = await pendingRestoreBackup(dataDir);
+  for (const { path } of await listLedgerBackups(dataDir)) {
+    if (path !== resolve(keep) && path !== restoring) await removeLedgerBackup(path);
   }
 }
 
-/** Removes every backup, finished or partial: a Canonical Reset leaves none that holds the deleted data. */
+/**
+ * Removes every backup whose time is `LEDGER_BACKUP_RETENTION_DAYS` or more
+ * before `now`, but one a restore under way names (ADR 0157): it expires
+ * once the restore gives it back.
+ */
+export async function removeExpiredLedgerBackups(dataDir: string, now: Date): Promise<void> {
+  const restoring = await pendingRestoreBackup(dataDir);
+  for (const { path, takenAt } of await listLedgerBackups(dataDir)) {
+    if (path !== restoring && ledgerBackupExpiresAt(takenAt).getTime() <= now.getTime()) await removeLedgerBackup(path);
+  }
+}
+
+/**
+ * Removes every backup, finished or partial, and every ledger a restore set
+ * aside: a Canonical Reset leaves none that holds the deleted data. Settings
+ * refuses a reset once a restore is asked for, so none is under way here.
+ */
 export async function removeAllLedgerBackups(dataDir: string): Promise<void> {
+  await removeLedgerRestoreLeftovers(dataDir);
   await removePartialLedgerBackups(dataDir);
   for (const { path } of await listLedgerBackups(dataDir)) await removeLedgerBackup(path);
   await removePartialLedgerBackups(dataDir);
@@ -229,10 +337,16 @@ export async function readLedgerCleanupBackup(dataDir: string, current: LedgerBa
 
 /** The versions a backup recorded; null when it recorded none, as one taken before ADR 0156, or the file is unreadable. */
 export async function readLedgerBackupVersions(backup: string): Promise<LedgerBackupVersions | null> {
+  return parseLedgerBackupVersions(await readFile(`${backup}${VERSIONS_SUFFIX}`, "utf8").catch(() => null));
+}
+
+/** The versions a backup's versions file holds; null for no file or one that does not hold both. */
+export function parseLedgerBackupVersions(text: string | null): LedgerBackupVersions | null {
+  if (text === null) return null;
   try {
-    const value = JSON.parse(await readFile(`${backup}${VERSIONS_SUFFIX}`, "utf8")) as Partial<LedgerBackupVersions>;
+    const value = JSON.parse(text) as Partial<LedgerBackupVersions> | null;
     const version = (field: unknown) => typeof field === "number" && Number.isSafeInteger(field);
-    return version(value.canonical) && version(value.operational) ? { canonical: value.canonical!, operational: value.operational! } : null;
+    return value && version(value.canonical) && version(value.operational) ? { canonical: value.canonical!, operational: value.operational! } : null;
   } catch {
     return null;
   }

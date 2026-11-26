@@ -7,7 +7,7 @@ assert.doesNotMatch(source, /prepareLibrettoRunCdpPatch|libretto-run-cdp-patch-f
 assert.match(source, /createPGliteOperationalRuntime\(/u);
 assert.match(
   source,
-  /const cardIdentityVerifierPath = path\.join\(userData, CARD_IDENTITY_VERIFIER_FILE\);[\s\S]*?openSafeStorageCredentialStore\(\s*path\.join\(userData, AUTOMATION_CREDENTIALS_FILE\),\s*cardIdentityVerifierPath,\s*\)[\s\S]*?const ledgerDataDir = path\.join\(userData, "data", "pglite"\);\s*const operationalRuntime = createPGliteOperationalRuntime\(\{\s*dataDir: ledgerDataDir,\s*cardIdentityVerifierPath,/u,
+  /const cardIdentityVerifierPath = path\.join\(userData, CARD_IDENTITY_VERIFIER_FILE\);[\s\S]*?openSafeStorageCredentialStore\(\s*path\.join\(userData, AUTOMATION_CREDENTIALS_FILE\),\s*cardIdentityVerifierPath,\s*\)[\s\S]*?const ledgerDataDir = path\.join\(userData, "data", "pglite"\);[\s\S]*?const operationalRuntime = createPGliteOperationalRuntime\(\{\s*dataDir: ledgerDataDir,\s*cardIdentityVerifierPath,/u,
   "startup records the Card identity secret's verifier where the ledger worker reads it",
 );
 assert.match(
@@ -38,15 +38,40 @@ assert.match(
 );
 assert.match(
   source,
-  /const recoverLedger = \(error: unknown\) => \{\s*if \(ledgerRecoveryPending \|\| automationRuntimeFatalHandled\) return;\s*ledgerRecoveryPending = true;[\s\S]*?recoverUnusableLedger\(ledgerDataDir,[\s\S]*?operationalRuntime\.worker\.onError\(\(error\) => \{\s*if \(isLedgerUnusable\(error\)\) recoverLedger\(error\);\s*\}\);\s*void automationRuntimeReady\.catch\(\(error\) => \{[\s\S]*?if \(isLedgerUnusable\(error\)\) \{\s*recoverLedger\(error\);/u,
+  /const recoverLedger = \(error: unknown\) => \{\s*if \(ledgerRecoveryPending \|\| automationRuntimeFatalHandled \|\| ledgerRestoreSwappingBack\) return;\s*ledgerRecoveryPending = true;[\s\S]*?recoverUnusableLedger\(ledgerDataDir,[\s\S]*?operationalRuntime\.worker\.onError\(\(error\) => \{\s*if \(failLedgerRestore\(error\)\) return;\s*if \(isLedgerUnusable\(error\)\) recoverLedger\(error\);\s*\}\);\s*void automationRuntimeReady\.catch\(\(error\) => \{[\s\S]*?if \(failLedgerRestore\(error\)\) return;\s*if \(isLedgerUnusable\(error\)\) \{\s*recoverLedger\(error\);/u,
   "an unusable ledger, at startup or after a restart mid-session, asks the person what to do instead of ending the App",
 );
 assert.match(
   source,
-  /if \(automationRuntimeFatalHandled \|\| ledgerRecoveryPending\) return;/u,
+  /if \(automationRuntimeFatalHandled \|\| ledgerRecoveryPending \|\| ledgerRestoreSwappingBack\) return;/u,
   "no other fatal report ends the App while the person is choosing",
 );
 assert.match(source, /automationRuntime\?\.abortAll\(\)/u);
+assert.match(
+  source,
+  /const ledgerDataDir = path\.join\(userData, "data", "pglite"\);[\s\S]*?const ledgerRestore = await resumeLedgerRestore\(ledgerDataDir,[\s\S]*?\}\);[\s\S]*?const operationalRuntime = createPGliteOperationalRuntime\(/u,
+  "a Cleanup Restore swaps the folders before the worker exists to open either (ADR 0157)",
+);
+assert.match(
+  source,
+  /pgliteOperationalRuntime = operationalRuntime;\s*\/\/[^\n]*\n\s*void operationalRuntime\.worker\.ready\.then\(\(\) => \{\s*const restore = ledgerRestoreOpening;\s*ledgerRestoreOpening = null;/u,
+  "readiness settles the restore before any other reader of it acts",
+);
+assert.match(
+  source,
+  /const failLedgerRestore = [\s\S]*?ledgerRestoreSwappingBack = true;[\s\S]*?restore\.failed\(\)\.then\(\s*\(\) => \{\s*app\.relaunch\(\);\s*exitForLedgerRecovery\(0\);/u,
+  "any failure to open a restored backup records the swap back and starts the App once more",
+);
+assert.match(
+  source,
+  /const ledgerRestore = await resumeLedgerRestore\(ledgerDataDir, \{[\s\S]*?askStuck: \(\{ takenAt, from \}\) => askAboutStuckRestore\(\{[\s\S]*?\}\);\s*if \(ledgerRestore\.kind === "quit"\) \{\s*app\.quit\(\);\s*return;\s*\}[\s\S]*?const operationalRuntime = createPGliteOperationalRuntime\(/u,
+  "a backup that never finished opening is the person's call, asked before the worker exists",
+);
+assert.match(
+  source,
+  /restart: \(\) => \{\s*app\.relaunch\(\);\s*app\.quit\(\);\s*\}/u,
+  "a restore from Settings restarts through the ordinary quit, which closes the ledger cleanly",
+);
 assert.match(source, /if \(automationRuntime\?\.hasActive\(\)\) await automationRuntime\.shutdown\(\)/u);
 assert.match(
   source,
