@@ -1,7 +1,7 @@
 <script lang="ts">
   import { t } from "$lib/i18n/i18n.ts";
 
-  /** Opens Settings at Clear all sign-in data, the recovery for unreadable credentials (ADR 0149). */
+  /** Opens Settings at Reset ledger, where sign-in data is cleared, the recovery for unreadable credentials (ADR 0149). */
   export let onOpenSettings: () => void;
 </script>
 

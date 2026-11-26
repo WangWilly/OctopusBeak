@@ -21,7 +21,6 @@ const { assertPreviewRegistry } = await import("./registry.ts");
 const { PREVIEW_FIXTURE_SOURCE } = await import("./fixture-source.ts");
 const { previewVisibility } = await import("./visibility.ts");
 const { takePreviewObservations, previewWorkflowDefinition } = await import("./workflow.ts");
-const { deleteAllPreviewData } = await import("./delete-preview-data.ts");
 const { decimalSum } = await import("./source-kit.ts");
 
 const SINOPAC_ENABLED = "LIBRETTO_CLOUD_SINOPAC_ENABLED";
@@ -161,15 +160,6 @@ test("a preview workflow writes only through its bound preview port", async () =
     createWorkflowExecutor([definition], ports).run("preview-synthetic", "run-2", {}, signal),
     /Preview write port is unavailable/u,
   );
-});
-
-test("the delete action empties preview data and invalidates every open view", async () => {
-  const calls: string[] = [];
-  await deleteAllPreviewData(
-    { deleteAll: async () => { calls.push("deleteAll"); } },
-    { markStale: (reason) => { calls.push(reason); return { version: 1, reason, changedAt: "" }; } },
-  );
-  assert.deepEqual(calls, ["deleteAll", "preview-data-changed"]);
 });
 
 test("a failed preview run keeps the responses it observed for a structure report", async () => {

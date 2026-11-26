@@ -55,7 +55,6 @@ import {
   type PreviewStructureReport,
 } from "../../preview-sources/structure-report.ts";
 import { withPreviewDeviceIdentities } from "../../preview-sources/registry.ts";
-import { clearAllSignInData, type CollectionControl } from "../../settings/data-erasure.ts";
 import type { DashboardBlockKey } from "../../shared-shell/block-load-state.ts";
 import {
   withExpectedDataVersion,
@@ -96,8 +95,7 @@ export type AutomationDesktopLog = Readonly<{
 export type AutomationDesktopServiceDeps<Owner> = Readonly<{
   runtime: AutomationRuntime;
   provider: AutomationPersistenceProvider;
-  dataVersions: Pick<DataVersionStore, "snapshot" | "markStale">;
-  collection: CollectionControl;
+  dataVersions: Pick<DataVersionStore, "snapshot">;
   /** Read behind the service's credential state cache, and written by credential saves. */
   credentials: AutomationCredentialStore;
   settings: AutomationSettingsStore;
@@ -253,8 +251,9 @@ export function automationRunHistory(
 
 /**
  * Everything the renderer asks of Automation, in one place: each method is
- * the bridge method of one `automation:*` channel (plus the two Settings
- * actions that drive collection and Sign-in Erasure). The Electron IPC
+ * the bridge method of one `automation:*` channel (plus the Settings
+ * actions that read sign-in data and start collection), and the Sign-in
+ * Erasure that Settings' Reset ledger runs from the main process. The Electron IPC
  * adapter only forwards to it (ADR 0073); Electron capabilities arrive as
  * ports, so this module never imports `electron`.
  */
@@ -450,18 +449,13 @@ export function createAutomationDesktopService<Owner>(deps: AutomationDesktopSer
       }
       return { credentials: standing.kind, clearRequiresFinancialDataDeletion: holdsCardAccounts };
     },
-    clearSignInData: () => clearAllSignInData(
-      deps.collection,
-      {
-        cancelRegistrations: () => deps.deviceRegistration.cancelAll(),
-        erase: () => deps.eraseSignInDetails({
-          credentials: deps.credentials,
-          userDataDirectory: deps.userDataDirectory,
-        }),
-        refresh: () => credentials.refresh(),
-      },
-      dataVersions,
-    ),
+    /** Sign-in Erasure; the caller stops collection first and marks the views stale (`resetLedger`). */
+    async eraseSignInData(): Promise<void> {
+      // A registration still in progress would write its trusted device back.
+      await deps.deviceRegistration.cancelAll();
+      deps.eraseSignInDetails({ credentials: deps.credentials, userDataDirectory: deps.userDataDirectory });
+      await credentials.refresh();
+    },
     async collectAllSources() {
       await ensureAutomationRuntimeReady("collect-all-sources");
       const model = await runtime.desktopModel();

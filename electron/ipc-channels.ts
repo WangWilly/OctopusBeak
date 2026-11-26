@@ -47,6 +47,16 @@ type MisroutedFinancialBridges = {
 }[RendererFinancialOperation];
 
 /**
+ * Arguments a renderer operation's contract admits but only the main process
+ * may send. Deleting every Manual Asset belongs to Reset ledger, which stops
+ * collection and refuses while a cleanup runs (`resetLedger`).
+ */
+const HOST_ONLY_ARGUMENTS: Partial<Record<RendererFinancialOperation, (args: readonly unknown[]) => boolean>> = {
+  "financial.manualAssets.apply": ([command]) =>
+    typeof command === "object" && command !== null && (command as { kind?: unknown }).kind === "deleteAllManualAssets",
+};
+
+/**
  * Forwarding handlers for every renderer financial operation; the worker
  * validates the arguments against the operation's contract. When preload
  * routes a bridge method to another channel, this returns never and spreading
@@ -57,7 +67,10 @@ export function financialForwardHandlers(
 ): [MisroutedFinancialBridges] extends [never] ? Pick<OctopusBeakInvokeHandlers, RendererFinancialOperation> : never {
   return Object.fromEntries(RENDERER_FINANCIAL_OPERATIONS.map((operation) => [
     operation,
-    (_event: IpcMainInvokeEvent, ...args: readonly unknown[]) => financial.request(operation, args as never),
+    async (_event: IpcMainInvokeEvent, ...args: readonly unknown[]) => {
+      if (HOST_ONLY_ARGUMENTS[operation]?.(args)) throw new TypeError(`The renderer cannot send this ${operation} request.`);
+      return financial.request(operation, args as never);
+    },
   ])) as never;
 }
 
@@ -95,7 +108,6 @@ export const AUTOMATION_SERVICE_CHANNELS = {
   "automation:takeNotificationTarget": "takeNotificationTarget",
   "automation:previewStructureReport": "previewStructureReport",
   "automation:openPreviewStructureReportIssue": "openPreviewStructureReportIssue",
-  "settings:clearSignInData": "clearSignInData",
   "settings:signInDataStatus": "signInDataStatus",
   "settings:collectAllSources": "collectAllSources",
 } as const satisfies { readonly [Channel in InvokeChannel]?: ChannelMethod<Channel> };
@@ -110,8 +122,7 @@ export const SETTINGS_SERVICE_CHANNELS = {
   "settings:previewUsagePing": "previewUsagePing",
   "settings:shouldAskUsageStatistics": "shouldAskUsageStatistics",
   "settings:answerUsageStatistics": "answerUsageStatistics",
-  "settings:deletePreviewData": "deletePreviewData",
-  "settings:deleteFinancialData": "deleteFinancialData",
+  "settings:resetLedger": "resetLedger",
   "settings:ledgerCleanupEstimate": "ledgerCleanupEstimate",
   "settings:cleanUpLedger": "cleanUpLedger",
   "settings:ledgerCleanupStatus": "ledgerCleanupStatus",

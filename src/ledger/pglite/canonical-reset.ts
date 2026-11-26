@@ -82,7 +82,9 @@ export async function resetPGliteCanonicalStore(store: PGliteStore): Promise<voi
       ],
     );
   });
-  await store.exec("CHECKPOINT");
+  // The empty store is committed; a checkpoint that fails only leaves the flush to the next one, and the
+  // reset is done. Only a code: the error may name the ledger's path.
+  await store.exec("CHECKPOINT").catch(() => console.error("canonical-reset-checkpoint-failed"));
 }
 
 type SupersededEpoch = Readonly<{ namespace: string; stream: string; epoch_key: string }>;

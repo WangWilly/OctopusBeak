@@ -340,7 +340,7 @@ The exclusive read boundary through which product consumers request a Current Fi
 _Avoid_: Direct write-model query, consumer-specific precedence, source-payload calculation, product fallback
 
 **Canonical reset**:
-A deliberate, resumable replacement of all existing financial state, Preview Financial Data included, with an empty validated canonical store, preserving only Preserved Operational Configuration and Manual Assets and rebuilding financial knowledge through new contract-compliant collection. It happens once at a legacy cutover or whenever a person triggers it from Settings (「刪除所有收集的財務資料」); legacy stores and downloads are discarded without migration or quarantine, and ordinary restarts never fall back to prior data.
+A deliberate, resumable replacement of all existing financial state, Preview Financial Data included, with an empty validated canonical store, preserving only Preserved Operational Configuration and Manual Assets and rebuilding financial knowledge through new contract-compliant collection. It happens once at a legacy cutover or whenever a person triggers it from Settings (「重置帳本」 → 「金融機構的財務資料」); legacy stores and downloads are discarded without migration or quarantine, and ordinary restarts never fall back to prior data.
 _Avoid_: Canonical reset cutover, financial data erasure, 刪除所有帳戶資料, 刪除所有財務資料, legacy migration, compatibility backfill, dual read, partial history carry-forward
 
 **Preserved operational configuration**:

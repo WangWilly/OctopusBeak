@@ -51,7 +51,7 @@ const en = {
     credentialReadFailed: "Read failed",
     credentialsUnreadableTitle: "Saved sign-in data can't be read",
     credentialsUnreadableBody:
-      "For example, after moving to a new Mac or resetting the Keychain. Clear all sign-in data in Settings, then enter each source's sign-in details again.",
+      "For example, after moving to a new Mac or resetting the Keychain. In Settings, choose Reset ledger and clear sign-in data for financial institutions, then enter each source's sign-in details again.",
     credentialsUnreadableAction: "Open Settings",
     syncAll: "Sync all",
     syncInProgress: "Sync in progress",
@@ -337,9 +337,9 @@ const en = {
     selectOneStatementType: (bank: string) =>
       `Select at least one ${bank} statement type.`,
     needsSetup: "Needs setup",
-    resetRequired: "Delete all collected financial data to sync",
+    resetRequired: "To sync, delete financial data in Settings › Reset ledger",
     resetRequiredDetail:
-      "A data format update changed how credit-card data is stored. This source syncs again after you delete all collected financial data in Settings. Sign-in details, enabled sources, schedules, what each source collects, exchange rates, settings, and manual assets are kept.",
+      "A data format update changed how credit-card data is stored. This source syncs again after you delete financial data from financial institutions with Reset ledger in Settings. Sign-in details, enabled sources, schedules, what each source collects, exchange rates, settings, and manual assets are kept.",
     selectedStatementCount: (selected: number, total: number) =>
       `${selected} / ${total} selected`,
     partialSyncWarning:
@@ -473,7 +473,7 @@ const zh: typeof en = {
     credentialStatus: "登入資料狀態",
     credentialReadFailed: "讀取失敗",
     credentialsUnreadableTitle: "無法讀取已儲存的登入資料",
-    credentialsUnreadableBody: "例如換到新的 Mac 或重設鑰匙圈之後。請到「設定」清除所有登入資料，再重新輸入各來源的登入資料。",
+    credentialsUnreadableBody: "例如換到新的 Mac 或重設鑰匙圈之後。請到「設定」的「重置帳本」清除「金融機構的登入資料」，再重新輸入各來源的登入資料。",
     credentialsUnreadableAction: "前往設定",
     syncAll: "同步全部",
     syncInProgress: "同步執行中",
@@ -738,9 +738,9 @@ const zh: typeof en = {
     selectAllStatements: "全選",
     selectOneStatementType: (bank) => `請至少選擇一種 ${bank} 帳戶型態。`,
     needsSetup: "需要設定",
-    resetRequired: "需刪除收集的財務資料才能同步",
+    resetRequired: "需到設定的「重置帳本」刪除金融機構的財務資料才能同步",
     resetRequiredDetail:
-      "資料格式更新後，信用卡資料改用新的儲存方式。到設定刪除所有收集的財務資料後，這個來源才能再同步。登入資料、已啟用的來源、排程、各來源要收集的項目、匯率、設定與手動資產都會保留。",
+      "資料格式更新後，信用卡資料改用新的儲存方式。到設定的「重置帳本」刪除「金融機構的財務資料」後，這個來源才能再同步。登入資料、已啟用的來源、排程、各來源要收集的項目、匯率、設定與手動資產都會保留。",
     selectedStatementCount: (selected, total) => `已選 ${selected} / ${total}`,
     partialSyncWarning: "部分帳戶資料抓取失敗；已成功取得的資料已寫入。",
     prerequisiteNoticesTitle: "執行前需要處理",

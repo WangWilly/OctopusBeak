@@ -26,6 +26,7 @@ import type {
   DataVersionSnapshot,
 } from "$lib/shared-shell/data-version.ts";
 import type { DashboardBlockKey } from "$lib/shared-shell/block-load-state.ts";
+import type { LedgerResetPart, LedgerResetResult } from "$lib/settings/data-erasure.ts";
 import type { DashboardBlockPayload } from "$lib/shared-shell/dashboard-blocks.ts";
 
 export type CredentialGroupDto = AutomationCredentialGroup & {
@@ -135,7 +136,9 @@ export type AutomationActionResult =
   | { ok: true }
   | { ok: true; closed: boolean };
 
-/** What Clear all sign-in data would find and cost (ADR 0149). */
+export type { LedgerResetPart, LedgerResetResult };
+
+/** What clearing the sign-in data in Reset ledger would find and cost (ADR 0149). */
 export type SignInDataStatus = Readonly<{
   /** `undecodable`: the Keychain cannot decrypt them, or the file is damaged; clearing replaces it. `unreachable`: a filesystem error; clearing fails. */
   credentials: "readable" | "undecodable" | "unreachable";
@@ -294,16 +297,17 @@ export type OctopusBeakApi = {
     /** True once per install until the person answers the usage statistics question. */
     shouldAskUsageStatistics(): Promise<boolean>;
     answerUsageStatistics(enabled: boolean): Promise<SystemSettingsDto>;
-    deletePreviewData(): Promise<void>;
-    /** Canonical Reset: every source's financial data. */
-    deleteFinancialData(): Promise<void>;
-    /** Sign-in Erasure: every source's sign-in details and sessions. */
-    clearSignInData(): Promise<void>;
+    /**
+     * Reset ledger: deletes the parts named, in a fixed order, with collection
+     * stopped once for all of them, and says which finished. Refused while an
+     * App Data Cleanup runs.
+     */
+    resetLedger(parts: readonly LedgerResetPart[]): Promise<LedgerResetResult>;
     /** Whether the stored Sign-in Details can be read, and whether clearing them would need a Canonical Reset (ADR 0149). */
     signInDataStatus(): Promise<SignInDataStatus>;
     /** About how much Clean up app data would free, and the room it and its backup need; may pause the App for seconds. */
     ledgerCleanupEstimate(): Promise<LedgerCleanupEstimateDto>;
-    /** Compacts, then returns the space; resolves when it ends. */
+    /** Compacts, then returns the space; resolves when it ends. Refused while the ledger is being reset. */
     cleanUpLedger(request: Readonly<{ backup: boolean; keepBackup: boolean }>): Promise<LedgerCleanupResultDto>;
     /** The running cleanup's progress, or how the last one ended. */
     ledgerCleanupStatus(): Promise<LedgerCleanupStatusDto>;

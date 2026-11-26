@@ -63,8 +63,6 @@ import {
 import { registerOctopusBeakIpc } from "./ipc.ts";
 import { createSettingsDesktopService } from "../src/lib/settings/server/settings-desktop-service.ts";
 import { createSpendingDesktopService } from "../src/lib/spending/server/spending-desktop-service.ts";
-import { deleteAllFinancialData } from "../src/lib/settings/data-erasure.ts";
-import { deleteAllPreviewData } from "../src/lib/preview-sources/delete-preview-data.ts";
 import { broadcast } from "./broadcast.ts";
 import {
   createAutomationDesktopService,
@@ -530,7 +528,6 @@ async function start() {
     runtime,
     provider: operationalRuntime.provider,
     dataVersions: dataVersionStore,
-    collection,
     credentials,
     settings: automationSettings,
     deviceRegistration: createDeviceRegistrationHost({
@@ -663,10 +660,15 @@ async function start() {
     usagePing: usagePinger,
     dataVersions: dataVersionStore,
     collection,
-    preview: operationalRuntime.provider.preview,
-    financial: { reset: () => operationalRuntime.worker.financial.request("financial.canonical.reset", []) },
-    deleteAllPreviewData,
-    deleteAllFinancialData,
+    ledgerReset: {
+      financial: () => operationalRuntime.worker.financial.request("financial.canonical.reset", []),
+      preview: () => operationalRuntime.provider.preview.deleteAll(),
+      manual: async () => {
+        const result = await operationalRuntime.worker.financial.request("financial.manualAssets.apply", [{ kind: "deleteAllManualAssets" }]);
+        if (!result.ok) throw new Error(`Manual assets were not deleted: ${result.code}`);
+      },
+      "sign-in": () => automation.eraseSignInData(),
+    },
     ledgerCleanup: {
       estimate: () => operationalRuntime.worker.financial.request("financial.ledger.cleanupEstimate", []),
       run: (request) => operationalRuntime.worker.financial.request("financial.canonical.compact", [request]),

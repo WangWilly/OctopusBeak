@@ -104,10 +104,17 @@ test("Settings offers onboarding start when none exists and restart only for com
     const { version } = JSON.parse(readFileSync(new URL("../../../package.json", import.meta.url), "utf8")) as { version: string };
     assert.match(text(renderSettings("completed")), new RegExp(`Version ${version.replaceAll(".", "\\.")}`), "the version shows once, in Automatic updates beside Check now");
 
-    for (const label of ["Delete all collected financial data", "Clear all sign-in data"]) {
-      const button = findButton(renderSettings("completed"), label);
-      assert.ok(button, `Settings offers ${label}`);
-      assert.match(button, /class="button danger\b/, `${label} looks destructive`);
+    const resetButton = findButton(renderSettings("completed"), "Reset ledger");
+    assert.ok(resetButton, "Settings offers Reset ledger");
+    assert.match(resetButton, /class="button danger\b/, "Reset ledger looks destructive");
+    const dataSection = renderSettings("completed").match(/<section id="settings-data"[\s\S]*?<\/section>/u)?.[0] ?? "";
+    assert.deepEqual(
+      [...dataSection.matchAll(/<button\b[^>]*\bid="([^"]+)"/gu)].map(([, id]) => id),
+      ["clean-up-app-data", "reset-ledger"],
+      "the data section has exactly two actions",
+    );
+    for (const old of ["Delete all collected financial data", "Delete all preview data", "Delete all manual assets", "Clear all sign-in data"]) {
+      assert.doesNotMatch(text(renderSettings("completed")), new RegExp(old, "u"), `Reset ledger replaces ${old}`);
     }
 
     for (const status of ["completed", "exited"] as const) {

@@ -42,6 +42,21 @@ test("each forwarded channel requests its own operation with the renderer's argu
   }
 });
 
+test("the renderer cannot delete every Manual Asset; only Reset ledger in the main process can", async () => {
+  const calls: Array<[string, readonly unknown[]]> = [];
+  const port = {
+    async request(operation: string, args: readonly unknown[]) {
+      calls.push([operation, args]);
+      return { ok: true };
+    },
+  } as unknown as PGliteFinancialPort;
+  const apply = financialForwardHandlers(port)["financial.manualAssets.apply"] as (event: unknown, ...args: unknown[]) => Promise<unknown>;
+  await assert.rejects(() => apply({}, { kind: "deleteAllManualAssets" }), TypeError);
+  assert.deepEqual(calls, [], "the worker never saw it");
+  await apply({}, { kind: "deleteAsset", assetId: "a" });
+  assert.deepEqual(calls, [["financial.manualAssets.apply", [{ kind: "deleteAsset", assetId: "a" }]]], "every other command still goes through");
+});
+
 function recordingService<Service>() {
   const calls: Array<[string, readonly unknown[]]> = [];
   const service = new Proxy({}, {
@@ -78,7 +93,6 @@ test("each settings service channel calls its bridge method's namesake with the 
   const { service, calls } = recordingService<SettingsServiceForwards>();
   const handlers = settingsForwardHandlers(service);
 
-  assert.equal(Object.hasOwn(handlers, "settings:clearSignInData"), false, "sign-in erasure stays with automation");
   await assertForwards(handlers, SETTINGS_SERVICE_CHANNELS, calls);
 });
 
