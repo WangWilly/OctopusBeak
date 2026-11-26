@@ -1,15 +1,15 @@
 # Download statistics
 
-Snapshot: 2026-11-25. Counts are cumulative GitHub Release installer downloads (DMG and ZIP), not unique people or installs.
+Snapshot: 2026-11-26. Counts are cumulative GitHub Release installer downloads (DMG and ZIP), not unique people or installs.
 
-- Total installer downloads: **321**
-- Through the website button (`OctopusBeak-arm64.dmg`): **146**
+- Total installer downloads: **323**
+- Through the website button (`OctopusBeak-arm64.dmg`): **148**
 
 ## By release
 
 | Release | Published | Website DMG | Versioned DMG | ZIP | Total |
 | --- | --- | ---: | ---: | ---: | ---: |
-| v0.11.0 | 2026-11-19 | 0 | 2 | 1 | 3 |
+| v0.11.0 | 2026-11-19 | 2 | 2 | 1 | 5 |
 | v0.10.0 | 2026-10-31 | 22 | 1 | 2 | 25 |
 | v0.9.5 | 2026-10-29 | 9 | 1 | 1 | 11 |
 | v0.9.4 | 2026-10-26 | 20 | 1 | 1 | 22 |
@@ -61,6 +61,7 @@ Snapshot: 2026-11-25. Counts are cumulative GitHub Release installer downloads (
 
 | Since | Until | New downloads |
 | --- | --- | ---: |
+| 2026-11-25 | 2026-11-26 | 2 |
 | 2026-11-24 | 2026-11-25 | 0 |
 | 2026-11-23 | 2026-11-24 | 0 |
 | 2026-11-22 | 2026-11-23 | 0 |
