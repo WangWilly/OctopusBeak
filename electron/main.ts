@@ -50,17 +50,12 @@ import { applyOctopusBeakAppIdentity } from "./app-identity.ts";
 import { openSafeStorageCredentialStore } from "./credential-codec.ts";
 import { askAboutStuckRestore, recoverUnusableLedger } from "./ledger-recovery.ts";
 import { isLedgerUnusable } from "./ledger-unusable.ts";
-import {
-  readDamagedLedgers,
-  readLedgerCleanupBackup,
-  removeDamagedLedger,
-  removeLedgerBackup,
-} from "../src/ledger/pglite/data-dir-backup.ts";
+import { readLedgerCleanupBackup, removeLedgerBackup } from "../src/ledger/pglite/data-dir-backup.ts";
+import { damagedLedgerSummary, deleteDamagedLedgers } from "./damaged-ledgers.ts";
 import { LEDGER_BASELINE_VERSIONS } from "../src/ledger/pglite/baseline-versions.ts";
 import {
   ledgerRestoreRequested,
   requestLedgerRestore,
-  restoreHold,
   resumeLedgerRestore,
   takeFailedRestoreBackup,
   takeLedgerRestoreOutcome,
@@ -766,6 +761,8 @@ async function start() {
     forgetStaleFailureDiagnostic(run.taskId, run.taskRunId);
     usagePinger.recordFailures(runFailures(run));
   });
+  /** Codes only: an error's message may carry a path. */
+  const logCode = (code: string, detail?: string) => console.error(code, ...(detail === undefined ? [] : [detail]));
   const settings = createSettingsDesktopService({
     settingsFile: automationSettings,
     onSystemSettingsChanged: (settings) => services.settingsChanged(settings),
@@ -775,6 +772,7 @@ async function start() {
     ledgerReset: {
       financial: () => operationalRuntime.worker.financial.request("financial.canonical.reset", []),
       preview: () => operationalRuntime.provider.preview.deleteAll(),
+      damaged: () => deleteDamagedLedgers(ledgerDataDir, logCode),
       manual: async () => {
         const result = await operationalRuntime.worker.financial.request("financial.manualAssets.apply", [{ kind: "deleteAllManualAssets" }]);
         if (!result.ok) throw new Error(`Manual assets were not deleted: ${result.code}`);
@@ -793,14 +791,9 @@ async function start() {
       reveal: (backup) => shell.showItemInFolder(backup),
       remove: removeLedgerBackup,
     },
-    // Listed, measured, revealed and deleted here; the renderer names one only by the time in its name.
-    damagedLedgers: {
-      list: () => readDamagedLedgers(ledgerDataDir),
-      reveal: (ledger) => shell.showItemInFolder(ledger),
-      remove: removeDamagedLedger,
-      heldByRestore: (ledger) => restoreHold(ledgerDataDir, path.basename(ledger)),
-    },
-    log: (code, detail) => console.error(code, ...(detail === undefined ? [] : [detail])),
+    // Counted, measured and checked against the restore files here; the renderer gets no path or name.
+    damagedLedgerSummary: () => damagedLedgerSummary(ledgerDataDir),
+    log: logCode,
     cleanupRestore: {
       requested: () => ledgerRestoreRequested(ledgerDataDir),
       request: (backup) => requestLedgerRestore(ledgerDataDir, backup, {

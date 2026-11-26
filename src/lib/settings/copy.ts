@@ -116,6 +116,7 @@ const en = {
     resetLedgerParts: {
       financial: "Financial data from financial institutions",
       preview: "Preview data (financial institutions)",
+      damaged: "Damaged ledger records",
       manual: "Financial data you entered by hand",
       "sign-in": "Sign-in data for financial institutions",
     },
@@ -123,12 +124,20 @@ const en = {
       financial:
         "Every account, transaction, and statement collected from every source, including e-invoices, which do not come from a financial institution, and the categories and transfer pairings you set on them. The cleanup backup is deleted too, and so is any damaged ledger set aside earlier, with everything in it: manual assets and other data you entered that only it still holds cannot be recovered afterwards. Sources, schedules, exchange rates, and settings are kept.",
       preview: "Every balance and transaction preview sources collected. Verified data is kept, and preview sources collect again on their next sync.",
+      damaged: "Backup records of damaged ledgers. They cannot be recovered once deleted. Contact support to try to recover them.",
       manual:
         "Every asset you entered by hand, with its valuations and transactions. Categories and pairings you set on collected transactions belong to financial data from financial institutions.",
       "sign-in":
         "Every source's sign-in details, signed-in sessions, and trusted-device registrations. Each source needs them again, and device registration where required, before it syncs again. Financial data, sources, and schedules are kept.",
     },
     resetLedgerPreviewIncluded: "Included in financial data from financial institutions.",
+    resetLedgerDamagedLabel: (count: number, megabytes: string | null) =>
+      `${count} damaged ledger ${count === 1 ? "record" : "records"}${megabytes === null ? "" : ` (about ${megabytes} MB)`}`,
+    resetLedgerDamagedHeld: {
+      "restore-under-way": "A restore has not finished yet, so these cannot be deleted for now.",
+      "restore-unreadable":
+        "A restore record cannot be read, so these are not deleted on their own to be safe. Ticking financial data from financial institutions removes them too.",
+    },
     resetLedgerSignInWarning:
       "Clearing also replaces the key that tells your credit cards apart. Credit card sources then need financial data from financial institutions deleted before they sync again, so no card is collected twice. Tick financial data from financial institutions too to do both now.",
     resetLedgerWillDelete: "Deletes:",
@@ -195,22 +204,6 @@ const en = {
     cleanupRestoreRefused: "The restore could not start. Nothing changed. Try again.",
     cleanupRestoreDone: (date: string) => `The ledger is back to its state on ${date}.`,
     cleanupRestoreFailed: "This backup could not be restored. The ledger is unchanged.",
-    damagedLedgers: "Damaged ledgers",
-    damagedLedgersHint:
-      "When the ledger could not open and you chose to rebuild or restore, OctopusBeak set it aside and kept it. OctopusBeak no longer uses it; it may hold manual assets and other data you entered that exist only there.",
-    damagedLedgerStatus: (date: string, megabytes: string) => `Damaged ledger set aside on ${date}, about ${megabytes} MB.`,
-    damagedLedgerStatusUnmeasured: (date: string) => `Damaged ledger set aside on ${date}.`,
-    damagedLedgerReveal: "Show in Finder",
-    damagedLedgerDelete: "Delete",
-    damagedLedgerDeleteConfirm:
-      "Delete this damaged ledger? It may hold manual assets and other data you entered that exist only there, and they cannot be recovered once it is deleted.",
-    damagedLedgerDeleteAction: "Delete",
-    damagedLedgerDeleted: "Damaged ledger deleted",
-    damagedLedgerDeleteFailed: "The damaged ledger could not be deleted. Try again.",
-    damagedLedgerHeld: {
-      "restore-under-way": "A restore has not finished yet, so this cannot be deleted for now.",
-      "restore-unreadable": "A restore record cannot be read, so this is kept to be safe. Resetting the ledger removes both.",
-    },
     collectAllSources: "Collect every source now",
     collectAllSourcesStarted: "Collection started",
     collectAllSourcesFailed: "Collection could not start. Start it from Automation.",
@@ -356,16 +349,23 @@ const zh: typeof en = {
     resetLedgerParts: {
       financial: "金融機構的財務資料",
       preview: "預覽資料（金融機構）",
+      damaged: "損壞的帳本紀錄",
       manual: "人工填入的財務資料",
       "sign-in": "金融機構的登入資料",
     },
     resetLedgerPartHints: {
       financial: "所有來源收集的帳戶、交易與帳單，包括不是來自金融機構的電子發票，以及你在這些交易上設定的分類與轉帳配對；清理應用資料的備份也會一併刪除；先前因損壞而移到一旁的帳本也會連同裡面所有內容刪除，只存在那裡的手動資產與其他你輸入的資料之後無法取回。來源、排程、匯率與設定會保留。",
       preview: "預覽來源收集的所有餘額與交易。已驗證的資料會保留，預覽來源下次同步時會重新收集。",
+      damaged: "毀損的帳本備援紀錄，刪除後無法取回。聯繫客服嘗試復原。",
       manual: "你手動輸入的所有資產，以及估值與收支紀錄。你在收集的交易上設定的分類與配對屬於「金融機構的財務資料」。",
       "sign-in": "所有來源的登入資料、登入狀態與信任裝置註冊。每個來源都要重新輸入登入資料，需要時也要重新註冊裝置，才能再次同步。保留財務資料、來源與排程。",
     },
     resetLedgerPreviewIncluded: "已包含在「金融機構的財務資料」中。",
+    resetLedgerDamagedLabel: (count, megabytes) => `${count} 個損壞的帳本紀錄${megabytes === null ? "" : `（約 ${megabytes} MB）`}`,
+    resetLedgerDamagedHeld: {
+      "restore-under-way": "還原尚未完成，暫時無法刪除。",
+      "restore-unreadable": "有一份無法讀取的還原紀錄，為了安全不會單獨刪除。勾選「金融機構的財務資料」會一併清除。",
+    },
     resetLedgerSignInWarning: "清除時也會換掉用來辨識信用卡的金鑰。之後信用卡來源要先刪除金融機構的財務資料才能再同步，同一張卡才不會被收集兩次。可以一併勾選「金融機構的財務資料」，一次完成。",
     resetLedgerWillDelete: "將刪除：",
     resetLedgerIrreversible: "此動作無法復原。",
@@ -428,20 +428,6 @@ const zh: typeof en = {
     cleanupRestoreRefused: "無法開始還原，帳本沒有改變，請再試一次。",
     cleanupRestoreDone: (date: string) => `帳本已回到 ${date} 的狀態。`,
     cleanupRestoreFailed: "無法還原這份備份，帳本維持原狀。",
-    damagedLedgers: "損壞的帳本",
-    damagedLedgersHint: "帳本曾經無法開啟，你選擇重建或還原時，OctopusBeak 把它移到一旁保留。OctopusBeak 不會再使用它；裡面可能有只存在那裡的手動資產與其他你輸入的資料。",
-    damagedLedgerStatus: (date, megabytes) => `${date} 移到一旁的損壞帳本，佔約 ${megabytes} MB。`,
-    damagedLedgerStatusUnmeasured: (date) => `${date} 移到一旁的損壞帳本。`,
-    damagedLedgerReveal: "在 Finder 顯示",
-    damagedLedgerDelete: "刪除",
-    damagedLedgerDeleteConfirm: "刪除這份損壞的帳本？裡面可能有只存在那裡的手動資產與其他你輸入的資料，刪除後無法取回。",
-    damagedLedgerDeleteAction: "刪除",
-    damagedLedgerDeleted: "已刪除損壞的帳本",
-    damagedLedgerDeleteFailed: "無法刪除損壞的帳本，請再試一次。",
-    damagedLedgerHeld: {
-      "restore-under-way": "還原尚未完成，暫時無法刪除。",
-      "restore-unreadable": "有一份無法讀取的還原紀錄，為了安全不會刪除。重置帳本會一併清除。",
-    },
     collectAllSources: "立即收集所有來源",
     collectAllSourcesStarted: "已開始收集",
     collectAllSourcesFailed: "無法開始收集，請到自動化頁面開始。",

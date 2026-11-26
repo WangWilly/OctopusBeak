@@ -194,23 +194,24 @@ export type CleanupBackupDto = Readonly<{
   restorable: boolean;
 }>;
 
-/** A damaged ledger set aside by the unusable-ledger dialog (ADR 0150); no path reaches the renderer. */
-export type DamagedLedgerDto = Readonly<{
-  /** The UTC time in the folder's name, which the main process checks against the folders it lists. */
-  id: string;
-  /** null when the folder could not be measured; it can still be deleted. */
+/**
+ * The damaged ledgers the unusable-ledger dialog set aside (ADR 0150), as
+ * Reset ledger offers them: how many, their total size, and whether a
+ * restore file keeps them. No path or name reaches the renderer.
+ */
+export type DamagedLedgerSummaryDto = Readonly<{
+  count: number;
+  /** null when one of them could not be measured; they can still be deleted. */
   bytes: number | null;
-  setAsideAt: string;
-}> & (
-  | Readonly<{ deletable: true }>
-  /** A restore file keeps it until the restore ends or a Canonical Reset removes the file; trying again will not help. */
-  | Readonly<{ deletable: false; hold: DamagedLedgerHold }>
-);
+  /** Why they cannot be deleted on their own for now, or null. */
+  hold: DamagedLedgerHold | null;
+}>;
 
 /**
- * Why a damaged ledger cannot be deleted for now. `restore-under-way`: a
- * restore not yet finished names it. `restore-unreadable`: a restore file
- * cannot be read, so it may name it.
+ * Why the damaged ledgers cannot be deleted on their own for now.
+ * `restore-under-way`: a restore not yet finished names one.
+ * `restore-unreadable`: a restore file cannot be read, so it may name one.
+ * A Canonical Reset removes them and the restore's files together.
  */
 export type DamagedLedgerHold = "restore-under-way" | "restore-unreadable";
 
@@ -348,15 +349,8 @@ export type OctopusBeakApi = {
     restoreCleanupBackup(): Promise<void>;
     /** How the last restore ended, once; null when there is nothing new to say. */
     takeCleanupRestoreOutcome(): Promise<CleanupRestoreOutcomeDto | null>;
-    /** The damaged ledgers set aside beside the ledger, newest first. */
-    damagedLedgers(): Promise<readonly DamagedLedgerDto[]>;
-    /** Shows the damaged ledger `id` names in Finder. */
-    revealDamagedLedger(id: string): Promise<void>;
-    /**
-     * Deletes the damaged ledger `id` names; resolves with those left. Refused while a cleanup or a reset runs,
-     * once a restore is asked for, and while a restore file names that folder or cannot be read.
-     */
-    deleteDamagedLedger(id: string): Promise<readonly DamagedLedgerDto[]>;
+    /** The damaged ledgers Reset ledger can delete, or null when there is none. */
+    damagedLedgerSummary(): Promise<DamagedLedgerSummaryDto | null>;
     /** Starts every enabled source, as scheduled collection would. */
     collectAllSources(): Promise<AutomationRunManyResult>;
   };

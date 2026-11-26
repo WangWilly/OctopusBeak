@@ -39,15 +39,6 @@
     tickLedgerResetPart,
     type LedgerResetOutcome,
   } from "$lib/settings/ledger-reset.ts";
-  import {
-    NO_DAMAGED_LEDGERS,
-    cancelDamagedLedgerDelete,
-    confirmDamagedLedgerDelete,
-    damagedLedgersShown,
-    deleteDamagedLedger,
-    readDamagedLedgers,
-    type DamagedLedgersView,
-  } from "$lib/settings/damaged-ledgers.ts";
   import Modal from "$lib/shared-shell/components/Modal.svelte";
   import { locale, localeLabels, locales, setLocale, t, type Locale } from "$lib/i18n/i18n.ts";
   import {
@@ -82,7 +73,14 @@
     downloadPercent,
     type AppUpdateUiContext,
   } from "$lib/shared-shell/app-update-context.ts";
-  import type { CleanupBackupDto, CleanupRestoreOutcomeDto, LedgerResetPart, SettingsFocus, SignInDataStatus } from "$lib/desktop/api.ts";
+  import type {
+    CleanupBackupDto,
+    CleanupRestoreOutcomeDto,
+    DamagedLedgerSummaryDto,
+    LedgerResetPart,
+    SettingsFocus,
+    SignInDataStatus,
+  } from "$lib/desktop/api.ts";
   import { signInDataGuidance } from "$lib/automation/credentials-unreadable.ts";
   import { activeSectionAt } from "$lib/settings/section-spy.ts";
 
@@ -148,7 +146,9 @@
   let resetPending = false;
   let resetTicked: ReadonlySet<LedgerResetPart> = new Set();
   let resetOutcome: LedgerResetOutcome | null = null;
-  $: resetChoices = ledgerResetChoices(resetTicked);
+  /** The damaged ledgers set aside (ADR 0150), read from the main process when the dialog opens; null for none. */
+  let damagedSummary: DamagedLedgerSummaryDto | null = null;
+  $: resetChoices = ledgerResetChoices(resetTicked, damagedSummary);
   /** Unknown until read; a failed read shows nothing extra rather than a guess. */
   let signInStatus: SignInDataStatus | null = null;
   let signInStatusRead = 0;
@@ -169,13 +169,10 @@
   let cleanupRestorePending = false;
   /** How the last restore ended, said once after the restart. */
   let cleanupRestoreNotice: CleanupRestoreOutcomeDto | null = null;
-  /** The damaged ledgers the unusable-ledger dialog set aside (ADR 0150); the row shows only while one exists. */
-  let damagedLedgers: DamagedLedgersView = NO_DAMAGED_LEDGERS;
-  $: damagedShown = damagedLedgersShown(damagedLedgers);
   $: cleanupBusy = cleanupView.kind === "checking" || cleanupView.kind === "running";
   $: cleanupBar = cleanupView.kind === "running" ? cleanupProgressBar(cleanupView.progress) : null;
   $: dataActionPending = resetPending || cleanupBusy || cleanupBackupStatus === "pending" || cleanupRestorePending
-    || cleanupRestore.kind === "restarting" || damagedLedgers.action.kind === "deleting";
+    || cleanupRestore.kind === "restarting";
   let saveStatus: "idle" | "pending" | "success" | "error" = "idle";
   let saveError = "";
   let saveVersion = 0;
@@ -212,7 +209,6 @@
     displayScaleAvailable = supportsDisplayScale(window.octopusBeak);
     void readSignInStatus();
     void readCleanupBackup();
-    void readDamaged();
     void takeCleanupRestoreNotice(window.octopusBeak.settings).then((notice) => (cleanupRestoreNotice = notice));
     // A cleanup started before Settings was left is still running in the worker, and its dialog shows again;
     // a failed one shows until the person starts again, across restarts.
@@ -438,6 +434,7 @@
     resetOpen = true;
     // Whether clearing sign-in data would also need the financial data deleted.
     void readSignInStatus();
+    void readDamagedSummary();
   }
 
   async function resetLedger() {
@@ -450,12 +447,17 @@
     resetOpen = false;
     resetOutcome = outcome;
     // The reset removes the Cleanup Backup before it empties the store, so even a failed one may have removed it.
-    if (parts.includes("financial")) {
-      void readCleanupBackup();
-      // The reset deletes the damaged ledgers too.
-      void readDamaged();
-    }
+    if (parts.includes("financial")) void readCleanupBackup();
+    void readDamagedSummary();
     await readSignInStatus();
+  }
+
+  async function readDamagedSummary() {
+    try {
+      damagedSummary = await window.octopusBeak.settings.damagedLedgerSummary();
+    } catch {
+      // Keeps what was read last; the main process refuses a deletion a restore keeps whatever the dialog shows.
+    }
   }
 
   /** Names for a list of parts, in the person's language. */
@@ -535,22 +537,6 @@
       cleanupBackupStatus = "error";
       void readCleanupBackup();
     }
-  }
-
-  async function readDamaged() {
-    damagedLedgers = await readDamagedLedgers(window.octopusBeak.settings, damagedLedgers);
-  }
-
-  async function revealDamagedLedger(id: string) {
-    try {
-      await window.octopusBeak.settings.revealDamagedLedger(id);
-    } catch {
-      // Finder did not open; nothing in Settings changed.
-    }
-  }
-
-  async function deleteConfirmedDamagedLedger() {
-    await deleteDamagedLedger(window.octopusBeak.settings, damagedLedgers, (view) => (damagedLedgers = view));
   }
 
   /** The day a backup expires, as the system timezone reads it. */
@@ -1209,69 +1195,6 @@
               </div>
             </Modal>
           {/if}
-          {#if damagedShown !== "hidden"}
-            <div id="damaged-ledgers-row" class="setting-row damaged-ledgers">
-              <div class="setting-label-group">
-                <span class="setting-label">{$t.settings.damagedLedgers}</span>
-                {#if damagedShown === "ledgers"}
-                  <small class="setting-hint">{$t.settings.damagedLedgersHint}</small>
-                {/if}
-                {#if damagedLedgers.action.kind === "deleted"}
-                  <small id="damaged-ledger-deleted" class="setting-hint" role="status">{$t.settings.damagedLedgerDeleted}</small>
-                {/if}
-              </div>
-              {#each damagedLedgers.ledgers as ledger (ledger.id)}
-                {@const action = damagedLedgers.action}
-                {@const confirming = action.kind === "confirming" && action.id === ledger.id}
-                {@const date = backupDate(ledger.setAsideAt, $systemTimezone)}
-                <div class="damaged-ledger" data-damaged-ledger={ledger.id}>
-                  <div class="setting-label-group">
-                    <small class="setting-hint">
-                      {ledger.bytes === null
-                        ? $t.settings.damagedLedgerStatusUnmeasured(date)
-                        : $t.settings.damagedLedgerStatus(date, megabytes(ledger.bytes))}
-                    </small>
-                    {#if !ledger.deletable}
-                      <small id={`damaged-ledger-held-${ledger.id}`} class="setting-hint warning-hint">{$t.settings.damagedLedgerHeld[ledger.hold]}</small>
-                    {/if}
-                  </div>
-                  {#if !confirming}
-                    <div class="onboarding-setting-actions">
-                      <button
-                        class="button icon-only"
-                        type="button"
-                        aria-label={$t.settings.damagedLedgerReveal}
-                        title={$t.settings.damagedLedgerReveal}
-                        onclick={() => revealDamagedLedger(ledger.id)}
-                      ><FolderOpen size={16} strokeWidth={2} aria-hidden="true" /></button>
-                      <button
-                        class="button"
-                        type="button"
-                        disabled={dataActionPending || !ledger.deletable}
-                        aria-describedby={ledger.deletable ? undefined : `damaged-ledger-held-${ledger.id}`}
-                        aria-busy={action.kind === "deleting" && action.id === ledger.id}
-                        onclick={() => (damagedLedgers = confirmDamagedLedgerDelete(damagedLedgers, ledger.id))}
-                      >{$t.settings.damagedLedgerDelete}</button>
-                    </div>
-                  {/if}
-                  {#if confirming}
-                    <div class="damaged-ledger-confirm" role="group" aria-labelledby={`damaged-ledger-confirm-${ledger.id}`}>
-                      <p id={`damaged-ledger-confirm-${ledger.id}`}>{$t.settings.damagedLedgerDeleteConfirm}</p>
-                      <div class="onboarding-setting-actions">
-                        <button class="button" type="button" onclick={() => (damagedLedgers = cancelDamagedLedgerDelete(damagedLedgers))}>{$t.common.cancel}</button>
-                        <button class="button danger" type="button" disabled={dataActionPending} onclick={deleteConfirmedDamagedLedger}>{$t.settings.damagedLedgerDeleteAction}</button>
-                      </div>
-                    </div>
-                  {:else if action.kind === "failed" && action.id === ledger.id}
-                    <div class="settings-error damaged-ledger-error" role="alert">
-                      <CircleAlert size={16} strokeWidth={2.25} aria-hidden="true" />
-                      <span>{$t.settings.damagedLedgerDeleteFailed}</span>
-                    </div>
-                  {/if}
-                </div>
-              {/each}
-            </div>
-          {/if}
           <div id="reset-ledger-row" class="setting-row" tabindex="-1">
             <div class="setting-label-group">
               <span class="setting-label">{$t.settings.resetLedger}</span>
@@ -1336,20 +1259,27 @@
                 <fieldset class="reset-options" disabled={resetPending}>
                   <legend class="visually-hidden">{$t.settings.resetLedgerChoose}</legend>
                   {#each resetChoices.options as option (option.part)}
-                    <label class="reset-option" class:locked={option.locked}>
+                    <label class="reset-option" class:locked={option.locked || option.held !== null}>
                       <input
                         id={`reset-ledger-${option.part}`}
                         type="checkbox"
                         checked={option.checked}
-                        disabled={option.locked}
+                        disabled={option.locked || option.held !== null}
                         aria-describedby={`reset-ledger-${option.part}-hint`}
                         onchange={(event) => (resetTicked = tickLedgerResetPart(resetTicked, option.part, event.currentTarget.checked))}
                       />
                       <span class="reset-option-text">
-                        <span class="reset-option-label">{$t.settings.resetLedgerParts[option.part]}</span>
+                        <span class="reset-option-label">
+                          {option.part === "damaged" && damagedSummary
+                            ? $t.settings.resetLedgerDamagedLabel(damagedSummary.count, damagedSummary.bytes === null ? null : megabytes(damagedSummary.bytes))
+                            : $t.settings.resetLedgerParts[option.part]}
+                        </span>
                         <small id={`reset-ledger-${option.part}-hint`} class="setting-hint">
                           {$t.settings.resetLedgerPartHints[option.part]}{#if option.locked}{" "}{$t.settings.resetLedgerPreviewIncluded}{/if}
                         </small>
+                        {#if option.held}
+                          <small id="reset-ledger-damaged-held" class="setting-hint warning-hint" role="status">{$t.settings.resetLedgerDamagedHeld[option.held]}</small>
+                        {/if}
                         {#if option.part === "sign-in" && option.checked && !resetTicked.has("financial") && signInGuidance.resetWarning}
                           <small id="reset-ledger-sign-in-warning" class="setting-hint warning-hint" role="status">{$t.settings.resetLedgerSignInWarning}</small>
                         {/if}
@@ -1841,35 +1771,6 @@
   .settings-error .button { margin-left: auto; flex: none; }
   .settings-error .error-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-left: auto; }
   .settings-error .error-actions .button { margin-left: 0; }
-
-  /* Each damaged ledger is a line of its own under the row's label: its status on the left, its buttons on the right. */
-  .setting-row.damaged-ledgers { row-gap: var(--space-3); }
-
-  .damaged-ledger {
-    grid-column: 1 / -1;
-    display: grid;
-    grid-template-columns: subgrid;
-    align-items: center;
-    row-gap: var(--space-2);
-  }
-
-  .damaged-ledger-confirm {
-    grid-column: 1 / -1;
-    display: grid;
-    gap: var(--space-3);
-  }
-
-  .damaged-ledger-confirm p {
-    margin: 0;
-    color: var(--muted);
-    font-size: 13px;
-    line-height: 1.5;
-  }
-
-  .damaged-ledger-error {
-    grid-column: 1 / -1;
-    margin: 0;
-  }
 
   .onboarding-setting-actions .button.icon-only {
     justify-content: center;

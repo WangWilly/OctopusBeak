@@ -57,7 +57,6 @@ test("Settings offers onboarding start when none exists and restart only for com
     }
     assert.doesNotMatch(renderSettings("completed"), /ledger-cleanup-keep-backup/u, "the backup choice waits for the estimate");
     assert.doesNotMatch(renderSettings("completed"), /role="progressbar"|role="dialog"/u, "no run, so no dialog");
-    assert.doesNotMatch(renderSettings("completed"), /damaged-ledgers-row/u, "no damaged ledger, so no row for one");
 
     const completedButton = findButton(renderSettings("completed"), "Restart onboarding");
     assert.ok(completedButton, "completed onboarding should expose Restart onboarding");

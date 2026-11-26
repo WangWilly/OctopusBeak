@@ -1,25 +1,25 @@
 /**
- * The damaged ledgers Settings lists and deletes (ADR 0150), wired as the
- * main process wires them, against real folders.
+ * The damaged ledgers Reset ledger offers and deletes (ADR 0150), wired as
+ * the main process wires them, against real folders.
  */
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import test from "node:test";
+import { damagedLedgerSummary, deleteDamagedLedgers } from "./damaged-ledgers.ts";
 import { ledgerRestoreRequested, requestLedgerRestore, restoreHold, resumeLedgerRestore } from "./ledger-restore.ts";
 import {
   ledgerRestoreOpenedPath,
   ledgerRestorePendingPath,
   ledgerRestoreUnreadablePath,
   listDamagedLedgers,
-  readDamagedLedgers,
   removeAllLedgerBackups,
   removeDamagedLedger,
   removePartialLedgerBackups,
-  type DamagedLedgerRemoval,
 } from "../src/ledger/pglite/data-dir-backup.ts";
+import type { LedgerResetPart } from "../src/lib/desktop/api.ts";
 import { createSettingsDesktopService } from "../src/lib/settings/server/settings-desktop-service.ts";
 import { createDataVersionStore } from "../src/lib/shared-shell/data-version.ts";
 import type { UsagePing } from "../src/lib/settings/usage-statistics.ts";
@@ -52,46 +52,40 @@ async function withFolder(run: (root: string, dataDir: string) => Promise<void>)
   try {
     await run(root, dataDir);
   } finally {
+    chmodSync(root, 0o700);
     unlock(root);
     await rm(root, { recursive: true, force: true });
   }
 }
 
-type SettingsOverrides = {
-  running?: () => boolean;
-  resetting?: Promise<void>;
-  remove?: (path: string) => Promise<DamagedLedgerRemoval>;
-};
-
-/** The settings service with the damaged ledgers wired as main.ts wires them; the rest is stubbed. */
-function settingsFor(dataDir: string, overrides: SettingsOverrides = {}) {
-  const revealed: string[] = [];
+/** The settings service with the damaged ledgers wired as main.ts wires them; the other parts only record that they ran. */
+function settingsFor(dataDir: string) {
   const logged: Array<[string, string | undefined]> = [];
+  const ran: LedgerResetPart[] = [];
+  const log = (code: string, detail?: string) => { logged.push([code, detail]); };
+  const dataVersions = createDataVersionStore();
   const service = createSettingsDesktopService({
     settingsFile: { read: () => ({}), write: () => {} },
     usagePing: { preview: () => ({}) as UsagePing, shouldAsk: () => false, answer: () => {} },
-    dataVersions: createDataVersionStore(),
+    dataVersions,
     collection: { pauseSchedules: () => () => {}, whileStopped: async (work) => work() },
     ledgerReset: {
-      financial: () => overrides.resetting ?? Promise.resolve(),
-      preview: async () => {},
-      manual: async () => {},
-      "sign-in": async () => {},
+      // The Canonical Reset's removal beside the folder; the store itself is not here.
+      financial: async () => { ran.push("financial"); await removeAllLedgerBackups(dataDir); },
+      preview: async () => { ran.push("preview"); },
+      damaged: async () => { ran.push("damaged"); await deleteDamagedLedgers(dataDir, log); },
+      manual: async () => { ran.push("manual"); },
+      "sign-in": async () => { ran.push("sign-in"); },
     },
     ledgerCleanup: {
       estimate: async () => { throw new Error("unused"); },
       run: async () => ({ status: "already-running" }),
-      status: async () => (overrides.running?.() ? { running: true, progress: null } : { running: false, last: null }),
+      status: async () => ({ running: false, last: null }),
       stop: async () => false,
     },
     cleanupBackup: { newest: async () => null, reveal: () => {}, remove: async () => {} },
-    damagedLedgers: {
-      list: () => readDamagedLedgers(dataDir),
-      reveal: (ledger) => revealed.push(ledger),
-      remove: overrides.remove ?? removeDamagedLedger,
-      heldByRestore: (ledger) => restoreHold(dataDir, basename(ledger)),
-    },
-    log: (code, detail) => { logged.push([code, detail]); },
+    damagedLedgerSummary: () => damagedLedgerSummary(dataDir),
+    log,
     cleanupRestore: {
       requested: () => ledgerRestoreRequested(dataDir),
       request: async () => {},
@@ -99,7 +93,7 @@ function settingsFor(dataDir: string, overrides: SettingsOverrides = {}) {
       takeOutcome: async () => null,
     },
   });
-  return { service, revealed, logged };
+  return { service, logged, ran, dataVersions };
 }
 
 /** A restore file as the unusable-ledger dialog's restore writes it, naming `aside`. */
@@ -115,7 +109,7 @@ function restoreFile(aside: string, state: "requested" | "swapped") {
   });
 }
 
-test("the damaged ledgers beside this one are listed newest first, by the time in their name, and nothing else is", () => withFolder(async (root, dataDir) => {
+test("the damaged ledgers beside this one are found by the time in their name, and nothing else is", () => withFolder(async (root, dataDir) => {
   store(`${dataDir}.damaged-${OLDER}`, 3);
   store(`${dataDir}.damaged-${NEWER}`, 5);
   store(`${dataDir}.damaged-${NEWER_AGAIN}`, 7);
@@ -128,196 +122,136 @@ test("the damaged ledgers beside this one are listed newest first, by the time i
   store(`${dataDir}.before-compaction-${NEWER}`);
   symlinkSync(`${dataDir}.damaged-${OLDER}`, `${dataDir}.damaged-2026-11-21T00-00-00Z`);
 
-  assert.deepEqual((await listDamagedLedgers(dataDir)).map(({ id, setAsideAt }) => [id, setAsideAt.toISOString()]), [
-    [NEWER_AGAIN, "2026-11-20T08:00:00.000Z"],
-    [NEWER, "2026-11-20T08:00:00.000Z"],
-    [OLDER, "2026-11-01T02:03:04.000Z"],
-  ], "the -N one set aside in the same second comes first; a link is not a damaged ledger");
-
-  const { service } = settingsFor(dataDir);
-  assert.deepEqual(await service.damagedLedgers(), [
-    { id: NEWER_AGAIN, bytes: 7, setAsideAt: "2026-11-20T08:00:00.000Z", deletable: true },
-    { id: NEWER, bytes: 5, setAsideAt: "2026-11-20T08:00:00.000Z", deletable: true },
-    { id: OLDER, bytes: 3, setAsideAt: "2026-11-01T02:03:04.000Z", deletable: true },
-  ], "the renderer gets an id, a size, a time and whether it can be deleted, never a path");
+  assert.deepEqual((await listDamagedLedgers(dataDir)).map(({ path, setAsideAt }) => [path, setAsideAt.toISOString()]), [
+    [`${dataDir}.damaged-${NEWER_AGAIN}`, "2026-11-20T08:00:00.000Z"],
+    [`${dataDir}.damaged-${NEWER}`, "2026-11-20T08:00:00.000Z"],
+    [`${dataDir}.damaged-${OLDER}`, "2026-11-01T02:03:04.000Z"],
+  ], "newest first; a link is not a damaged ledger");
+  assert.deepEqual(await settingsFor(dataDir).service.damagedLedgerSummary(), { count: 3, bytes: 15, hold: null },
+    "the renderer gets a count, a total size and a reason, never a path or a name");
 }));
 
-test("none beside the ledger, or a folder that cannot be read, lists none", () => withFolder(async (root, dataDir) => {
-  assert.deepEqual(await settingsFor(dataDir).service.damagedLedgers(), []);
-  assert.deepEqual(await listDamagedLedgers(join(root, "missing", "pglite")), []);
+test("none beside the ledger, or a folder that cannot be read, is no summary", () => withFolder(async (root, dataDir) => {
+  assert.equal(await settingsFor(dataDir).service.damagedLedgerSummary(), null);
+  assert.equal(await damagedLedgerSummary(join(root, "missing", "pglite")), null);
 }));
 
-test("a damaged ledger that cannot be measured is listed without a size and can still be deleted", () => withFolder(async (root, dataDir) => {
+test("a damaged ledger that cannot be measured leaves the total unknown, and is still deleted", () => withFolder(async (root, dataDir) => {
   store(`${dataDir}.damaged-${OLDER}`);
   store(`${dataDir}.damaged-${NEWER}`);
   mkdirSync(join(`${dataDir}.damaged-${NEWER}`, "locked"), { mode: 0o000 });
   const { service } = settingsFor(dataDir);
-  assert.deepEqual(await service.damagedLedgers(), [
-    { id: NEWER, bytes: null, setAsideAt: "2026-11-20T08:00:00.000Z", deletable: true },
-    { id: OLDER, bytes: 10, setAsideAt: "2026-11-01T02:03:04.000Z", deletable: true },
-  ], "the one that could not be measured does not hold up the other");
-  assert.deepEqual(await service.deleteDamagedLedger(NEWER), [{ id: OLDER, bytes: 10, setAsideAt: "2026-11-01T02:03:04.000Z", deletable: true }]);
-  assert.deepEqual(readdirSync(root).sort(), ["pglite", `pglite.damaged-${OLDER}`]);
+  assert.deepEqual(await service.damagedLedgerSummary(), { count: 2, bytes: null, hold: null });
+  assert.deepEqual(await service.resetLedger(["damaged"]), { done: ["damaged"], failed: null, notRun: [] });
+  assert.deepEqual(readdirSync(root), ["pglite"]);
 }));
 
-test("deleting removes only the damaged ledger named, and says what is left", () => withFolder(async (root, dataDir) => {
+test("deleting the damaged ledgers on their own removes only them, and marks no view stale", () => withFolder(async (root, dataDir) => {
   store(`${dataDir}.damaged-${OLDER}`);
   store(`${dataDir}.damaged-${NEWER}`);
-  store(join(root, `other.damaged-${NEWER}`));
-  const { service, revealed, logged } = settingsFor(dataDir);
-  await service.revealDamagedLedger(NEWER);
-  assert.deepEqual(revealed, [`${dataDir}.damaged-${NEWER}`], "the main process reveals the folder it listed");
-  assert.deepEqual((await service.deleteDamagedLedger(NEWER)).map(({ id }) => id), [OLDER]);
-  assert.deepEqual(readdirSync(root).sort(), [`other.damaged-${NEWER}`, "pglite", `pglite.damaged-${OLDER}`]);
-  assert.deepEqual((await service.deleteDamagedLedger(NEWER)).map(({ id }) => id), [OLDER], "one already gone leaves nothing to delete");
-  await service.revealDamagedLedger(NEWER);
-  assert.equal(revealed.length, 1, "nothing to reveal");
+  const kept = [
+    "pglite",
+    `pglite.before-compaction-${NEWER}`,
+    `pglite.replaced-${NEWER}`,
+    `other.damaged-${NEWER}`,
+    "elsewhere",
+  ];
+  for (const name of kept.slice(1)) store(join(root, name));
+  writeFileSync(`${dataDir}.before-compaction-${NEWER}.versions.json`, JSON.stringify(CURRENT));
+  symlinkSync(join(root, "elsewhere"), `${dataDir}.damaged-2026-11-21T00-00-00Z`);
+  const { service, ran, logged, dataVersions } = settingsFor(dataDir);
+  assert.deepEqual(await service.resetLedger(["damaged"]), { done: ["damaged"], failed: null, notRun: [] });
+  assert.deepEqual(ran, ["damaged"], "the live ledger is not reset");
+  assert.deepEqual(readdirSync(root).sort(), [...kept, "pglite.before-compaction-2026-11-20T08-00-00Z.versions.json", "pglite.damaged-2026-11-21T00-00-00Z"].sort(),
+    "the ledger, the cleanup backup, a replaced ledger, another ledger's folder and a link stay");
+  assert.ok(existsSync(join(root, "elsewhere", "PG_VERSION")));
+  assert.equal(dataVersions.snapshot().stale, false);
   assert.deepEqual(logged, []);
+  assert.equal(await service.damagedLedgerSummary(), null);
 }));
 
-test("an id is only ever the time in a listed name: anything else is refused and no path is built from it", () => withFolder(async (root, dataDir) => {
+test("beside financial data the Canonical Reset removes them, and the damaged part does not run again", () => withFolder(async (root, dataDir) => {
   store(`${dataDir}.damaged-${NEWER}`);
-  const victim = join(root, "victim");
-  store(victim);
-  store(join(root, `other.damaged-${OLDER}`));
-  const target = join(root, "elsewhere");
-  store(target);
-  symlinkSync(target, `${dataDir}.damaged-${OLDER}`);
-  const { service, revealed } = settingsFor(dataDir);
-  for (const id of ["../victim", `${NEWER}/../../victim`, `${NEWER}/`, `${NEWER}\u0000`, ` ${NEWER}`, "", 42, null, undefined, { id: NEWER }, [NEWER]]) {
-    await assert.rejects(() => service.deleteDamagedLedger(id as string), TypeError, `refuses ${JSON.stringify(id)}`);
-    await assert.rejects(() => service.revealDamagedLedger(id as string), TypeError);
-  }
-  // Well formed, but no damaged ledger of this one has it: another ledger's folder and a link are not listed.
-  assert.deepEqual((await service.deleteDamagedLedger(OLDER)).map(({ id }) => id), [NEWER]);
-  await service.revealDamagedLedger(OLDER);
-  assert.deepEqual(revealed, []);
-  assert.ok(existsSync(victim) && existsSync(join(target, "PG_VERSION")) && existsSync(join(root, `other.damaged-${OLDER}`)));
-  assert.ok(existsSync(`${dataDir}.damaged-${OLDER}`), "the link stays");
+  const { service, ran } = settingsFor(dataDir);
+  assert.deepEqual(await service.resetLedger(["damaged", "financial"]), { done: ["financial", "damaged"], failed: null, notRun: [] });
+  assert.deepEqual(ran, ["financial"]);
+  assert.deepEqual(readdirSync(root), ["pglite"]);
 }));
 
-test("deleting is refused while a cleanup runs and while the ledger is being reset; reading and revealing are not", () => withFolder(async (_root, dataDir) => {
-  store(`${dataDir}.damaged-${NEWER}`);
-  let running = true;
-  let endReset = () => {};
-  const resetting = new Promise<void>((done) => { endReset = done; });
-  const { service, revealed } = settingsFor(dataDir, { running: () => running, resetting });
-  await assert.rejects(() => service.deleteDamagedLedger(NEWER), /while a cleanup runs/u);
-  assert.equal((await service.damagedLedgers()).length, 1);
-  await service.revealDamagedLedger(NEWER);
-  assert.equal(revealed.length, 1);
-  running = false;
-  const reset = service.resetLedger(["financial"]);
-  await new Promise((done) => setTimeout(done, 10));
-  await assert.rejects(() => service.deleteDamagedLedger(NEWER), /being reset/u);
-  endReset();
-  await reset;
-  assert.ok(existsSync(`${dataDir}.damaged-${NEWER}`), "the reset here is stubbed; nothing removed it");
-  assert.deepEqual((await service.deleteDamagedLedger(NEWER)), [], "once both end, it is deleted");
-}));
-
-test("a reset or a cleanup asked for while a damaged ledger is being deleted is refused, until the deletion ends", () => withFolder(async (_root, dataDir) => {
-  store(`${dataDir}.damaged-${NEWER}`);
-  store(`${dataDir}.damaged-${OLDER}`);
-  let endRemoval = () => {};
-  const removing = new Promise<void>((done) => { endRemoval = done; });
-  let fail = false;
-  const { service } = settingsFor(dataDir, {
-    remove: async (path) => {
-      await removing;
-      if (fail) throw Object.assign(new Error(`EACCES: permission denied, rename '${path}'`), { code: "EACCES" });
-      return removeDamagedLedger(path);
-    },
-  });
-  const deletion = service.deleteDamagedLedger(NEWER);
-  await new Promise((done) => setTimeout(done, 10));
-  await assert.rejects(() => service.resetLedger(["financial"]), /damaged ledger is being deleted/u);
-  await assert.rejects(() => service.cleanUpLedger({ backup: false, keepBackup: false }), /damaged ledger is being deleted/u);
-  await assert.rejects(() => service.deleteDamagedLedger(OLDER), /already being deleted/u);
-  endRemoval();
-  assert.deepEqual((await deletion).map(({ id }) => id), [OLDER]);
-  assert.deepEqual(await service.resetLedger(["financial"]), { done: ["financial"], failed: null, notRun: [] }, "the flag is cleared once it ends");
-
-  // And cleared when the removal fails too.
-  fail = true;
-  await assert.rejects(() => service.deleteDamagedLedger(OLDER), /damaged-ledger-delete-failed/u);
-  assert.equal((await service.cleanUpLedger({ backup: false, keepBackup: false })).status, "already-running", "a cleanup may start again");
-}));
-
-test("a removal that fails reaches the renderer and the log as a code, never the folder's path", () => withFolder(async (root, dataDir) => {
-  store(`${dataDir}.damaged-${NEWER}`);
-  const { service, logged } = settingsFor(dataDir, {
-    remove: async (path) => { throw Object.assign(new Error(`EACCES: permission denied, rename '${path}' -> '${path}.partial'`), { code: "EACCES" }); },
-  });
-  const error = await service.deleteDamagedLedger(NEWER).then(() => null, (failure: unknown) => failure as Error);
-  assert.ok(error);
-  assert.equal(error.message, "damaged-ledger-delete-failed: EACCES");
-  assert.deepEqual(logged, [["damaged-ledger-delete-failed", "EACCES"]]);
-  assert.ok(!JSON.stringify(logged).includes(root) && !error.message.includes(root), "no path in what leaves the service");
-  assert.equal((await service.damagedLedgers()).length, 1, "nothing moved, so it is still listed and can be tried again");
-}));
-
-test("a folder renamed aside whose removal then failed counts as deleted, is logged by code, and goes at the next open", () => withFolder(async (root, dataDir) => {
+test("a restore file that names one, or cannot be read, refuses the damaged part with nothing removed", () => withFolder(async (_root, dataDir) => {
   const damaged = `${dataDir}.damaged-${NEWER}`;
   store(damaged);
   store(`${dataDir}.damaged-${OLDER}`);
+  const { service } = settingsFor(dataDir);
+  const refused = async (label: string) => {
+    assert.deepEqual(await service.resetLedger(["damaged", "manual"]), { done: [], failed: "damaged", notRun: ["manual"] }, label);
+    assert.ok(existsSync(damaged) && existsSync(`${dataDir}.damaged-${OLDER}`), `${label}: neither is removed`);
+  };
+
+  // Swapped: the damaged ledger it set aside is the one a swap back puts in the ledger's place.
+  writeFileSync(ledgerRestorePendingPath(dataDir), restoreFile("pglite.damaged-" + NEWER, "swapped"));
+  assert.deepEqual(await service.damagedLedgerSummary(), { count: 2, bytes: 20, hold: "restore-under-way" });
+  await refused("a pending file names one");
+
+  renameSync(ledgerRestorePendingPath(dataDir), ledgerRestoreOpenedPath(dataDir));
+  assert.equal((await service.damagedLedgerSummary())?.hold, "restore-under-way");
+  await refused("an opened file names one");
+
+  writeFileSync(ledgerRestoreOpenedPath(dataDir), "{not json");
+  assert.equal((await service.damagedLedgerSummary())?.hold, "restore-unreadable");
+  await refused("an opened file that cannot be read may name one");
+  await rm(ledgerRestoreOpenedPath(dataDir));
+
+  writeFileSync(ledgerRestoreUnreadablePath(dataDir), "kept");
+  assert.equal((await service.damagedLedgerSummary())?.hold, "restore-unreadable");
+  await refused("a kept unreadable file may have named one");
+  await rm(ledgerRestoreUnreadablePath(dataDir));
+
+  // A request not yet carried out names a damaged ledger still to come: the reset itself is refused.
+  writeFileSync(ledgerRestorePendingPath(dataDir), restoreFile("pglite.damaged-2026-11-25T00-00-00Z", "requested"));
+  assert.equal((await service.damagedLedgerSummary())?.hold, null);
+  await assert.rejects(() => service.resetLedger(["damaged"]), /once a restore is asked for/u);
+  await rm(ledgerRestorePendingPath(dataDir));
+
+  assert.deepEqual(await service.resetLedger(["damaged"]), { done: ["damaged"], failed: null, notRun: [] }, "with no restore file left, they go");
+}));
+
+test("a damaged ledger renamed aside whose removal then failed counts as done, is logged by code, and goes at the next open", () => withFolder(async (root, dataDir) => {
+  const damaged = `${dataDir}.damaged-${NEWER}`;
+  store(damaged);
   // A file inside a folder that cannot be written: the rename of the ledger works, removing its contents does not.
   mkdirSync(join(damaged, "locked"));
   writeFileSync(join(damaged, "locked", "page"), "x");
   chmodSync(join(damaged, "locked"), 0o500);
   const { service, logged } = settingsFor(dataDir);
-  assert.deepEqual((await service.deleteDamagedLedger(NEWER)).map(({ id }) => id), [OLDER], "no error: it no longer lists");
-  assert.deepEqual(logged, [["damaged-ledger-delete-left-for-sweep", "EACCES"]], "but the host says so, by code");
-  assert.ok(existsSync(`${damaged}.partial`) && !existsSync(damaged));
+  assert.deepEqual(await service.resetLedger(["damaged"]), { done: ["damaged"], failed: null, notRun: [] });
+  assert.deepEqual(logged, [["damaged-ledger-delete-left-for-sweep", "EACCES"]], "the host says so, by code");
+  assert.equal(await service.damagedLedgerSummary(), null, "it no longer counts");
 
   chmodSync(join(`${damaged}.partial`, "locked"), 0o700);
   await removePartialLedgerBackups(dataDir);
-  assert.deepEqual(readdirSync(root).sort(), ["pglite", `pglite.damaged-${OLDER}`], "the open's sweep finishes it");
+  assert.deepEqual(readdirSync(root), ["pglite"], "the open's sweep finishes it");
 }));
 
-test("deleting is refused once a restore is asked for, and while a restore file names the folder or cannot be read", () => withFolder(async (_root, dataDir) => {
-  const damaged = `${dataDir}.damaged-${NEWER}`;
-  store(damaged);
-  store(`${dataDir}.damaged-${OLDER}`);
-  const { service } = settingsFor(dataDir);
-  const holds = async () => Object.fromEntries((await service.damagedLedgers()).map((ledger) => [ledger.id, ledger.deletable ? null : ledger.hold]));
-  const refused = async (label: string, id = NEWER) => {
-    await assert.rejects(() => service.deleteDamagedLedger(id), Error, label);
-    assert.ok(existsSync(`${dataDir}.damaged-${id}`), label);
-    assert.equal((await service.damagedLedgers()).length, 2, `${label}: still listed`);
-  };
-
-  // A request from the unusable-ledger dialog not yet carried out names a damaged ledger still to come.
-  writeFileSync(ledgerRestorePendingPath(dataDir), restoreFile(`pglite.damaged-2026-11-25T00-00-00Z`, "requested"));
-  await refused("a restore is asked for", OLDER);
-  assert.deepEqual(await holds(), { [NEWER]: null, [OLDER]: null }, "a request is a passing refusal: the lines stay deletable");
-
-  // Swapped: the damaged ledger it set aside is the one a swap back puts in the ledger's place.
-  writeFileSync(ledgerRestorePendingPath(dataDir), restoreFile(basename(damaged), "swapped"));
-  await refused("a pending file names it");
-  assert.deepEqual(await holds(), { [NEWER]: "restore-under-way", [OLDER]: null });
-  assert.deepEqual((await service.deleteDamagedLedger(OLDER)).map(({ id }) => id), [NEWER], "another damaged ledger it does not name goes");
-  store(`${dataDir}.damaged-${OLDER}`);
-
-  renameSync(ledgerRestorePendingPath(dataDir), ledgerRestoreOpenedPath(dataDir));
-  await refused("an opened file names it");
-  assert.deepEqual(await holds(), { [NEWER]: "restore-under-way", [OLDER]: null });
-
-  writeFileSync(ledgerRestoreOpenedPath(dataDir), "{not json");
-  await refused("an opened file that cannot be read may name it");
-  await refused("an opened file that cannot be read may name any", OLDER);
-  assert.deepEqual(await holds(), { [NEWER]: "restore-unreadable", [OLDER]: "restore-unreadable" });
-  await rm(ledgerRestoreOpenedPath(dataDir));
-
-  writeFileSync(ledgerRestoreUnreadablePath(dataDir), restoreFile(basename(damaged), "swapped"));
-  await refused("a kept unreadable file may have named it", OLDER);
-  assert.deepEqual(await holds(), { [NEWER]: "restore-unreadable", [OLDER]: "restore-unreadable" });
-  await rm(ledgerRestoreUnreadablePath(dataDir));
-
-  assert.deepEqual((await service.deleteDamagedLedger(NEWER)).map(({ id }) => id), [OLDER], "with no restore file left, it goes");
+test("a damaged ledger that cannot be renamed fails the part, and only the part's name is logged", () => withFolder(async (root, dataDir) => {
+  store(`${dataDir}.damaged-${NEWER}`);
+  const { service, logged } = settingsFor(dataDir);
+  const errors: unknown[][] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => { errors.push(args); };
+  chmodSync(root, 0o500);
+  try {
+    assert.deepEqual(await service.resetLedger(["damaged"]), { done: [], failed: "damaged", notRun: [] });
+  } finally {
+    chmodSync(root, 0o700);
+    console.error = original;
+  }
+  assert.deepEqual(errors, [["ledger-reset-failed", "damaged"]], "no path reaches the log");
+  assert.deepEqual(logged, []);
+  assert.ok(existsSync(`${dataDir}.damaged-${NEWER}`), "nothing moved");
 }));
 
-test("a restore file that cannot be read for any reason but its absence may name the folder", () => withFolder(async (_root, dataDir) => {
+test("a restore file that cannot be read for any reason but its absence may name a damaged ledger", () => withFolder(async (_root, dataDir) => {
   const name = `pglite.damaged-${NEWER}`;
   assert.equal(await restoreHold(dataDir, name), null, "no restore file");
   // Reading a folder in the file's place fails with EISDIR, not ENOENT.
@@ -329,40 +263,39 @@ test("a restore file that cannot be read for any reason but its absence may name
   assert.equal(await restoreHold(dataDir, name), "restore-unreadable", "EACCES");
   chmodSync(ledgerRestorePendingPath(dataDir), 0o600);
   assert.equal(await restoreHold(dataDir, name), "restore-under-way");
+  assert.equal(await restoreHold(dataDir, `pglite.damaged-${OLDER}`), null, "it names only its own");
 }));
 
-test("a restore from the unusable-ledger dialog keeps its damaged ledger from Settings until it has opened and finished", () => withFolder(async (root, dataDir) => {
+test("a restore from the unusable-ledger dialog keeps its damaged ledger until it has opened and finished", () => withFolder(async (root, dataDir) => {
   writeFileSync(`${dataDir}.clean-shutdown`, "");
   const backup = join(root, "pglite.before-compaction-2026-11-19T00-00-00Z");
   store(backup);
   writeFileSync(`${backup}.versions.json`, JSON.stringify(CURRENT));
-  store(`${dataDir}.damaged-${OLDER}`);
   const aside = `${dataDir}.damaged-${NEWER}`;
   const { service } = settingsFor(dataDir);
   await requestLedgerRestore(dataDir, backup, { from: "unusable", aside, current: CURRENT, appVersion: "1.4.0" });
-  assert.deepEqual((await service.damagedLedgers()).map(({ id }) => id), [OLDER], "the aside does not exist yet");
+  assert.equal(await service.damagedLedgerSummary(), null, "the aside does not exist yet");
 
   const launch = await resumeLedgerRestore(dataDir, { current: CURRENT, now: () => new Date() });
   assert.equal(launch.kind, "opening");
-  assert.deepEqual((await service.damagedLedgers()).map((ledger) => [ledger.id, ledger.deletable]), [[NEWER, false], [OLDER, true]],
+  assert.deepEqual(await service.damagedLedgerSummary(), { count: 1, bytes: 10, hold: "restore-under-way" },
     "swapped: the unusable ledger is set aside, and the restore names it");
-  await assert.rejects(() => service.deleteDamagedLedger(NEWER), /restore may name/u);
+  assert.deepEqual(await service.resetLedger(["damaged"]), { done: [], failed: "damaged", notRun: [] });
 
   if (launch.kind !== "opening") return;
   await launch.opened();
   assert.ok(!existsSync(ledgerRestorePendingPath(dataDir)) && !existsSync(ledgerRestoreOpenedPath(dataDir)), "the restore finished");
-  assert.deepEqual((await service.damagedLedgers()).map((ledger) => [ledger.id, ledger.deletable]), [[NEWER, true], [OLDER, true]],
-    "the damaged ledger stays, and is the person's to delete");
-  assert.deepEqual((await service.deleteDamagedLedger(NEWER)).map(({ id }) => id), [OLDER]);
+  assert.deepEqual(await service.damagedLedgerSummary(), { count: 1, bytes: 10, hold: null }, "it stays, and is the person's to delete");
+  assert.deepEqual(await service.resetLedger(["damaged"]), { done: ["damaged"], failed: null, notRun: [] });
   assert.ok(!existsSync(aside));
 }));
 
-test("a deletion cut short after its rename is no damaged ledger, and the next open removes the rest", () => withFolder(async (root, dataDir) => {
+test("a removal cut short after its rename is no damaged ledger, and the next open removes the rest", () => withFolder(async (root, dataDir) => {
   const damaged = `${dataDir}.damaged-${NEWER}`;
   store(damaged);
   store(`${dataDir}.damaged-${OLDER}`);
   renameSync(damaged, `${damaged}.partial`);
-  assert.deepEqual((await listDamagedLedgers(dataDir)).map(({ id }) => id), [OLDER], "Settings does not show a half-deleted ledger");
+  assert.equal((await damagedLedgerSummary(dataDir))?.count, 1, "a half-deleted ledger is not counted");
   await removePartialLedgerBackups(dataDir);
   assert.deepEqual(readdirSync(root).sort(), ["pglite", `pglite.damaged-${OLDER}`], "the worker's open sweep removes it, and only it");
 

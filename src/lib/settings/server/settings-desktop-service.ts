@@ -8,13 +8,12 @@ import type {
   LedgerCompactionRequest,
   LedgerCompactionStatus,
 } from "../../../ledger/pglite/compaction-job.ts";
-import type { DamagedLedger, DamagedLedgerRemoval, LedgerCleanupBackup } from "../../../ledger/pglite/data-dir-backup.ts";
+import type { LedgerCleanupBackup } from "../../../ledger/pglite/data-dir-backup.ts";
 import type { LedgerCleanupEstimate } from "../../../ledger/pglite/cleanup-estimate.ts";
 import type {
   CleanupBackupDto,
   CleanupRestoreOutcomeDto,
-  DamagedLedgerDto,
-  DamagedLedgerHold,
+  DamagedLedgerSummaryDto,
   LedgerCleanupEstimateDto,
   LedgerCleanupProgressDto,
   LedgerCleanupResultDto,
@@ -63,16 +62,8 @@ export type SettingsDesktopServiceDeps = Readonly<{
     reveal(path: string): void;
     remove(path: string): Promise<void>;
   }>;
-  /** The damaged ledgers the unusable-ledger dialog set aside (ADR 0150), which the main process lists, reveals and deletes. */
-  damagedLedgers: Readonly<{
-    /** Newest first, each with an `id` the renderer may name it by. */
-    list(): Promise<readonly DamagedLedger[]>;
-    reveal(path: string): void;
-    /** Throws only when nothing moved; a folder renamed aside whose removal failed is the next open's to finish. */
-    remove(path: string): Promise<DamagedLedgerRemoval>;
-    /** Why a restore file keeps the folder at `path`, or null when none does. */
-    heldByRestore(path: string): Promise<DamagedLedgerHold | null>;
-  }>;
+  /** The damaged ledgers the unusable-ledger dialog set aside (ADR 0150), as Reset ledger offers them; null for none. */
+  damagedLedgerSummary(): Promise<DamagedLedgerSummaryDto | null>;
   /** Codes only, to the main log: an error's message may carry a path. */
   log: (code: string, detail?: string) => void;
   /** The Cleanup Restore (ADR 0157): the request the next launch carries out, and how the last one ended. */
@@ -161,23 +152,10 @@ function cleanupBackupDto(backup: LedgerCleanupBackup | null): CleanupBackupDto 
   return backup && { bytes: backup.bytes, takenAt: backup.takenAt, expiresAt: backup.expiresAt, restorable: backup.restorable };
 }
 
-function damagedLedgerDto(ledger: DamagedLedger, hold: DamagedLedgerHold | null): DamagedLedgerDto {
-  const common = { id: ledger.id, bytes: ledger.bytes, setAsideAt: ledger.setAsideAt.toISOString() };
-  return hold === null ? { ...common, deletable: true } : { ...common, deletable: false, hold };
-}
-
 /** The errno code of a filesystem error, never its message, which carries the path. */
 function errorCode(error: unknown): string {
   const code = (error as NodeJS.ErrnoException | null)?.code;
   return typeof code === "string" && /^[A-Z0-9_]{1,32}$/u.test(code) ? code : "unknown";
-}
-
-/** The UTC time in a damaged ledger's name, `2026-11-20T08-00-00Z` or with a `-N` after it, and nothing else. */
-const DAMAGED_LEDGER_ID = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z(?:-\d+)?$/u;
-
-function damagedLedgerId(input: unknown): string {
-  if (typeof input !== "string" || !DAMAGED_LEDGER_ID.test(input)) throw new TypeError("A damaged ledger is named by the time in its name, and nothing else.");
-  return input;
 }
 
 export type SettingsDesktopService = ReturnType<typeof createSettingsDesktopService>;
@@ -188,11 +166,6 @@ export function createSettingsDesktopService(deps: SettingsDesktopServiceDeps) {
   let resetting = false;
   // Set once a restore is being asked for; it stays set, since the App restarts.
   let restoring = false;
-  // Set while a damaged ledger is being deleted, so a reset or a cleanup asked for meanwhile is refused.
-  let deletingDamaged = false;
-  /** Each damaged ledger with whether a restore file keeps it, as the delete guard decides. */
-  const damagedLedgerDtos = async () => Promise.all((await deps.damagedLedgers.list())
-    .map(async (ledger) => damagedLedgerDto(ledger, await deps.damagedLedgers.heldByRestore(ledger.path))));
   const assertNoRestore = async (action: string) => {
     if (restoring || await deps.cleanupRestore.requested()) throw new Error(`${action} once a restore is asked for.`);
   };
@@ -223,7 +196,6 @@ export function createSettingsDesktopService(deps: SettingsDesktopServiceDeps) {
       const parts = ledgerResetRequest(request);
       // The renderer's own guards are not the only ones: a cleanup copies, compacts and rewrites the store a reset empties.
       if (resetting) throw new Error("The ledger is already being reset.");
-      if (deletingDamaged) throw new Error("The ledger cannot be reset while a damaged ledger is being deleted.");
       resetting = true;
       try {
         // A reset removes the Cleanup Backup, which a restore asked for is about to use.
@@ -239,7 +211,6 @@ export function createSettingsDesktopService(deps: SettingsDesktopServiceDeps) {
     async cleanUpLedger(request: unknown): Promise<LedgerCleanupResultDto> {
       const parsed = cleanupRequest(request);
       if (resetting) throw new Error("A cleanup cannot start while the ledger is being reset.");
-      if (deletingDamaged) throw new Error("A cleanup cannot start while a damaged ledger is being deleted.");
       // A cleanup takes a new backup, which replaces the one a restore asked for.
       await assertNoRestore("A cleanup cannot start");
       return cleanupResultDto(await deps.ledgerCleanup.run(parsed));
@@ -299,50 +270,8 @@ export function createSettingsDesktopService(deps: SettingsDesktopServiceDeps) {
       deps.cleanupRestore.restart();
     },
     takeCleanupRestoreOutcome: () => deps.cleanupRestore.takeOutcome(),
-    damagedLedgers: (): Promise<readonly DamagedLedgerDto[]> => damagedLedgerDtos(),
-    async revealDamagedLedger(id: unknown): Promise<void> {
-      const wanted = damagedLedgerId(id);
-      const ledger = (await deps.damagedLedgers.list()).find((entry) => entry.id === wanted);
-      if (ledger) deps.damagedLedgers.reveal(ledger.path);
-    },
-    /**
-     * Deletes the damaged ledger the renderer names, found by its id among the
-     * folders listed now; the id never becomes part of a path. One already
-     * gone leaves nothing to delete. Refused while a cleanup or a reset runs,
-     * once a restore is asked for, and while a restore file names the folder
-     * or cannot be read. A failure reaches the renderer and the log as a code.
-     */
-    async deleteDamagedLedger(id: unknown): Promise<readonly DamagedLedgerDto[]> {
-      const wanted = damagedLedgerId(id);
-      if (deletingDamaged) throw new Error("A damaged ledger is already being deleted.");
-      if (resetting) throw new Error("A damaged ledger cannot be deleted while the ledger is being reset.");
-      // Set before the cleanup's status is read, so a cleanup or a reset asked for meanwhile is refused.
-      deletingDamaged = true;
-      try {
-        if ((await deps.ledgerCleanup.status()).running) throw new Error("A damaged ledger cannot be deleted while a cleanup runs.");
-        await assertNoRestore("A damaged ledger cannot be deleted");
-        const ledger = (await deps.damagedLedgers.list()).find((entry) => entry.id === wanted);
-        if (ledger) {
-          // A restore from the unusable-ledger dialog names its damaged ledger, which a swap back puts in the ledger's place.
-          const hold = await deps.damagedLedgers.heldByRestore(ledger.path);
-          if (hold) throw new Error(`A damaged ledger a restore may name cannot be deleted: ${hold}.`);
-          let removal: DamagedLedgerRemoval;
-          try {
-            removal = await deps.damagedLedgers.remove(ledger.path);
-          } catch (error) {
-            // Nothing moved. The message names the folder's path: only its code leaves the host or reaches the log.
-            const code = errorCode(error);
-            deps.log("damaged-ledger-delete-failed", code);
-            throw new Error(`damaged-ledger-delete-failed: ${code}`);
-          }
-          // Renamed aside, it no longer lists and the next open removes it: deleted, as far as the person can tell.
-          if (removal.kind === "left-for-sweep") deps.log("damaged-ledger-delete-left-for-sweep", removal.code);
-        }
-        return await damagedLedgerDtos();
-      } finally {
-        deletingDamaged = false;
-      }
-    },
+    // Read when the Reset ledger dialog opens; deleting them is that dialog's `damaged` part, which runs inside the reset.
+    damagedLedgerSummary: () => deps.damagedLedgerSummary(),
     getVersion: () => dataVersions.snapshot(),
     acknowledgeVersion(version: unknown) {
       if (typeof version !== "number" || !Number.isSafeInteger(version) || version < 0) {

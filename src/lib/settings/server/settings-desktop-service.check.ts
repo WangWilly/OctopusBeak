@@ -54,6 +54,7 @@ function harness(stored: AutomationSettingsFile = {}, overrides: Partial<Setting
     ledgerReset: {
       financial: async () => { calls.push(["reset.financial"]); },
       preview: async () => { calls.push(["reset.preview"]); },
+      damaged: async () => { calls.push(["reset.damaged"]); },
       manual: async () => { calls.push(["reset.manual"]); },
       "sign-in": async () => { calls.push(["reset.sign-in"]); },
     },
@@ -68,12 +69,7 @@ function harness(stored: AutomationSettingsFile = {}, overrides: Partial<Setting
       reveal: () => {},
       remove: async () => {},
     },
-    damagedLedgers: {
-      list: async () => [],
-      reveal: () => {},
-      remove: async () => ({ kind: "removed" }),
-      heldByRestore: async () => null,
-    },
+    damagedLedgerSummary: async () => null,
     log: (code, detail) => { calls.push(["log", code, detail]); },
     cleanupRestore: {
       requested: async () => false,
@@ -161,8 +157,8 @@ test("a data version acknowledgement must be a non-negative safe integer", () =>
 
 test("a ledger reset runs the ticked parts in order with collection stopped once, and skips preview data the reset deletes", async () => {
   const { service, calls, dataVersions } = harness();
-  const result = await service.resetLedger(["sign-in", "preview", "financial"]);
-  assert.deepEqual(result, { done: ["financial", "preview", "sign-in"], failed: null, notRun: [] });
+  const result = await service.resetLedger(["sign-in", "damaged", "preview", "financial"]);
+  assert.deepEqual(result, { done: ["financial", "preview", "damaged", "sign-in"], failed: null, notRun: [] });
   assert.deepEqual(calls.map(([name]) => name), [
     "collection.pauseSchedules",
     "collection.whileStopped",
@@ -178,6 +174,7 @@ test("a ledger reset whose part fails reports what finished and what did not run
     ledgerReset: {
       financial: async () => { calls.push(["reset.financial"]); },
       preview: async () => { calls.push(["reset.preview"]); },
+      damaged: async () => { calls.push(["reset.damaged"]); },
       manual: async () => { throw new Error("worker closed"); },
       "sign-in": async () => { calls.push(["reset.sign-in"]); },
     },
@@ -188,7 +185,7 @@ test("a ledger reset whose part fails reports what finished and what did not run
 
 test("a ledger reset request names at least one known part, each once, and nothing else", async () => {
   const { service, calls } = harness();
-  for (const request of [[], ["financial", "financial"], ["everything"], "financial", { financial: true }, null, undefined, [["financial"]]]) {
+  for (const request of [[], ["financial", "financial"], ["damaged", "damaged"], ["damaged-ledgers"], ["everything"], "financial", { financial: true }, null, undefined, [["financial"]]]) {
     await assert.rejects(() => service.resetLedger(request), TypeError, JSON.stringify(request));
   }
   assert.deepEqual(calls, [], "nothing stopped collection or deleted anything");
@@ -208,6 +205,7 @@ test("the main process refuses a ledger reset while a cleanup runs, and a cleanu
     ledgerReset: {
       financial: () => new Promise<void>((resolve) => { finishReset = resolve; }),
       preview: async () => {},
+      damaged: async () => {},
       manual: async () => {},
       "sign-in": async () => {},
     },
@@ -480,6 +478,7 @@ test("a restore is refused while a cleanup runs, while a reset runs, and for a b
     ledgerReset: {
       financial: () => new Promise<void>((resolve) => { releaseReset = resolve; }),
       preview: async () => {},
+      damaged: async () => {},
       manual: async () => {},
       "sign-in": async () => {},
     },

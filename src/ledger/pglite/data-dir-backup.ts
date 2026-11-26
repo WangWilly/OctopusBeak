@@ -209,10 +209,10 @@ export function isDamagedLedgerName(dataDir: string, name: string): boolean {
   return name.startsWith(prefix) && STAMP.test(name.slice(prefix.length));
 }
 
-/** A damaged ledger beside this one. `id` is the time in its name, which is all the renderer is told of it. */
-export type DamagedLedgerEntry = Readonly<{ id: string; path: string; setAsideAt: Date }>;
+/** A damaged ledger beside this one (ADR 0150), with the time in its name. */
+export type DamagedLedgerEntry = Readonly<{ path: string; setAsideAt: Date }>;
 
-/** The damaged ledgers Settings shows (ADR 0150). `path` stays on the host. */
+/** A damaged ledger with its size, which Reset ledger sums. `path` stays on the host. */
 export type DamagedLedger = DamagedLedgerEntry & Readonly<{
   /** null when the folder could not be measured; it can still be deleted. */
   bytes: number | null;
@@ -232,7 +232,6 @@ function damagedLedgerSetAsideAt(dataDir: string, name: string): Date | null {
  */
 export async function listDamagedLedgers(dataDir: string): Promise<DamagedLedgerEntry[]> {
   dataDir = resolve(dataDir);
-  const prefix = `${basename(dataDir)}${DAMAGED_INFIX}`;
   let names: string[];
   try {
     names = await readdir(dirname(dataDir));
@@ -245,7 +244,7 @@ export async function listDamagedLedgers(dataDir: string): Promise<DamagedLedger
     if (!setAsideAt) continue;
     const path = join(dirname(dataDir), name);
     if (!(await lstat(path).then((entry) => entry.isDirectory(), () => false))) continue;
-    ledgers.push({ id: name.slice(prefix.length), path, setAsideAt });
+    ledgers.push({ path, setAsideAt });
   }
   return ledgers.sort((a, b) => b.setAsideAt.getTime() - a.setAsideAt.getTime() || b.path.localeCompare(a.path));
 }
@@ -266,7 +265,7 @@ export type DamagedLedgerRemoval = Readonly<{ kind: "removed" }> | Readonly<{ ki
 /**
  * Removes one damaged ledger. It is renamed to `.partial` first, as a backup
  * is, so a removal cut short never leaves part of a ledger under a damaged
- * ledger's name, which Settings would show as one; the next open removes
+ * ledger's name, which Reset ledger would count as one; the next open removes
  * the rest (`removePartialLedgerBackups`). Throws only when the rename, or
  * clearing its target first, fails: then nothing has moved.
  */
