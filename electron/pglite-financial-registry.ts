@@ -133,17 +133,29 @@ export function createPGliteFinancialRegistry(
     freeBytes: options.freeDiskBytes,
     backupRoom: backup?.room,
   });
-  // What the run needs after the backup, as the estimate the owner confirmed read it.
-  let reserveBytes: number | undefined;
+  // Where the store's write-ahead log ends. Every commit that writes moves it; reads, the dry run
+  // included, do not. So an equal position means the store is as an estimate read it.
+  const walPosition = async (runStep: typeof options.runBackgroundStep) => {
+    const read = () => store.query<{ lsn: string }>("SELECT pg_current_wal_lsn()::text AS lsn");
+    return (await (runStep ? runStep(read) : read())).rows[0]!.lsn;
+  };
+  // What the run needs after the backup, as the last estimate read it, and where the log stood when it began.
+  let estimated: Readonly<{ reserveBytes: number; wal: string }> | undefined;
   const compactor = createLedgerCompactor(store, {
     runStep: options.runBackgroundStep,
     reclaim: { freeBytes: options.freeDiskBytes, folderBytes: options.ledgerFolder?.bytes, syncToDisk: options.ledgerFolder?.sync },
     backup: backup && {
-      // A run with no estimate in this process, such as Try again after a restart, reads one first.
-      take: async (context) => backup.take({
-        ...context,
-        reserveBytes: reserveBytes ?? (await estimateCleanup(context.runStep, context.signal)).reclaimNeededBytes,
-      }),
+      // Reading the need again runs the dry run again, which can hold the ledger for seconds, so the
+      // estimate's need is used while nothing has been written since it began. A sync, a cleanup or a
+      // reset since, or a run with no estimate in this process such as Try again after a restart,
+      // reads a new one.
+      take: async (context) => {
+        const last = estimated;
+        const reserveBytes = last && last.wal === await walPosition(context.runStep)
+          ? last.reserveBytes
+          : (await estimateCleanup(context.runStep, context.signal)).reclaimNeededBytes;
+        return backup.take({ ...context, reserveBytes });
+      },
       remove: backup.remove,
     },
   });
@@ -214,8 +226,11 @@ export function createPGliteFinancialRegistry(
     "financial.canonical.cardAccountNamespaces": () => cardAccountNamespaces(store),
     // One large subject's dry-run step can hold the ledger for seconds (see planLedgerCompaction).
     async "financial.ledger.cleanupEstimate"(_args, request) {
+      estimated = undefined;
+      // Read before the estimate: a commit while it runs leaves the position behind, and the run reads a new one.
+      const wal = await walPosition(options.runBackgroundStep);
       const estimate = await estimateCleanup(options.runBackgroundStep, request?.signal);
-      reserveBytes = estimate.reclaimNeededBytes;
+      estimated = { reserveBytes: estimate.reclaimNeededBytes, wal };
       return estimate;
     },
     "financial.ledger.cleanupBackup": async () => (backup ? backup.newest() : null),
