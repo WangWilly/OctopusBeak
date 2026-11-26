@@ -105,7 +105,8 @@ test("the damaged-ledger box shows only while one exists, after preview data, an
   assert.equal(en.resetLedgerDamagedLabel(1, "3.4"), "1 damaged ledger record (about 3.4 MB)");
   assert.equal(en.resetLedgerDamagedLabel(3, "412"), "3 damaged ledger records (about 412 MB)");
   assert.equal(en.resetLedgerDamagedLabel(3, null), "3 damaged ledger records");
-  assert.equal(zh.resetLedgerPartHints.damaged, "毀損的帳本備援紀錄，刪除後無法取回。聯繫客服嘗試復原。");
+  assert.equal(zh.resetLedgerPartHints.damaged, "毀損的帳本備援紀錄，刪除後無法取回。聯繫客服嘗試修復毀損的資料。");
+  assert.equal(en.resetLedgerPartHints.damaged, "Backup records of damaged ledgers. They cannot be recovered once deleted. Contact support to try to repair the damaged data.");
 });
 
 test("ticked on its own the damaged ledgers count as one item; financial data ticks and locks them, and unticking gives the choice back", () => {
