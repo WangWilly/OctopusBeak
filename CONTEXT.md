@@ -423,6 +423,14 @@ _Avoid_: Source capture, financial event
 The first version can re-evaluate derivation and normalization only from fields retained in compact Source Records; it does not preserve raw artifacts or promise to replay extraction from historical files, responses, or pages. An extraction-contract change that needs discarded source content requires a new source collection and cannot retroactively reinterpret the old capture.
 _Avoid_: Raw archive, artifact blob, full extraction reproducibility
 
+**App data cleanup**:
+A maintenance action a person starts from Settings (「清理應用資料」) that removes Source Record copies equal to the copy before them and returns unused ledger storage to the disk. No Current Financial Projection, Historical Financial Projection, or Lineage Inspection answer changes, so it is not a deletion of financial data and moves no data version. It may first take a Cleanup Backup.
+_Avoid_: Compaction (in product copy), purge, reset, data deletion, cache clearing
+
+**Cleanup backup**:
+A whole copy of the ledger as it was just before an App Data Cleanup, kept beside the ledger for a bounded time so a person can go back to it if the cleanup caused a problem. At most one exists; it expires on its own, and a person may remove it earlier. It is not an export, an archive, or a general backup of the App.
+_Avoid_: Ledger export, snapshot, archive, automatic backup, damaged-ledger backup
+
 **Canonical retention**:
 Accepted Captures, compact Records, identities, revisions, Assertions, transitions, provenance, Statements, and Measurement History have no time-based expiration and remain available for Historical Financial Projection, Lineage Inspection, and deterministic rebuild until an explicit Contract Purge, Canonical Reset, or separately specified user data-deletion action removes them. Disconnection, configuration change, Assertion withdrawal, or loss of current authority never implies deletion; only operational checkpoints, staging data, logs, and retired projections may have bounded retention.
 _Avoid_: Rolling financial TTL, disconnect-as-delete, projection compaction, expired lineage
