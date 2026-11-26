@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { chmod, cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -19,6 +19,13 @@ import {
   ledgerBackupPath,
   ledgerFolderCopy,
   ledgerBackupRoom,
+  LEDGER_BACKUP_RETENTION_DAYS,
+  listLedgerBackups,
+  readLedgerBackupVersions,
+  readLedgerCleanupBackup,
+  removeAllLedgerBackups,
+  removeExpiredLedgerBackups,
+  removeLedgerBackup,
   removePartialLedgerBackups,
 } from "./data-dir-backup.ts";
 import { PGliteStore } from "./transaction.ts";
@@ -179,9 +186,105 @@ test("a partial copy a killed backup left is removed by the next backup or on op
     await mkdir(leftover);
     const second = await backUpLedger(store, dataDir, { ...roomy, now: () => new Date("2026-11-24T10:00:00Z") });
     assert.equal(existsSync(leftover), false, "the next backup removes it first");
-    assert.ok(existsSync(finished) && existsSync(second));
+    assert.ok(existsSync(second));
   } finally {
     await store.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("at most one backup is kept: a new one removes the earlier once it is whole, and records the store's versions beside it", async () => {
+  const { store, dataDir, root } = await folderStore();
+  try {
+    const versions = { canonical: 5, operational: 5 };
+    const first = await backUpLedger(store, dataDir, { ...roomy, versions, now: () => new Date("2026-11-24T08:00:00Z") });
+    assert.deepEqual(await readLedgerBackupVersions(first), versions);
+    // A copy that fails keeps the earlier backup: only a whole new one replaces it.
+    await assert.rejects(() => backUpLedger(store, dataDir, {
+      ...roomy,
+      versions,
+      now: () => new Date("2026-11-24T09:00:00Z"),
+      copyFolder: async () => { throw new Error("EIO"); },
+    }));
+    assert.deepEqual((await readdir(root)).sort(), ["ledger", "ledger.before-compaction-2026-11-24T08-00-00Z", "ledger.before-compaction-2026-11-24T08-00-00Z.versions.json"]);
+
+    const second = await backUpLedger(store, dataDir, { ...roomy, versions, now: () => new Date("2026-11-24T10:00:00Z") });
+    assert.deepEqual((await readdir(root)).sort(), ["ledger", "ledger.before-compaction-2026-11-24T10-00-00Z", "ledger.before-compaction-2026-11-24T10-00-00Z.versions.json"]);
+    assert.deepEqual((await listLedgerBackups(dataDir)).map(({ path }) => path), [second]);
+    assert.equal(existsSync(first), false);
+  } finally {
+    await store.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+/** A finished backup taken at `stamp`, with a versions file unless `versions` is null. */
+async function plantedBackup(dataDir: string, stamp: string, versions: Readonly<{ canonical: number; operational: number }> | null) {
+  const path = `${dataDir}.before-compaction-${stamp}`;
+  await mkdir(path);
+  await writeFile(join(path, "PG_VERSION"), "17");
+  if (versions) await writeFile(`${path}.versions.json`, JSON.stringify(versions));
+  return path;
+}
+
+test("a backup expires 60 days after the time in its name, and the row reads its size, expiry and whether it can be restored", async () => {
+  const root = await mkdtemp(join(tmpdir(), "octopus-beak-backup-check-"));
+  const dataDir = join(root, "ledger");
+  try {
+    await mkdir(dataDir);
+    const current = { canonical: 5, operational: 5 };
+    const old = await plantedBackup(dataDir, "2026-09-01T00-00-00Z", null);
+    const recent = await plantedBackup(dataDir, "2026-11-01T12-00-00Z", current);
+    await mkdir(join(root, "other.before-compaction-2026-01-01T00-00-00Z"));
+    await writeFile(join(root, "ledger.before-compaction-not-a-time"), "");
+    assert.equal(LEDGER_BACKUP_RETENTION_DAYS, 60);
+
+    assert.deepEqual(await readLedgerCleanupBackup(dataDir, current), {
+      path: recent,
+      bytes: 2,
+      takenAt: "2026-11-01T12:00:00.000Z",
+      expiresAt: "2026-12-31T12:00:00.000Z",
+      restorable: true,
+    }, "the newest one");
+    assert.equal((await readLedgerCleanupBackup(dataDir, { ...current, operational: 6 }))?.restorable, false,
+      "a backup of another baseline version can no longer be opened");
+
+    // 2026-09-01 plus 60 days is 2026-10-31.
+    await removeExpiredLedgerBackups(dataDir, new Date("2026-10-30T23:59:59Z"));
+    assert.ok(existsSync(old), "kept until its 60 days are up");
+    await removeExpiredLedgerBackups(dataDir, new Date("2026-10-31T00:00:00Z"));
+    assert.equal(existsSync(old), false);
+    assert.ok(existsSync(recent) && existsSync(join(root, "other.before-compaction-2026-01-01T00-00-00Z")), "nothing else is touched");
+    assert.equal((await readLedgerCleanupBackup(dataDir, current))?.path, recent);
+
+    await removeLedgerBackup(recent);
+    assert.equal(await readLedgerCleanupBackup(dataDir, current), null);
+    assert.deepEqual((await readdir(root)).sort(), ["ledger", "ledger.before-compaction-not-a-time", "other.before-compaction-2026-01-01T00-00-00Z"],
+      "the versions file goes with its backup");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("removing every backup leaves no finished copy, partial copy or versions file, and a removal cut short is cleaned on open", async () => {
+  const root = await mkdtemp(join(tmpdir(), "octopus-beak-backup-check-"));
+  const dataDir = join(root, "ledger");
+  try {
+    await mkdir(dataDir);
+    await plantedBackup(dataDir, "2026-11-01T00-00-00Z", { canonical: 5, operational: 5 });
+    await plantedBackup(dataDir, "2026-10-01T00-00-00Z", null);
+    await mkdir(`${dataDir}.before-compaction-2026-11-02T00-00-00Z.partial`);
+    await writeFile(`${dataDir}.before-compaction-2026-11-03T00-00-00Z.versions.json`, "{}");
+    await removeAllLedgerBackups(dataDir);
+    assert.deepEqual(await readdir(root), ["ledger"]);
+
+    // A removal renamed the copy to `.partial` and stopped there: the open removes the copy and its versions file.
+    const cut = await plantedBackup(dataDir, "2026-11-04T00-00-00Z", { canonical: 5, operational: 5 });
+    await rename(cut, `${cut}.partial`);
+    assert.deepEqual(await listLedgerBackups(dataDir), [], "a renamed copy is no backup");
+    await removePartialLedgerBackups(dataDir);
+    assert.deepEqual(await readdir(root), ["ledger"]);
+  } finally {
     await rm(root, { recursive: true, force: true });
   }
 });

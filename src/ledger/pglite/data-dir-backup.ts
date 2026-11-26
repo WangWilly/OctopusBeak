@@ -1,13 +1,13 @@
 import { execFile } from "node:child_process";
-import { access, cp, open, readdir, readFile, rename, rm } from "node:fs/promises";
+import { access, cp, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { directoryBytes, fsyncDirectory } from "./data-dir-files.ts";
 import type { PGliteStore } from "./transaction.ts";
 
 /**
- * The opt-in backup a ledger compaction takes first (ADR 0154): a copy of
- * the ledger's data folder, beside it, consistent as of one moment.
+ * The Cleanup Backup an App Data Cleanup takes first (ADR 0154, ADR 0156):
+ * a copy of the ledger's data folder, beside it, consistent as of one moment.
  *
  * The copy is made inside one transaction of the store, after a CHECKPOINT
  * in it. PGlite runs a transaction under its transaction mutex, which every
@@ -63,6 +63,22 @@ const BACKUP_INFIX = ".before-compaction-";
 const PARTIAL_SUFFIX = ".partial";
 /** Beside a `.partial` copy `cp` writes: the pid of the process writing it. */
 const PID_SUFFIX = ".pid";
+/** Beside a finished backup: the baseline versions of the store it copied. */
+const VERSIONS_SUFFIX = ".versions.json";
+
+/** How long a backup is kept, counted from the UTC time in its name (ADR 0156). */
+export const LEDGER_BACKUP_RETENTION_DAYS = 60;
+const RETENTION_MS = LEDGER_BACKUP_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+
+/**
+ * The canonical and operational baseline versions of a store. The worker
+ * refuses to open a store of other versions, so a backup whose versions
+ * differ from the App's can no longer be opened.
+ */
+export type LedgerBackupVersions = Readonly<{ canonical: number; operational: number }>;
+
+/** A finished backup beside the ledger's folder. */
+export type LedgerBackupEntry = Readonly<{ path: string; takenAt: Date }>;
 
 /** Where a backup goes: beside the folder, named by when it was taken, never over an earlier one. */
 export function ledgerBackupPath(dataDir: string, now: Date, exists: (path: string) => boolean): string {
@@ -101,6 +117,111 @@ export async function removePartialLedgerBackups(dataDir: string): Promise<void>
     await stopCopyInto(partial);
     await rm(partial, { recursive: true, force: true });
     await rm(`${partial}${PID_SUFFIX}`, { force: true });
+  }
+  // A versions file whose backup is gone: written before a rename that never came, or left by a removal cut short.
+  for (const name of names.filter((name) => name.startsWith(prefix) && name.endsWith(VERSIONS_SUFFIX))) {
+    const backup = join(dirname(dataDir), name.slice(0, -VERSIONS_SUFFIX.length));
+    if (!(await exists(backup))) await rm(join(dirname(dataDir), name), { force: true });
+  }
+}
+
+const STAMP = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})Z(?:-\d+)?$/u;
+
+/** The finished backups beside `dataDir`, newest first. A name without a readable time is not one of them. */
+export async function listLedgerBackups(dataDir: string): Promise<LedgerBackupEntry[]> {
+  dataDir = resolve(dataDir);
+  const prefix = `${basename(dataDir)}${BACKUP_INFIX}`;
+  let names: string[];
+  try {
+    names = await readdir(dirname(dataDir));
+  } catch {
+    return [];
+  }
+  const backups: LedgerBackupEntry[] = [];
+  for (const name of names) {
+    if (!name.startsWith(prefix)) continue;
+    const stamp = STAMP.exec(name.slice(prefix.length));
+    if (!stamp) continue;
+    const takenAt = new Date(`${stamp[1]}T${stamp[2]}:${stamp[3]}:${stamp[4]}Z`);
+    const path = join(dirname(dataDir), name);
+    if (Number.isNaN(takenAt.getTime()) || !(await stat(path).then((entry) => entry.isDirectory(), () => false))) continue;
+    backups.push({ path, takenAt });
+  }
+  return backups.sort((a, b) => b.takenAt.getTime() - a.takenAt.getTime() || b.path.localeCompare(a.path));
+}
+
+/** When a backup taken at `takenAt` expires. */
+export function ledgerBackupExpiresAt(takenAt: Date): Date {
+  return new Date(takenAt.getTime() + RETENTION_MS);
+}
+
+/**
+ * Removes one finished backup and its versions file. It is renamed to
+ * `.partial` first, so a removal cut short leaves a copy the next open
+ * removes, never a half-deleted folder under a backup's name.
+ */
+export async function removeLedgerBackup(backup: string): Promise<void> {
+  const partial = `${backup}${PARTIAL_SUFFIX}`;
+  try {
+    await rename(backup, partial);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  await rm(partial, { recursive: true, force: true });
+  await rm(`${backup}${VERSIONS_SUFFIX}`, { force: true });
+}
+
+/** Removes every finished backup but `keep`: at most one is kept (ADR 0156). */
+export async function removeOtherLedgerBackups(dataDir: string, keep: string): Promise<void> {
+  for (const { path } of await listLedgerBackups(dataDir)) if (path !== resolve(keep)) await removeLedgerBackup(path);
+}
+
+/** Removes every backup whose time is `LEDGER_BACKUP_RETENTION_DAYS` or more before `now`. */
+export async function removeExpiredLedgerBackups(dataDir: string, now: Date): Promise<void> {
+  for (const { path, takenAt } of await listLedgerBackups(dataDir)) {
+    if (ledgerBackupExpiresAt(takenAt).getTime() <= now.getTime()) await removeLedgerBackup(path);
+  }
+}
+
+/** Removes every backup, finished or partial: a Canonical Reset leaves none that holds the deleted data. */
+export async function removeAllLedgerBackups(dataDir: string): Promise<void> {
+  await removePartialLedgerBackups(dataDir);
+  for (const { path } of await listLedgerBackups(dataDir)) await removeLedgerBackup(path);
+  await removePartialLedgerBackups(dataDir);
+}
+
+/** The backup Settings shows: the newest finished one. `path` stays on the host. */
+export type LedgerCleanupBackup = Readonly<{
+  path: string;
+  bytes: number;
+  takenAt: string;
+  expiresAt: string;
+  /** The versions it recorded are the App's, so the worker would open it. */
+  restorable: boolean;
+}>;
+
+/** Reads the newest finished backup beside `dataDir`, or null when there is none. */
+export async function readLedgerCleanupBackup(dataDir: string, current: LedgerBackupVersions): Promise<LedgerCleanupBackup | null> {
+  const [newest] = await listLedgerBackups(dataDir);
+  if (!newest) return null;
+  const versions = await readLedgerBackupVersions(newest.path);
+  return {
+    path: newest.path,
+    bytes: await directoryBytes(newest.path),
+    takenAt: newest.takenAt.toISOString(),
+    expiresAt: ledgerBackupExpiresAt(newest.takenAt).toISOString(),
+    restorable: versions !== null && versions.canonical === current.canonical && versions.operational === current.operational,
+  };
+}
+
+/** The versions a backup recorded; null when it recorded none, as one taken before ADR 0156, or the file is unreadable. */
+export async function readLedgerBackupVersions(backup: string): Promise<LedgerBackupVersions | null> {
+  try {
+    const value = JSON.parse(await readFile(`${backup}${VERSIONS_SUFFIX}`, "utf8")) as Partial<LedgerBackupVersions>;
+    const version = (field: unknown) => typeof field === "number" && Number.isSafeInteger(field);
+    return version(value.canonical) && version(value.operational) ? { canonical: value.canonical!, operational: value.operational! } : null;
+  } catch {
+    return null;
   }
 }
 
@@ -144,6 +265,8 @@ export type LedgerBackupOptions = Readonly<{
   copyFolder?: LedgerBackupCopy;
   /** Flushes the folder that holds the backup's name once it is renamed; checks replace it to fail. */
   flushEntry?: (folder: string) => Promise<void>;
+  /** Written beside the backup before it gets its name; the worker passes the open store's. */
+  versions?: LedgerBackupVersions;
 }>;
 
 const run = promisify(execFile);
@@ -215,8 +338,9 @@ export async function ledgerBackupRoom(dataDir: string, freeBytes: () => Promise
  * Copies `dataDir` beside itself while `store` writes nothing, flushes the
  * copy to the disk, then gives it its name. Refuses when the disk has less
  * free than `ledgerBackupBytesNeeded`. A copy that fails or is aborted is
- * removed. Returns where the copy went, which stays in the worker: the
- * renderer is never told a path.
+ * removed. Once the new backup is whole, every earlier one is removed. Returns
+ * where the copy went, which stays on the host: the renderer is never told a
+ * path.
  */
 export async function backUpLedger(store: PGliteStore, dataDir: string, options: LedgerBackupOptions): Promise<string> {
   const { signal } = options;
@@ -239,6 +363,7 @@ export async function backUpLedger(store: PGliteStore, dataDir: string, options:
     // The copy is already consistent, so its flush holds neither the lock nor the lane.
     await fsyncDirectory(partial, undefined, signal);
     signal?.throwIfAborted();
+    if (options.versions) await writeFile(`${target}${VERSIONS_SUFFIX}`, JSON.stringify(options.versions));
     await rename(partial, target);
     named = true;
     await (options.flushEntry ?? fsyncPath)(dirname(target));
@@ -246,8 +371,11 @@ export async function backUpLedger(store: PGliteStore, dataDir: string, options:
     // A name that may not survive a crash is no backup: it goes back to `.partial` and is removed with the copy.
     if (named) await rename(target, partial).catch(() => rm(target, { recursive: true, force: true }));
     await rm(partial, { recursive: true, force: true });
+    await rm(`${target}${VERSIONS_SUFFIX}`, { force: true });
     if (signal?.aborted) throw error;
     throw new LedgerBackupError("copy-failed", error instanceof Error ? error.message : String(error));
   }
+  // The new backup is whole, so the earlier one goes. One that cannot be removed now expires on its own.
+  await removeOtherLedgerBackups(dataDir, target).catch(() => undefined);
   return target;
 }

@@ -50,18 +50,16 @@ function harness(stored: AutomationSettingsFile = {}, overrides: Partial<Setting
     deleteAllFinancialData: async (collection, financial, versions) => {
       calls.push(["deleteAllFinancialData", collection, financial, versions]);
     },
-    ledgerReclaim: {
-      estimate: async () => ({ tables: [], reclaimableBytes: 0, requiredFreeBytes: 0, freeBytes: null }),
-      reclaim: async () => ({ status: "nothing-to-reclaim" }),
+    ledgerCleanup: {
+      estimate: async () => ({ compaction: "compacted", redundantBytes: 0, temporaryBytes: 0, reclaimNeededBytes: 0, backup: null, freeBytes: null }),
+      run: async () => ({ status: "already-running" }),
       status: async () => ({ running: false, last: null }),
       stop: async () => false,
     },
-    ledgerCompaction: {
-      plan: async () => ({ status: "unrecognised-citations", problems: [] }),
-      backupRoom: async () => null,
-      compact: async () => ({ status: "already-compacted" }),
-      status: async () => ({ running: false, last: null }),
-      stop: async () => false,
+    cleanupBackup: {
+      newest: async () => null,
+      reveal: () => {},
+      remove: async () => {},
     },
     ...overrides,
   });
@@ -150,46 +148,6 @@ test("deleting data hands the injected ports to the erasure functions", async ()
   assert.equal(calls[1]![3], dataVersions);
 });
 
-test("the ledger reclaim reaches the renderer as sizes and counts only, and moves no data version", async () => {
-  let running = true;
-  const table = (name: string, bytesBefore: number, bytesAfter: number) => ({ table: name, bytesBefore, bytesAfter, milliseconds: 5 });
-  const { service, dataVersions } = harness({}, {
-    ledgerReclaim: {
-      estimate: async () => ({
-        tables: [{ table: "public.a", bytes: 10, reclaimableBytes: 8 }, { table: "pg_catalog.pg_depend", bytes: 30, reclaimableBytes: 20 }],
-        reclaimableBytes: 28,
-        requiredFreeBytes: 100,
-        freeBytes: 500,
-      }),
-      reclaim: async () => ({
-        status: "reclaimed",
-        tables: [table("public.a", 10, 2), table("pg_catalog.pg_depend", 30, 10)],
-        bytesBefore: 40,
-        bytesAfter: 12,
-        folderBytesBefore: 100,
-        folderBytesAfter: 80,
-        longestMilliseconds: 5,
-      }),
-      status: async () => running
-        ? { running: true, progress: { index: 2, count: 2, table: "pg_catalog.pg_depend", bytesBefore: 10, bytesAfter: 2 } }
-        : { running: false, last: { status: "failed", tables: [], bytesBefore: 0, bytesAfter: 0, folderBytesBefore: null, folderBytesAfter: null, longestMilliseconds: 0 } },
-      stop: async () => true,
-    },
-  });
-  const version = dataVersions.snapshot();
-  assert.deepEqual(await service.ledgerReclaimEstimate(), { reclaimableBytes: 28, tableCount: 2, requiredFreeBytes: 100, freeBytes: 500 });
-  assert.deepEqual(await service.ledgerReclaimStatus(), { running: true, progress: { index: 2, count: 2 } });
-  assert.deepEqual(
-    await service.reclaimLedgerSpace(),
-    { status: "reclaimed", tableCount: 2, reclaimedBytes: 20 },
-    "what the folder shrank, WAL included, not the tables' 28 bytes",
-  );
-  running = false;
-  assert.deepEqual(await service.ledgerReclaimStatus(), { running: false, last: { status: "failed", tableCount: 0, reclaimedBytes: 0 } });
-  assert.equal(await service.stopLedgerReclaim(), true);
-  assert.deepEqual(dataVersions.snapshot(), version, "a reclaim changes no row");
-});
-
 const removed = (rows: number) => ({
   canonical_credit_card_transaction_details: rows,
   canonical_credit_card_transaction_lifecycle: 0,
@@ -207,11 +165,24 @@ const removed = (rows: number) => ({
   source_occurrence_group_counts: 0,
 });
 
-const tally = (rows: number) => ({ removed: removed(rows), manifests: 1, chunks: { done: 2, count: 3 }, longestChunkMs: 5, durationMs: 9 });
+const tally = (rows: number, freedBytes: number | null = 300) =>
+  ({ removed: removed(rows), manifests: 1, chunks: { done: 2, count: 3 }, longestChunkMs: 5, durationMs: 9, freedBytes });
 
-test("the ledger compaction reaches the renderer as sizes, counts, phase and status only, and moves no data version", async () => {
+const reclaimed = (status: "reclaimed" | "failed") => ({
+  status,
+  tables: [{ table: "public.source_records", bytesBefore: 300, bytesAfter: 100, milliseconds: 5 }],
+  bytesBefore: 300,
+  bytesAfter: 100,
+  folderBytesBefore: 1_000,
+  folderBytesAfter: 700,
+  longestMilliseconds: 5,
+}) as const;
+
+type CleanupDeps = SettingsDesktopServiceDeps["ledgerCleanup"];
+
+test("the cleanup reaches the renderer as sizes, phase and status only, and moves no data version", async () => {
   const requests: unknown[] = [];
-  let status: Awaited<ReturnType<SettingsDesktopServiceDeps["ledgerCompaction"]["status"]>> = {
+  let status: Awaited<ReturnType<CleanupDeps["status"]>> = {
     running: true,
     progress: {
       phase: "compacting",
@@ -221,39 +192,19 @@ test("the ledger compaction reaches the renderer as sizes, counts, phase and sta
       chunk: { kind: "chains", chains: [{ subject: "ab12", recordKind: "card-transaction" }], namespaces: ["bank"], records: true, counts: true },
     },
   };
-  const table = (name: string, rows: number, removable: number, estimatedBytes: number) => ({ table: name, rows, removable, estimatedBytes });
   const { service, dataVersions } = harness({}, {
-    ledgerCompaction: {
-      plan: async () => ({
-        status: "planned",
-        databaseBytes: 900,
-        phaseA: [table("canonical_credit_card_transaction_details", 10, 4, 40)],
-        phaseB: {
-          groups: [],
-          totals: { copies: 9, unchained: 0, first: 3, changed: 0, manifestCapture: 0, pinned: 0, lexemeOnly: 0, removable: 6 },
-          pinnedBy: {},
-          tables: [table("source_records", 9, 6, 300), table("source_record_scopes", 9, 6, 30)],
-        },
-        phaseC: table("source_occurrence_group_counts", 5, 2, 20),
-        citingColumns: ["canonical_credit_card_transaction_details.source_record_id"],
-        estimatedBytes: 390,
+    ledgerCleanup: {
+      estimate: async () => ({
+        compaction: "planned",
+        redundantBytes: 390,
+        temporaryBytes: 120,
+        reclaimNeededBytes: 800,
+        backup: { storeBytes: 1_000, neededBytes: 1_200, freeBytes: 5_000 },
+        freeBytes: 5_000,
       }),
-      backupRoom: async () => ({ storeBytes: 1_000, neededBytes: 1_200, freeBytes: 5_000 }),
-      compact: async (request) => {
+      run: async (request) => {
         requests.push(request);
-        return {
-          status: "compacted",
-          ...tally(40),
-          reclaim: {
-            status: "reclaimed",
-            tables: [{ table: "public.source_records", bytesBefore: 300, bytesAfter: 100, milliseconds: 5 }],
-            bytesBefore: 300,
-            bytesAfter: 100,
-            folderBytesBefore: 1_000,
-            folderBytesAfter: 700,
-            longestMilliseconds: 5,
-          },
-        };
+        return { status: "compacted", ...tally(40), reclaim: reclaimed("reclaimed") };
       },
       status: async () => status,
       stop: async () => true,
@@ -261,56 +212,82 @@ test("the ledger compaction reaches the renderer as sizes, counts, phase and sta
   });
   const version = dataVersions.snapshot();
   assert.deepEqual(
-    await service.ledgerCompactionEstimate(),
-    { status: "planned", removableRows: 18, removableBytes: 390, storeBytes: 1_000, backupNeededBytes: 1_200, freeBytes: 5_000 },
+    await service.ledgerCleanupEstimate(),
+    { redundantBytes: 390, temporaryBytes: 120, neededBytes: 800, freeBytes: 5_000, backup: { bytes: 1_000, neededBytes: 1_200 } },
   );
-  assert.deepEqual(await service.ledgerCompactionStatus(), { running: true, progress: { phase: "compacting", index: 2, count: 3, removedRows: 40 } },
-    "no subject, record kind or namespace");
+  assert.deepEqual(await service.ledgerCleanupStatus(), { running: true, progress: { phase: "compacting", index: 2, count: 3 } },
+    "no subject, record kind, namespace or row count");
   status = {
     running: true,
     progress: { phase: "reclaiming", removedRows: 40, reclaim: { index: 1, count: 4, table: "public.source_records", bytesBefore: 300, bytesAfter: 100 } },
   };
-  assert.deepEqual(await service.ledgerCompactionStatus(), { running: true, progress: { phase: "reclaiming", index: 1, count: 4, removedRows: 40 } });
+  assert.deepEqual(await service.ledgerCleanupStatus(), { running: true, progress: { phase: "reclaiming", index: 1, count: 4 } }, "no table name");
   status = { running: true, progress: { phase: "backing-up" } };
-  assert.deepEqual(await service.ledgerCompactionStatus(), { running: true, progress: { phase: "backing-up" } });
+  assert.deepEqual(await service.ledgerCleanupStatus(), { running: true, progress: { phase: "backing-up" } });
 
-  assert.deepEqual(await service.compactLedger({ backup: true }), { status: "compacted", removedRows: 40, reclaimedBytes: 300 },
-    "what the folder shrank");
-  assert.deepEqual(requests, [{ backup: true }]);
-  await assert.rejects(() => service.compactLedger({ backup: "yes" }), TypeError);
-  await assert.rejects(() => service.compactLedger(undefined), TypeError);
-  await assert.rejects(() => service.compactLedger({ backup: true, path: "/elsewhere" }), TypeError, "no field but backup");
-  await assert.rejects(() => service.compactLedger(Object.assign([], { backup: true })), TypeError);
-  assert.deepEqual(requests, [{ backup: true }], "a malformed request reaches no worker");
+  assert.deepEqual(await service.cleanUpLedger({ backup: true, keepBackup: false }), { status: "done", freedBytes: 300 }, "what the folder lost");
+  assert.deepEqual(requests, [{ backup: true, keepBackup: false }]);
+  for (const malformed of [{ backup: "yes", keepBackup: true }, { backup: true }, undefined, { backup: true, keepBackup: true, path: "/elsewhere" },
+    Object.assign([], { backup: true, keepBackup: true })]) {
+    await assert.rejects(() => service.cleanUpLedger(malformed), TypeError);
+  }
+  assert.equal(requests.length, 1, "a malformed request reaches no worker");
 
   status = {
     running: false,
-    last: { status: "failed", chunk: null, failure: { reason: "reader-changed", readers: ["cardDetailsLatestByRevision"] }, ...tally(7) },
+    last: { status: "failed", chunk: null, failure: { reason: "reader-changed", readers: ["cardDetailsLatestByRevision"] }, ...tally(7, 2_000) },
   };
-  assert.deepEqual(await service.ledgerCompactionStatus(), { running: false, last: { status: "failed", removedRows: 7, backup: false } },
-    "no reader name or chunk");
+  assert.deepEqual(await service.ledgerCleanupStatus(), { running: false, last: { status: "failed", freedBytes: 2_000 } }, "no reader name or chunk");
+  status = { running: false, last: { status: "failed", chunk: null, failure: { reason: "backup", backup: "no-room" }, ...tally(0) } };
+  assert.deepEqual(await service.ledgerCleanupStatus(), { running: false, last: { status: "backup-failed" } });
   status = { running: false, last: { status: "failed-earlier", removedRows: 7, chunks: { done: 1, count: 3 }, backup: true, failedAt: "2026-11-01T00:00:00.000Z" } };
-  assert.deepEqual(await service.ledgerCompactionStatus(), { running: false, last: { status: "failed", removedRows: 7, backup: true } });
-  status = { running: false, last: { status: "stopped", ...tally(3) } };
-  assert.deepEqual(await service.ledgerCompactionStatus(), { running: false, last: { status: "stopped", removedRows: 3 } });
-  assert.equal(await service.stopLedgerCompaction(), true);
-  assert.deepEqual(dataVersions.snapshot(), version, "a compaction changes no answer a page reads");
+  assert.deepEqual(await service.ledgerCleanupStatus(), { running: false, last: { status: "backup-failed" } });
+  status = { running: false, last: { status: "failed-earlier", removedRows: 7, chunks: { done: 1, count: 3 }, backup: false, failedAt: "2026-11-01T00:00:00.000Z" } };
+  assert.deepEqual(await service.ledgerCleanupStatus(), { running: false, last: { status: "failed", freedBytes: 0 } });
+  status = { running: false, last: { status: "stopped", ...tally(3, 50) } };
+  assert.deepEqual(await service.ledgerCleanupStatus(), { running: false, last: { status: "stopped", freedBytes: 50 } });
+  assert.equal(await service.stopLedgerCleanup(), true);
+  assert.deepEqual(dataVersions.snapshot(), version, "a cleanup changes no answer a page reads");
 });
 
-test("a compaction whose space could not be returned yet says so, and an unreadable ledger cannot be compacted", async () => {
+test("a reclaim that ran out of room or failed after the compaction says so", async () => {
+  let result: Awaited<ReturnType<CleanupDeps["run"]>> = {
+    status: "compacted",
+    ...tally(5, 0),
+    reclaim: { status: "not-enough-space", requiredFreeBytes: 900, freeBytes: 600, reclaimableBytes: 4_000 },
+  };
   const { service } = harness({}, {
-    ledgerCompaction: {
-      plan: async () => ({ status: "unrecognised-citations", problems: [{ table: "secret_table", columns: ["x"], problem: "no-foreign-key" }] }),
-      backupRoom: async () => null,
-      compact: async () => ({
-        status: "compacted",
-        ...tally(5),
-        reclaim: { status: "not-enough-space", requiredFreeBytes: 10, freeBytes: 1 },
-      }),
+    ledgerCleanup: {
+      estimate: async () => { throw new Error("unused"); },
+      run: async () => result,
       status: async () => ({ running: false, last: null }),
       stop: async () => false,
     },
   });
-  assert.deepEqual(await service.ledgerCompactionEstimate(), { status: "cannot-compact" }, "no table name");
-  assert.deepEqual(await service.compactLedger({ backup: false }), { status: "compacted", removedRows: 5, reclaimedBytes: null });
+  assert.deepEqual(await service.cleanUpLedger({ backup: false, keepBackup: false }),
+    { status: "no-room", freedBytes: 0, remainingBytes: 4_000, neededBytes: 300 }, "how much is left, and how much more room to make");
+  result = { status: "compacted", ...tally(5, null), reclaim: reclaimed("failed") };
+  assert.deepEqual(await service.cleanUpLedger({ backup: false, keepBackup: false }), { status: "failed", freedBytes: 200 },
+    "a failed rewrite is a failed cleanup; without a folder to measure, what the rewritten tables lost");
+});
+
+test("the Cleanup Backup reaches the renderer without its path; the main process reveals and deletes it", async () => {
+  const backup = { path: "/ledger.before-compaction-2026-11-01T00-00-00Z", bytes: 9, takenAt: "2026-11-01T00:00:00.000Z", expiresAt: "2026-12-31T00:00:00.000Z", restorable: false };
+  let backups = [backup, { ...backup, path: "/ledger.before-compaction-2026-10-01T00-00-00Z" }];
+  const revealed: string[] = [];
+  const { service } = harness({}, {
+    cleanupBackup: {
+      newest: async () => backups[0] ?? null,
+      reveal: (path) => revealed.push(path),
+      remove: async (path) => { backups = backups.filter((entry) => entry.path !== path); },
+    },
+  });
+  assert.deepEqual(await service.cleanupBackup(), { bytes: 9, takenAt: backup.takenAt, expiresAt: backup.expiresAt, restorable: false });
+  await service.revealCleanupBackup();
+  assert.deepEqual(revealed, [backup.path]);
+  assert.equal(await service.deleteCleanupBackup(), null);
+  assert.deepEqual(backups, [], "an older one a version before ADR 0156 left goes too");
+  assert.equal(await service.cleanupBackup(), null);
+  await service.revealCleanupBackup();
+  assert.equal(revealed.length, 1, "nothing to reveal");
 });

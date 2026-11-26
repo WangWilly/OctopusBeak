@@ -50,9 +50,9 @@ import type { PGliteCanonicalCommitOptions } from "../src/ledger/pglite/canonica
 import type { CardIdentitySecret } from "../src/lib/shared-identity/card-identity-secret.ts";
 import { cardAccountNamespaces } from "../src/ledger/pglite/card-identity-secret.ts";
 import { planLedgerCompaction } from "../src/ledger/pglite/compaction-plan.ts";
-import { createLedgerReclaimer } from "../src/ledger/pglite/reclaim.ts";
-import { createLedgerCompactor, type LedgerCompactionBackup } from "../src/ledger/pglite/compaction-job.ts";
-import type { LedgerBackupRoom } from "../src/ledger/pglite/data-dir-backup.ts";
+import { createLedgerCompactor, type LedgerCleanupBackupPort } from "../src/ledger/pglite/compaction-job.ts";
+import { estimateLedgerCleanup } from "../src/ledger/pglite/cleanup-estimate.ts";
+import type { LedgerBackupRoom, LedgerCleanupBackup } from "../src/ledger/pglite/data-dir-backup.ts";
 import {
   readAssetsPage,
   readLiabilitiesPage,
@@ -92,14 +92,20 @@ export type PGliteFinancialRegistryOptions = Readonly<{
   freeDiskBytes?: () => Promise<number>;
   /** The ledger's folder: its size, and a flush of its files to the disk, which a reclaim uses. */
   ledgerFolder?: Readonly<{ bytes(): Promise<number>; sync(): Promise<void> }>;
-  /** The opt-in backup before a compaction (ADR 0154); absent when the ledger has no folder of its own. */
+  /** The Cleanup Backup (ADR 0154, ADR 0156); absent when the ledger has no folder of its own. */
   ledgerBackup?: LedgerBackupPort;
 }>;
 
-/** A compaction's backup: how much room it needs and has, and the copy, whose locked part runs as one background step. */
-export type LedgerBackupPort = Readonly<{
+/**
+ * The Cleanup Backup: how much room one needs and has, taking one (its
+ * locked part runs as one background step), the newest one, and removing
+ * one or all of them.
+ */
+export type LedgerBackupPort = LedgerCleanupBackupPort & Readonly<{
   room(): Promise<LedgerBackupRoom>;
-  copy: LedgerCompactionBackup;
+  newest(): Promise<LedgerCleanupBackup | null>;
+  /** Every backup, partial ones included; a Canonical Reset leaves none. */
+  removeAll(): Promise<void>;
 }>;
 
 export function createPGliteFinancialRegistry(
@@ -117,16 +123,11 @@ export function createPGliteFinancialRegistry(
   const spending = createPGliteSpendingQuery(store);
   const source = createPGliteCanonicalSourceStore(store);
   const previewVisibilityListeners = new Set<() => void>();
-  const reclaimer = createLedgerReclaimer(store, {
-    runStep: options.runBackgroundStep,
-    freeBytes: options.freeDiskBytes,
-    folderBytes: options.ledgerFolder?.bytes,
-    syncToDisk: options.ledgerFolder?.sync,
-  });
+  const backup = options.ledgerBackup;
   const compactor = createLedgerCompactor(store, {
     runStep: options.runBackgroundStep,
     reclaim: { freeBytes: options.freeDiskBytes, folderBytes: options.ledgerFolder?.bytes, syncToDisk: options.ledgerFolder?.sync },
-    backup: options.ledgerBackup?.copy,
+    backup: backup && { take: backup.take, remove: backup.remove },
   });
   return Object.freeze({
     "financial.overview.current": ([expectedSources = []]) =>
@@ -184,7 +185,12 @@ export function createPGliteFinancialRegistry(
     "financial.manualAssets.apply"([command]) {
       return applyManualAssetCommand(store, command, manualClock);
     },
-    "financial.canonical.reset": () => resetPGliteCanonicalStore(store),
+    // A Cleanup Backup holds the financial data the reset deletes (ADR 0156), so it goes too. A
+    // removal that fails fails the reset, which the person can run again.
+    "financial.canonical.reset": async () => {
+      await resetPGliteCanonicalStore(store);
+      await backup?.removeAll();
+    },
     "financial.canonical.resetRequired": () =>
       canonicalResetRequiredNamespaces(store, options.cardIdentitySecret?.()),
     "financial.canonical.cardAccountNamespaces": () => cardAccountNamespaces(store),
@@ -192,13 +198,15 @@ export function createPGliteFinancialRegistry(
     // hold the ledger for seconds (see planLedgerCompaction).
     "financial.canonical.compactionPlan": (_args, request) =>
       planLedgerCompaction(store, { runStep: options.runBackgroundStep, signal: request?.signal }),
-    "financial.ledger.reclaimEstimate": (_args, request) => reclaimer.estimate(request?.signal),
-    "financial.ledger.reclaim": (_args, request) => reclaimer.reclaim(request?.signal),
-    "financial.ledger.reclaimStatus": async () => reclaimer.status(),
-    "financial.ledger.reclaimStop": async () => reclaimer.stop(),
+    "financial.ledger.cleanupEstimate": (_args, request) => estimateLedgerCleanup(store, {
+      runStep: options.runBackgroundStep,
+      signal: request?.signal,
+      freeBytes: options.freeDiskBytes,
+      backupRoom: backup?.room,
+    }),
+    "financial.ledger.cleanupBackup": async () => (backup ? backup.newest() : null),
     "financial.canonical.compact": ([compaction], request) => compactor.compact(request?.signal, compaction),
     "financial.canonical.compactionStatus": () => compactor.status(),
-    "financial.canonical.compactionBackupRoom": async () => (options.ledgerBackup ? options.ledgerBackup.room() : null),
     "financial.canonical.compactionStop": async () => compactor.stop(),
   });
 }

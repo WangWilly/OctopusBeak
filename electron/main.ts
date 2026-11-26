@@ -49,6 +49,7 @@ import { applyOctopusBeakAppIdentity } from "./app-identity.ts";
 import { openSafeStorageCredentialStore } from "./credential-codec.ts";
 import { recoverUnusableLedger } from "./ledger-recovery.ts";
 import { isLedgerUnusable } from "./ledger-unusable.ts";
+import { removeLedgerBackup } from "../src/ledger/pglite/data-dir-backup.ts";
 import { CARD_IDENTITY_VERIFIER_FILE } from "../src/lib/automation/server/card-identity-verifier.ts";
 import { createExchangeRateScheduler, createScheduledCollectionScheduler } from "./daily-scheduler.ts";
 import { requestNotificationTarget, takeNotificationTarget } from "./notification-target.ts";
@@ -666,18 +667,17 @@ async function start() {
     financial: { reset: () => operationalRuntime.worker.financial.request("financial.canonical.reset", []) },
     deleteAllPreviewData,
     deleteAllFinancialData,
-    ledgerReclaim: {
-      estimate: () => operationalRuntime.worker.financial.request("financial.ledger.reclaimEstimate", []),
-      reclaim: () => operationalRuntime.worker.financial.request("financial.ledger.reclaim", []),
-      status: () => operationalRuntime.worker.financial.request("financial.ledger.reclaimStatus", []),
-      stop: () => operationalRuntime.worker.financial.request("financial.ledger.reclaimStop", []),
-    },
-    ledgerCompaction: {
-      plan: () => operationalRuntime.worker.financial.request("financial.canonical.compactionPlan", []),
-      backupRoom: () => operationalRuntime.worker.financial.request("financial.canonical.compactionBackupRoom", []),
-      compact: (request) => operationalRuntime.worker.financial.request("financial.canonical.compact", [request]),
+    ledgerCleanup: {
+      estimate: () => operationalRuntime.worker.financial.request("financial.ledger.cleanupEstimate", []),
+      run: (request) => operationalRuntime.worker.financial.request("financial.canonical.compact", [request]),
       status: () => operationalRuntime.worker.financial.request("financial.canonical.compactionStatus", []),
       stop: () => operationalRuntime.worker.financial.request("financial.canonical.compactionStop", []),
+    },
+    // The worker names the backup; the renderer never sees where it is.
+    cleanupBackup: {
+      newest: () => operationalRuntime.worker.financial.request("financial.ledger.cleanupBackup", []),
+      reveal: (backup) => shell.showItemInFolder(backup),
+      remove: removeLedgerBackup,
     },
   });
   const rendererUrl = RENDERER_URL;
