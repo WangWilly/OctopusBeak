@@ -142,64 +142,54 @@ export type SignInDataStatus = Readonly<{
   clearRequiresFinancialDataDeletion: boolean;
 }>;
 
-/** What Reclaim ledger space would free (ADR 0155). Bytes throughout. */
-export type LedgerReclaimEstimateDto = Readonly<{
-  reclaimableBytes: number;
-  tableCount: number;
-  /** The disk must have this much free before the reclaim starts. */
-  requiredFreeBytes: number;
+/**
+ * What an App Data Cleanup would free (ADR 0156), in bytes. `redundantBytes`
+ * is the compaction's part and `temporaryBytes` the reclaim's. The run needs
+ * `neededBytes` free without a backup, and `backup.neededBytes`, the backup's
+ * need and the run's together, with one. `backup` is `unreadable` when the
+ * room for one could not be read, and null when the ledger cannot be backed up.
+ */
+export type LedgerCleanupEstimateDto = Readonly<{
+  redundantBytes: number;
+  temporaryBytes: number;
+  neededBytes: number;
   /** null when the free space could not be read. */
   freeBytes: number | null;
+  backup: Readonly<{ kind: "room"; bytes: number; neededBytes: number }> | Readonly<{ kind: "unreadable" }> | null;
 }>;
 
-/** The running reclaim: table `index` of `count` is being rewritten. */
-export type LedgerReclaimProgressDto = Readonly<{ index: number; count: number }>;
-
-export type LedgerReclaimResultDto =
-  | Readonly<{ status: "nothing-to-reclaim" | "already-running" }>
-  | Readonly<{ status: "not-enough-space"; requiredFreeBytes: number; freeBytes: number }>
-  /**
-   * `stopped`: stopped between two tables; `failed`: a table could not be
-   * rewritten. Either way no data changed. `reclaimedBytes` is how much the
-   * ledger's folder shrank, or its tables when the folder could not be measured.
-   */
-  | Readonly<{ status: "reclaimed" | "stopped" | "failed"; tableCount: number; reclaimedBytes: number }>;
-
-/** A reclaim that is running, possibly started from an earlier visit to Settings, or how the last one ended. */
-export type LedgerReclaimStatusDto =
-  | Readonly<{ running: true; progress: LedgerReclaimProgressDto | null }>
-  | Readonly<{ running: false; last: LedgerReclaimResultDto | null }>;
-
-/**
- * What Compact ledger would free (ADR 0154), from its dry run. `storeBytes`
- * is the ledger folder's size, `backupNeededBytes` the free space a backup
- * first needs (the size plus a margin) and `freeBytes` what the disk has;
- * null when the ledger cannot be backed up.
- */
-export type LedgerCompactionEstimateDto =
-  | Readonly<{ status: "planned"; removableRows: number; removableBytes: number;
-    storeBytes: number | null; backupNeededBytes: number | null; freeBytes: number | null }>
-  /** The ledger holds a reference the compaction does not know, so it would remove nothing. */
-  | Readonly<{ status: "cannot-compact" }>;
-
-/** The running compaction: the backup, step `index` of `count`, or table `index` of `count` being rewritten. */
-export type LedgerCompactionProgressDto =
+/** The running cleanup: the backup, step `index` of `count`, or table `index` of `count` being rewritten. */
+export type LedgerCleanupProgressDto =
   | Readonly<{ phase: "backing-up" }>
-  | Readonly<{ phase: "compacting" | "reclaiming"; index: number; count: number; removedRows: number }>;
+  | Readonly<{ phase: "compacting" | "reclaiming"; index: number; count: number }>;
 
-export type LedgerCompactionResultDto =
-  | Readonly<{ status: "already-compacted" | "already-running" }>
-  /** `reclaimedBytes` is null when the removed rows' space could not be returned yet. */
-  | Readonly<{ status: "compacted"; removedRows: number; reclaimedBytes: number | null }>
-  /** The steps done before the stop stay done; starting again goes on from there. */
-  | Readonly<{ status: "stopped"; removedRows: number }>
-  /** The failing step rolled back; the steps before it stay done. `backup`: the backup failed, so nothing ran. */
-  | Readonly<{ status: "failed"; removedRows: number; backup: boolean }>;
+/** How a cleanup ended. `freedBytes` is how much the ledger's folder shrank. */
+export type LedgerCleanupResultDto =
+  | Readonly<{ status: "already-running" }>
+  | Readonly<{ status: "done"; freedBytes: number }>
+  /** The steps done before the stop stay done; cleaning up again goes on from there. */
+  | Readonly<{ status: "stopped"; freedBytes: number }>
+  /** The failing step rolled back; the steps before it stay done. */
+  | Readonly<{ status: "failed"; freedBytes: number }>
+  /** The backup could not be made, so nothing was removed. */
+  | Readonly<{ status: "backup-failed" }>
+  /** The redundant data is removed, but the disk had no room to return the space: about `remainingBytes` is left, and `neededBytes` more must be freed. */
+  | Readonly<{ status: "no-room"; freedBytes: number; remainingBytes: number; neededBytes: number }>;
 
-/** A compaction that is running, or how the last one ended; a failure is still reported after a restart. */
-export type LedgerCompactionStatusDto =
-  | Readonly<{ running: true; progress: LedgerCompactionProgressDto | null }>
-  | Readonly<{ running: false; last: LedgerCompactionResultDto | null }>;
+/** A cleanup that is running, or how the last one ended; a failure is still reported after a restart. */
+export type LedgerCleanupStatusDto =
+  | Readonly<{ running: true; progress: LedgerCleanupProgressDto | null }>
+  | Readonly<{ running: false; last: LedgerCleanupResultDto | null }>;
+
+/** The Cleanup Backup Settings shows; no path reaches the renderer. */
+export type CleanupBackupDto = Readonly<{
+  /** null when the backup could not be measured; it can still be deleted. */
+  bytes: number | null;
+  takenAt: string;
+  expiresAt: string;
+  /** False when the App has changed the ledger's versions since, so the backup can no longer be opened. */
+  restorable: boolean;
+}>;
 
 /** The part of Settings a notification or another page opens. */
 export type SettingsFocus = "financial-data-deletion" | "sign-in-data" | "app-updates";
@@ -311,22 +301,20 @@ export type OctopusBeakApi = {
     clearSignInData(): Promise<void>;
     /** Whether the stored Sign-in Details can be read, and whether clearing them would need a Canonical Reset (ADR 0149). */
     signInDataStatus(): Promise<SignInDataStatus>;
-    /** About how much Reclaim ledger space would free; reads every candidate table once. */
-    ledgerReclaimEstimate(): Promise<LedgerReclaimEstimateDto>;
-    /** Rewrites the bloated ledger tables with VACUUM FULL. Deletes no data; resolves when it ends. */
-    reclaimLedgerSpace(): Promise<LedgerReclaimResultDto>;
-    /** The running reclaim's progress, or how the last one ended. */
-    ledgerReclaimStatus(): Promise<LedgerReclaimStatusDto>;
-    /** Stops the running reclaim after its current table. */
-    stopLedgerReclaim(): Promise<boolean>;
-    /** About how much Compact ledger would free, from its dry run, and whether a backup first fits on the disk. */
-    ledgerCompactionEstimate(): Promise<LedgerCompactionEstimateDto>;
-    /** Removes the repeated rows an older ledger holds, then returns their space; resolves when it ends. */
-    compactLedger(request: Readonly<{ backup: boolean }>): Promise<LedgerCompactionResultDto>;
-    /** The running compaction's progress, or how the last one ended. */
-    ledgerCompactionStatus(): Promise<LedgerCompactionStatusDto>;
-    /** Stops the running compaction; its current step rolls back. */
-    stopLedgerCompaction(): Promise<boolean>;
+    /** About how much Clean up app data would free, and the room it and its backup need; may pause the App for seconds. */
+    ledgerCleanupEstimate(): Promise<LedgerCleanupEstimateDto>;
+    /** Compacts, then returns the space; resolves when it ends. */
+    cleanUpLedger(request: Readonly<{ backup: boolean; keepBackup: boolean }>): Promise<LedgerCleanupResultDto>;
+    /** The running cleanup's progress, or how the last one ended. */
+    ledgerCleanupStatus(): Promise<LedgerCleanupStatusDto>;
+    /** Stops the running cleanup; its current step rolls back, or its current table finishes. */
+    stopLedgerCleanup(): Promise<boolean>;
+    /** The Cleanup Backup, if one exists. */
+    cleanupBackup(): Promise<CleanupBackupDto | null>;
+    /** Shows the Cleanup Backup in Finder. */
+    revealCleanupBackup(): Promise<void>;
+    /** Deletes the Cleanup Backup; resolves with what is left, which is nothing. Refused while a cleanup runs. */
+    deleteCleanupBackup(): Promise<CleanupBackupDto | null>;
     /** Starts every enabled source, as scheduled collection would. */
     collectAllSources(): Promise<AutomationRunManyResult>;
   };

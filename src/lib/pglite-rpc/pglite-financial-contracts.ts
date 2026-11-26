@@ -60,10 +60,9 @@ import type {
 import type { TdccAdmittedFundAccount } from "../../ledger/canonical/tdcc-investment-admission.ts";
 import type { AccountIdentityContinuity, AccountIdentityContinuityRequest } from "../../ledger/pglite/account-identity-continuity.ts";
 import type { SpendingPageVersion } from "../../ledger/pglite/spending-page.ts";
-import type { CompactionPlanResult } from "../../ledger/pglite/compaction-plan.ts";
-import type { LedgerReclaimEstimate, LedgerReclaimResult, LedgerReclaimStatus } from "../../ledger/pglite/reclaim.ts";
 import type { LedgerCompactionJobResult, LedgerCompactionRequest, LedgerCompactionStatus } from "../../ledger/pglite/compaction-job.ts";
-import type { LedgerBackupRoom } from "../../ledger/pglite/data-dir-backup.ts";
+import type { LedgerCleanupBackup } from "../../ledger/pglite/data-dir-backup.ts";
+import type { LedgerCleanupEstimate } from "../../ledger/pglite/cleanup-estimate.ts";
 import type {
   PGliteCanonicalLoanRelationResolutionRequest,
   PGliteCanonicalLoanRelationResolutionResult,
@@ -355,50 +354,26 @@ export const PGLITE_FINANCIAL_CONTRACTS = Object.freeze({
     { lane: "background" },
   ),
   /**
-   * What a ledger compaction would remove, read without changing anything,
-   * one step at a time. Host-only: no renderer route and no workflow access.
-   * Settings shows its estimate before a compaction, only when the owner asks
-   * for one. One large subject's step can hold the ledger for seconds, and
-   * for tens of seconds on a store of several GB (ADR 0154).
+   * The App Data Cleanup's estimate (ADR 0156): the compaction's dry run,
+   * unless its markers are written, the reclaim's estimate over every table,
+   * and the free space the run needs. One step at a time. Host-only.
    */
-  "financial.canonical.compactionPlan": operation<[], CompactionPlanResult>(
+  "financial.ledger.cleanupEstimate": operation<[], LedgerCleanupEstimate>(
     (args) => args.length === 0,
     { lane: "background-steps" },
   ),
   /**
-   * Ledger space reclaim (ADR 0155): which tables a `VACUUM FULL` would
-   * shrink, and by about how much, measured one table per step. Host-only.
-   */
-  "financial.ledger.reclaimEstimate": operation<[], LedgerReclaimEstimate>(
-    (args) => args.length === 0,
-    { lane: "background-steps" },
-  ),
-  /** Rewrites those tables one per step, so other work runs between two. Host-only; one at a time. */
-  "financial.ledger.reclaim": operation<[], LedgerReclaimResult>(
-    (args) => args.length === 0,
-    { lane: "background-steps" },
-  ),
-  /** The running reclaim's table, or how the last one ended. Host-only. */
-  "financial.ledger.reclaimStatus": operation<[], LedgerReclaimStatus>(
-    (args) => args.length === 0,
-    { lane: "interactive" },
-  ),
-  /** Stops the running reclaim once its current table is rewritten; false when none runs. Host-only. */
-  "financial.ledger.reclaimStop": operation<[], boolean>(
-    (args) => args.length === 0,
-    { lane: "interactive" },
-  ),
-  /**
-   * Ledger compaction (ADR 0154): removes the domain-row repeats, record
-   * copies and count-row repeats a store written before ADR 0152 holds, one
-   * verified chunk per step so other work runs between two, then rewrites the
-   * compacted tables to return their space. Host-only: no renderer route and
-   * no workflow access; one at a time.
+   * The App Data Cleanup (ADR 0154, ADR 0156): removes the domain-row
+   * repeats, record copies and count-row repeats a store written before ADR
+   * 0152 holds, one verified chunk per step so other work runs between two,
+   * then rewrites every table the reclaim picks to return their space.
+   * Host-only: no renderer route and no workflow access; one at a time.
    */
   "financial.canonical.compact": operation<[request?: LedgerCompactionRequest], LedgerCompactionJobResult>(
     (args) => args.length === 0
-      || (args.length === 1 && plainRecord(args[0]) && Object.keys(args[0]).every((key) => key === "backup")
-        && typeof args[0].backup === "boolean"),
+      || (args.length === 1 && plainRecord(args[0]) && typeof args[0].backup === "boolean"
+        && Object.keys(args[0]).every((key) => key === "backup" || key === "keepBackup")
+        && (args[0].keepBackup === undefined || typeof args[0].keepBackup === "boolean")),
     { lane: "background-steps" },
   ),
   /** The running compaction's chunk, or how the last one ended. Host-only. */
@@ -407,13 +382,13 @@ export const PGLITE_FINANCIAL_CONTRACTS = Object.freeze({
     { lane: "interactive" },
   ),
   /**
-   * What the ledger's folder takes and the disk has free, which a backup
-   * before a compaction needs; null when the ledger has no folder of its own.
-   * Reads the disk, not the ledger. Host-only.
+   * The newest finished Cleanup Backup, with its path for the main process,
+   * which reveals and deletes it; null when there is none or the ledger has
+   * no folder of its own. Reads the disk, not the ledger. Host-only.
    */
-  "financial.canonical.compactionBackupRoom": operation<[], LedgerBackupRoom | null>(
+  "financial.ledger.cleanupBackup": operation<[], LedgerCleanupBackup | null>(
     (args) => args.length === 0,
-    { lane: "background-steps" },
+    { lane: "interactive" },
   ),
   /** Stops the running compaction; its running chunk rolls back. False when none runs. Host-only. */
   "financial.canonical.compactionStop": operation<[], boolean>(

@@ -35,7 +35,8 @@ import { MANIFEST, PHASE_A, phaseCMarkedSql, type PhaseATable } from "./compacti
 import { legacyStore, snapshot } from "./compaction-fixtures.ts";
 import { canonicalState } from "./canonical-state-fixture.ts";
 import { PGliteStore } from "./transaction.ts";
-import { backUpLedger } from "./data-dir-backup.ts";
+import { backUpLedger, removeLedgerBackup } from "./data-dir-backup.ts";
+import { directoryBytes } from "./data-dir-files.ts";
 import {
   PGLITE_FINANCIAL_CONTRACTS,
   RENDERER_FINANCIAL_OPERATIONS,
@@ -154,7 +155,7 @@ test("the chunk plan keeps tables that share a selection or reader together, and
   }
 });
 
-test("the chunked job leaves the store as one compactLedger transaction does, and returns the space", async () => {
+test("the chunked job leaves the store as one compactLedger transaction does, and returns the space of every table the reclaim picks", async () => {
   const { store, twin, single } = await legacyAndCompactedTwin();
   try {
     assert.equal(single.status, "compacted");
@@ -175,8 +176,11 @@ test("the chunked job leaves the store as one compactLedger transaction does, an
     assert.equal(result.reclaim.status, "reclaimed");
     if (result.reclaim.status !== "reclaimed") return;
     const compacted = new Set([...COMPACTED_TABLES, MANIFEST].map((table) => `public.${table}`));
-    assert.ok(result.reclaim.tables.length > 0);
-    for (const { table } of result.reclaim.tables) assert.ok(compacted.has(table), `${table} is a compacted table`);
+    const rewritten = result.reclaim.tables.map(({ table }) => table);
+    assert.ok(rewritten.some((table) => compacted.has(table)), "the compacted tables are rewritten");
+    // ADR 0156: not only the compacted tables. A catalog and a table the compaction never touched are rewritten too.
+    assert.ok(rewritten.some((table) => table.startsWith("pg_catalog.")), JSON.stringify(rewritten));
+    assert.ok(rewritten.some((table) => table.startsWith("public.") && !compacted.has(table)), JSON.stringify(rewritten));
   } finally {
     await store.close();
     await twin.close();
@@ -324,7 +328,14 @@ test("a finished run finds nothing the second time, even without its markers", a
   try {
     finished(await runLedgerCompaction(store));
     const compacted = await rows(store);
-    assert.deepEqual(await runLedgerCompaction(store), { status: "already-compacted" });
+    let planned = false;
+    const second = finished(await runLedgerCompaction(store, {
+      reclaim: REWRITE_ALL,
+      onProgress: (progress) => { if (progress.phase === "compacting") planned = true; },
+    }));
+    assert.deepEqual([second.chunks, sum(second.removed), planned], [{ done: 0, count: 0 }, 0, false], "with its markers written a run only reclaims");
+    assert.equal(second.reclaim.status, "reclaimed", "every run reclaims; the space marker skips nothing");
+    assert.deepEqual(await rows(store), compacted);
 
     await store.query(`DELETE FROM ${MARKERS} WHERE migration_key LIKE 'ledger-compaction%'`);
     const again = finished(await runLedgerCompaction(store));
@@ -448,9 +459,13 @@ test("a backup asked for is a consistent copy, taken as one step before the firs
     const compactor = createLedgerCompactor(store, {
       runStep: (step) => step(),
       reclaim: REWRITE_ALL,
-      backup: async (context) => {
-        order.push("backup");
-        backupPath = await backUpLedger(store, dataDir, { freeBytes: async () => Number.MAX_SAFE_INTEGER, exists: existsSync, ...context });
+      backup: {
+        take: async (context) => {
+          order.push("backup");
+          backupPath = await backUpLedger(store, dataDir, { freeBytes: async () => Number.MAX_SAFE_INTEGER, exists: existsSync, ...context });
+          return backupPath;
+        },
+        remove: async () => { throw new Error("A kept backup is not removed."); },
       },
     });
     const result = await compactor.compact(undefined, { backup: true });
@@ -471,6 +486,90 @@ test("a backup asked for is a consistent copy, taken as one step before the firs
   } finally {
     await store.close();
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a backup the owner did not keep goes once the run ends as done or out of room; a failed or stopped run keeps it, and a reclaim-only run takes one too", async () => {
+  const { store, dataDir, root } = await legacyStoreInFolder();
+  try {
+    let failAfterBackup = true;
+    let freeForReclaim = Number.MAX_SAFE_INTEGER;
+    let stopAfterBackup: AbortController | null = null;
+    const taken: string[] = [];
+    const removed: string[] = [];
+    const compactor = createLedgerCompactor(store, {
+      // While set, every step after the backup fails: the first chunk does.
+      runStep: (step) => (failAfterBackup && taken.length > 0 ? Promise.reject(new Error("The worker stopped.")) : step()),
+      reclaim: { ...REWRITE_ALL, folderBytes: () => directoryBytes(dataDir), freeBytes: async () => freeForReclaim },
+      backup: {
+        take: async (context) => {
+          const path = await backUpLedger(store, dataDir, { freeBytes: async () => Number.MAX_SAFE_INTEGER, exists: existsSync, ...context });
+          taken.push(path);
+          stopAfterBackup?.abort();
+          return path;
+        },
+        remove: async (path) => {
+          removed.push(path);
+          await removeLedgerBackup(path);
+        },
+      },
+    });
+    const backups = async () => (await readdir(root)).filter((name) => name.startsWith("ledger.before-compaction-")).sort();
+    const name = (path: string) => path.slice(root.length + 1);
+
+    const failed = await compactor.compact(undefined, { backup: true, keepBackup: false });
+    assert.equal(failed.status, "failed", JSON.stringify(failed));
+    assert.deepEqual([removed, await backups()], [[], [name(taken[0]!)]], "a failed run keeps the backup, kept or not");
+
+    failAfterBackup = false;
+    const done = await compactor.compact(undefined, { backup: true, keepBackup: false });
+    assert.equal(done.status, "compacted", JSON.stringify(done));
+    assert.deepEqual(removed, [taken[1]], "a run that ends as done removes the backup the owner did not keep");
+    assert.deepEqual(await backups(), [], "and the new backup had already removed the earlier one");
+
+    // Compacted now, so the next run only reclaims, and it still takes the backup it was asked for.
+    const reclaimOnly = await compactor.compact(undefined, { backup: true, keepBackup: true });
+    assert.equal(reclaimOnly.status, "compacted", JSON.stringify(reclaimOnly));
+    assert.deepEqual(reclaimOnly.status === "compacted" && reclaimOnly.chunks, { done: 0, count: 0 });
+    assert.equal(taken.length, 3);
+    assert.deepEqual(await backups(), [name(taken[2]!)], "a kept backup stays");
+    assert.ok(reclaimOnly.status === "compacted" && reclaimOnly.freedBytes !== null, "the result says what the folder lost");
+
+    stopAfterBackup = new AbortController();
+    const stopped = await compactor.compact(stopAfterBackup.signal, { backup: true, keepBackup: false });
+    stopAfterBackup = null;
+    assert.equal(stopped.status, "stopped", JSON.stringify(stopped));
+    assert.deepEqual([removed.length, await backups()], [1, [name(taken[3]!)]], "a stopped run keeps the backup the owner did not keep");
+
+    freeForReclaim = 1;
+    const outOfRoom = await compactor.compact(undefined, { backup: true, keepBackup: false });
+    assert.equal(outOfRoom.status === "compacted" && outOfRoom.reclaim.status, "not-enough-space", JSON.stringify(outOfRoom));
+    assert.deepEqual([removed.at(-1), await backups()], [taken[4], []],
+      "a run whose reclaim had no room removes it: the backup would hold the room the reclaim needs");
+
+    freeForReclaim = Number.MAX_SAFE_INTEGER;
+    const omitted = await compactor.compact(undefined, { backup: true });
+    assert.equal(omitted.status, "compacted");
+    assert.deepEqual(await backups(), [name(taken[5]!)], "a request that does not say keeps the backup");
+  } finally {
+    await store.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a store whose citations the planner does not know is not compacted, only reclaimed", async () => {
+  const { store } = await legacyStore();
+  try {
+    // A record id kept without a foreign key: the chunks would refuse it as `unrecognised-citations`.
+    await store.exec("CREATE TABLE elsewhere (other_source_record_id bytea)");
+    const before = await rowCounts(store);
+    const result = finished(await runLedgerCompaction(store, { reclaim: REWRITE_ALL }));
+    assert.deepEqual([result.chunks, sum(result.removed)], [{ done: 0, count: 0 }, 0]);
+    assert.equal(result.reclaim.status, "reclaimed");
+    assert.deepEqual(await rowCounts(store), before, "nothing was removed");
+    assert.deepEqual(await markers(store), [SPACE_MARKER], "no compaction marker: a later version that knows the citation compacts it");
+  } finally {
+    await store.close();
   }
 });
 
@@ -567,8 +666,8 @@ test("the compaction operations are host-only, and the compaction queues its own
     "financial.canonical.compact",
     "financial.canonical.compactionStatus",
     "financial.canonical.compactionStop",
-    "financial.canonical.compactionBackupRoom",
-    "financial.canonical.compactionPlan",
+    "financial.ledger.cleanupEstimate",
+    "financial.ledger.cleanupBackup",
   ] as const;
   for (const operation of operations) {
     assert.equal((RENDERER_FINANCIAL_OPERATIONS as readonly string[]).includes(operation), false, `${operation} has no renderer route`);
@@ -578,6 +677,9 @@ test("the compaction operations are host-only, and the compaction queues its own
   const compact = PGLITE_FINANCIAL_CONTRACTS["financial.canonical.compact"].accepts;
   assert.equal(compact([]), true);
   assert.equal(compact([{ backup: true }]), true);
+  assert.equal(compact([{ backup: true, keepBackup: false }]), true);
+  assert.equal(compact([{ backup: true, keepBackup: "no" }]), false);
+  assert.equal(compact([{ keepBackup: true }]), false);
   assert.equal(compact([{ backup: "yes" }]), false);
   assert.equal(compact([{ backup: true, path: "/elsewhere" }]), false, "the renderer cannot name where a backup goes");
   assert.equal("financial.canonical.compactLedger" in PGLITE_FINANCIAL_CONTRACTS, false, "the one-transaction compaction is not an operation");

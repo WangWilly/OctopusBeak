@@ -122,6 +122,8 @@ A chunk still reads every row of each table that cites a record without an index
 
 ## The Settings action
 
+> Superseded by [ADR 0156](./0156-one-cleanup-action-compacts-then-reclaims.md): Settings has one "Clean up app data" action, which compacts and then reclaims every table the reclaim picks, and takes a Cleanup Backup whenever it fits. The backup's consistency and copy below still hold.
+
 Step 5 of the delivery. Settings' data section has a "Compact ledger" row, beside "Reclaim ledger space", and it follows that row's shape (ADR 0155).
 
 - **Estimate first.** The row runs the dry run (`financial.canonical.compactionPlan`) on the live worker, one step per phase A table and per source subject on the background lane, and shows about how much the compaction would free. A large subject's step holds the ledger for seconds, so the estimate runs only when the owner asks for it, and the row's hint says, before the estimate runs, that checking may pause OctopusBeak for a few seconds. A store with nothing removable shows "Nothing to compact"; a store whose citations the planner does not know shows that it cannot be compacted yet.

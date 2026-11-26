@@ -7,15 +7,9 @@ import { PGlite } from "@electric-sql/pglite";
 import { amcheck } from "@electric-sql/pglite/contrib/amcheck";
 import { live, type PGliteWithLive } from "@electric-sql/pglite/live";
 import { createPGliteWorkScheduler } from "../../../electron/pglite-financial-rpc-server.ts";
-import {
-  PGLITE_FINANCIAL_CONTRACTS,
-  RENDERER_FINANCIAL_OPERATIONS,
-  WORKFLOW_FINANCIAL_OPERATIONS,
-} from "../../lib/pglite-rpc/pglite-financial-contracts.ts";
 import { repairCorruptIndexes } from "./catalog-repair.ts";
 import { directoryBytes, fsyncDirectory } from "./data-dir-files.ts";
 import {
-  createLedgerReclaimer,
   estimateLedgerReclaim,
   LEDGER_RECLAIM_COPIES_NEEDED,
   LEDGER_RECLAIM_HEADROOM_BYTES,
@@ -143,6 +137,7 @@ test("a reclaim refuses before it starts when the disk cannot hold the largest n
       status: "not-enough-space",
       requiredFreeBytes: 3 * largestCopy + LEDGER_RECLAIM_HEADROOM_BYTES,
       freeBytes: MiB,
+      reclaimableBytes: estimate.reclaimableBytes,
     });
     assert.equal((await estimateLedgerReclaim(store)).tables.length, 2, "nothing was rewritten");
     assert.equal(await digest(store, "public.rewritten"), before);
@@ -232,55 +227,6 @@ test("after a reclaim of churned catalogs the store reopens, every index checks 
   }
 });
 
-test("the worker runs one reclaim at a time, and its progress and stop reach the running one", async () => {
-  const { store } = await openStore();
-  try {
-    await bloat(store);
-    let release!: () => void;
-    const held = new Promise<void>((resolve) => { release = resolve; });
-    const reclaimer = createLedgerReclaimer(store, {
-      // Holds the first rewrite, which starts once progress is reported, until the test has looked at it.
-      runStep: async (step) => {
-        steps += 1;
-        if (progress() !== null) await held;
-        return step();
-      },
-    });
-    let steps = 0;
-    const progress = () => {
-      const status = reclaimer.status();
-      return status.running ? status.progress : null;
-    };
-    assert.deepEqual(reclaimer.status(), { running: false, last: null });
-    assert.equal(reclaimer.stop(), false, "nothing to stop");
-    const picked = (await reclaimer.estimate()).tables.length;
-    steps = 0;
-    const running = reclaimer.reclaim();
-    while (progress() === null) await new Promise((resolve) => setTimeout(resolve, 5));
-    // The table list, one read per picked table, and the first rewrite, now held.
-    assert.equal(steps, 1 + picked + 1, "the reclaim measures again only the tables the estimate picked");
-    assert.deepEqual({ ...progress(), table: undefined }, { index: 1, count: 2, table: undefined, bytesBefore: 0, bytesAfter: 0 });
-    assert.deepEqual(await reclaimer.reclaim(), { status: "already-running" });
-    assert.equal(reclaimer.stop(), true);
-    release();
-    const result = await running;
-    assert.equal(result.status, "stopped");
-    assert.deepEqual(reclaimer.status(), { running: false, last: result }, "how it ended stays for a page opened later");
-  } finally {
-    await store.close();
-  }
-});
-
-test("the reclaim operations are host-only, and the reclaim itself queues its own steps", () => {
-  const operations = ["financial.ledger.reclaimEstimate", "financial.ledger.reclaim", "financial.ledger.reclaimStatus", "financial.ledger.reclaimStop"] as const;
-  for (const operation of operations) {
-    assert.equal((RENDERER_FINANCIAL_OPERATIONS as readonly string[]).includes(operation), false, `${operation} has no renderer route`);
-    assert.equal(WORKFLOW_FINANCIAL_OPERATIONS.has(operation), false, `${operation} is closed to workflows`);
-  }
-  assert.equal(PGLITE_FINANCIAL_CONTRACTS["financial.ledger.reclaim"].lane, "background-steps");
-  assert.equal(PGLITE_FINANCIAL_CONTRACTS["financial.ledger.reclaimEstimate"].lane, "background-steps");
-});
-
 test("each rewrite is checkpointed, and the folder is flushed after each catalog and at the end", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "octopus-beak-reclaim-check-"));
   try {
@@ -361,18 +307,16 @@ test("a live query subscribed across the catalog rewrites hears commits during a
   }
 });
 
-test("a flush or checkpoint that fails ends the run as failed with what it reclaimed, and that is how it ended", async () => {
+test("a flush or checkpoint that fails ends the run as failed with what it reclaimed", async () => {
   {
     const { store } = await openStore();
     try {
       await bloat(store);
-      const reclaimer = createLedgerReclaimer(store, { syncToDisk: async () => { throw new Error("EIO"); } });
-      const result = await reclaimer.reclaim();
+      const result = await reclaimLedgerSpace(store, { syncToDisk: async () => { throw new Error("EIO"); } });
       assert.equal(result.status, "failed", "the last flush failed");
       if (result.status !== "failed") return;
       assert.equal(result.tables.length, 2, "both tables were rewritten before it");
       assert.ok(result.bytesBefore > result.bytesAfter);
-      assert.deepEqual(reclaimer.status(), { running: false, last: result });
     } finally {
       await store.close();
     }
@@ -386,13 +330,11 @@ test("a flush or checkpoint that fails ends the run as failed with what it recla
         if (query === "CHECKPOINT") throw new Error("could not write to file");
         return exec(query);
       };
-      const reclaimer = createLedgerReclaimer(store);
-      const result = await reclaimer.reclaim();
+      const result = await reclaimLedgerSpace(store);
       assert.equal(result.status, "failed");
       if (result.status !== "failed") return;
       assert.equal(result.tables.length, 1, "the first table was rewritten; its checkpoint failed and the next did not start");
       assert.ok(result.bytesBefore > result.bytesAfter);
-      assert.deepEqual(reclaimer.status(), { running: false, last: result });
     } finally {
       await store.close();
     }

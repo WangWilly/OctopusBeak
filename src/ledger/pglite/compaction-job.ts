@@ -15,7 +15,7 @@ import {
   type LedgerCompactionFailure,
   type LedgerCompactionOptions,
 } from "./compaction.ts";
-import { MANIFEST, PHASE_A, type PhaseATable } from "./compaction-plan.ts";
+import { PHASE_A, readCitingColumns, type PhaseATable } from "./compaction-plan.ts";
 import { LedgerBackupError } from "./data-dir-backup.ts";
 import { reclaimLedgerSpace, type LedgerReclaimOptions, type LedgerReclaimProgress, type LedgerReclaimResult } from "./reclaim.ts";
 import type { PGliteStore } from "./transaction.ts";
@@ -35,7 +35,12 @@ import type { PGliteStore } from "./transaction.ts";
  * 0. When the owner asked for one, a backup of the data folder, as one
  *    step before the first chunk (`backUpLedger` in `data-dir-backup.ts`).
  * 3. The markers, once every chunk is done.
- * 4. `reclaimLedgerSpace` on the compacted tables, then the space marker.
+ * 4. `reclaimLedgerSpace` on every table it picks, catalogs included, then
+ *    the space marker (ADR 0156).
+ *
+ * This is Settings' App Data Cleanup. Once the markers are written a run
+ * only reclaims, and a store whose citations the planner does not know is
+ * not compacted, only reclaimed.
  *
  * Progress is the data itself: a committed chunk's selection finds nothing
  * the next time, so a stop, crash or quit resumes by planning again and
@@ -45,11 +50,8 @@ import type { PGliteStore } from "./transaction.ts";
  * after a restart, and clears the record when the owner starts again.
  */
 
-/** Recorded once the compacted tables are rewritten, so a run that stops before then rewrites them next time. */
+/** Recorded once a run's reclaim ends; no run skips anything for it, as every run reclaims. */
 export const SPACE_MARKER = "ledger-compaction-space-v1";
-
-/** The tables a compaction leaves holes in, which the reclaim measures. */
-const RECLAIMED_TABLES = [...COMPACTED_TABLES, MANIFEST].map((table) => `public.${table}`);
 
 export type LedgerCompactionProgress =
   | Readonly<{ phase: "backing-up" }>
@@ -72,6 +74,8 @@ type Tally = Readonly<{
   /** The longest time one chunk held the ledger. */
   longestChunkMs: number;
   durationMs: number;
+  /** How much the ledger's folder shrank over the run, WAL included; null without `folderBytes`. */
+  freedBytes: number | null;
 }>;
 
 export type LedgerCompactionJobFailure =
@@ -81,10 +85,8 @@ export type LedgerCompactionJobFailure =
   | Readonly<{ reason: "backup"; backup: LedgerBackupError["reason"] }>;
 
 export type LedgerCompactionJobResult =
-  /** Every marker was already written; nothing was read or removed. */
-  | Readonly<{ status: "already-compacted" }>
   | Readonly<{ status: "already-running" }>
-  /** Every chunk committed and the markers are written. `reclaim` says whether the space returned too. */
+  /** Every chunk committed and the markers are written, or the store could not be compacted. `reclaim` says whether the space returned too. */
   | Readonly<{ status: "compacted"; reclaim: LedgerReclaimResult } & Tally>
   /** The signal aborted; the running chunk, if any, rolled back. A stop during the reclaim leaves every chunk committed but the space not yet returned. */
   | Readonly<{ status: "stopped" } & Tally>
@@ -106,13 +108,24 @@ export type LedgerCompactionStatus =
   /** `last` is this process's last run, or else the failed run the ledger recorded. */
   | Readonly<{ running: false; last: LedgerCompactionJobResult | LedgerCompactionRecordedFailure | null }>;
 
-/** What the owner chose when starting a compaction. */
-export type LedgerCompactionRequest = Readonly<{ backup: boolean }>;
+/**
+ * What the owner chose when starting a cleanup: whether to back up first,
+ * and whether to keep that backup once the run ends as done. A request that
+ * leaves `keepBackup` out keeps it: only an explicit false removes a backup.
+ */
+export type LedgerCompactionRequest = Readonly<{ backup: boolean; keepBackup?: boolean }>;
 
+/** Takes the backup; resolves with where it went. */
 export type LedgerCompactionBackup = (context: Readonly<{
   runStep: <T>(step: () => Promise<T>) => Promise<T>;
   signal: AbortSignal | undefined;
 }>) => Promise<unknown>;
+
+/** The worker's Cleanup Backup: taking one, and removing the one a run took when the owner did not keep it. */
+export type LedgerCleanupBackupPort = Readonly<{
+  take: (context: Parameters<LedgerCompactionBackup>[0]) => Promise<string>;
+  remove: (backup: string) => Promise<void>;
+}>;
 
 export type LedgerCompactionJobOptions = Readonly<{
   /** Queues one step on the worker's background lane; by default a step runs at once. */
@@ -125,7 +138,7 @@ export type LedgerCompactionJobOptions = Readonly<{
    * `signal` aborted it.
    */
   backup?: LedgerCompactionBackup;
-  /** Passed to the reclaim, which rewrites the compacted tables. */
+  /** Passed to the reclaim, which rewrites every table it picks; `folderBytes` also measures what the run freed. */
   reclaim?: Pick<LedgerReclaimOptions, "freeBytes" | "folderBytes" | "syncToDisk" | "minBytes" | "minShare">;
   /** Replaces a chunk's selections; only checks use it. */
   selections?: LedgerCompactionOptions["selections"];
@@ -134,6 +147,8 @@ export type LedgerCompactionJobOptions = Readonly<{
 export type LedgerCompactionJobPlan = Readonly<{
   markers: ReadonlySet<string>;
   chunks: readonly CompactionChunk[];
+  /** False when a column cites a record in a way the planner does not know: no chunk runs and no marker is written. */
+  compactable: boolean;
 }>;
 
 const runAtOnce = <T>(step: () => Promise<T>) => step();
@@ -173,7 +188,9 @@ export async function planLedgerCompactionJob(store: PGliteStore): Promise<Ledge
     const markers = new Set(marked.map(({ migration_key }) => migration_key));
     const counts = !markers.has(DOMAIN_COUNTS_MARKER);
     const records = !markers.has(RECORDS_MARKER);
-    if (!counts && !records) return { markers, chunks: [] };
+    if (!counts && !records) return { markers, chunks: [], compactable: true };
+    // Every chunk would refuse such a store (`unrecognised-citations`); the cleanup still reclaims.
+    if ((await readCitingColumns(transaction)).problems.length > 0) return { markers, chunks: [], compactable: false };
 
     const { rows: held } = await transaction.query<{ capture: string; subject: string; record_kind: string }>(
       `SELECT encode(capture_id, 'hex') AS capture, encode(source_subject_id, 'hex') AS subject, record_kind
@@ -209,7 +226,7 @@ export async function planLedgerCompactionJob(store: PGliteStore): Promise<Ledge
     }));
     const domain = counts ? domainChunks().map((tables): CompactionChunk => ({ kind: "domain", tables })) : [];
     // Phase A first: the domain rows it keeps are the ones that still pin a copy.
-    return { markers, chunks: [...domain, ...chainChunks] };
+    return { markers, chunks: [...domain, ...chainChunks], compactable: true };
   });
 }
 
@@ -327,6 +344,21 @@ export async function readRecordedFailure(store: PGliteStore): Promise<LedgerCom
  * open path.
  */
 export async function runLedgerCompaction(store: PGliteStore, options: LedgerCompactionJobOptions = {}): Promise<LedgerCompactionJobResult> {
+  const folderBytes = async () => {
+    try {
+      return options.reclaim?.folderBytes ? await options.reclaim.folderBytes() : null;
+    } catch {
+      return null;
+    }
+  };
+  const before = await folderBytes();
+  const result = await compactThenReclaim(store, options);
+  if (result.status === "already-running") return result;
+  const after = before === null ? null : await folderBytes();
+  return { ...result, freedBytes: before === null || after === null ? null : Math.max(0, before - after) };
+}
+
+async function compactThenReclaim(store: PGliteStore, options: LedgerCompactionJobOptions): Promise<LedgerCompactionJobResult> {
   const started = performance.now();
   const runStep = options.runStep ?? runAtOnce;
   const removed = zeroRemoved();
@@ -341,6 +373,7 @@ export async function runLedgerCompaction(store: PGliteStore, options: LedgerCom
     chunks: { done, count },
     longestChunkMs: Math.round(longestChunkMs),
     durationMs: Math.round(performance.now() - started),
+    freedBytes: null,
   });
   // A chunk that rolled back on its own verification failed, even when a stop came meanwhile.
   const ended = (error: unknown, chunk: CompactionChunk | null): LedgerCompactionJobResult =>
@@ -356,7 +389,6 @@ export async function runLedgerCompaction(store: PGliteStore, options: LedgerCom
     return ended(error, null);
   }
   const compacted = plan.markers.has(DOMAIN_COUNTS_MARKER) && plan.markers.has(RECORDS_MARKER);
-  if (compacted && plan.markers.has(SPACE_MARKER)) return { status: "already-compacted" };
 
   if (options.backup) {
     if (options.signal?.aborted) return { status: "stopped", ...tally() };
@@ -388,7 +420,7 @@ export async function runLedgerCompaction(store: PGliteStore, options: LedgerCom
       return ended(error, chunk);
     }
   }
-  if (!compacted) {
+  if (!compacted && plan.compactable) {
     try {
       await analyzeCompactedTables(store, runStep);
       await runStep(() => writeMarkers(store, [DOMAIN_COUNTS_MARKER, RECORDS_MARKER]));
@@ -401,7 +433,6 @@ export async function runLedgerCompaction(store: PGliteStore, options: LedgerCom
     ...options.reclaim,
     runStep,
     signal: options.signal,
-    tables: RECLAIMED_TABLES,
     onProgress: (progress) => options.onProgress?.({ phase: "reclaiming", removedRows: removedRows(), reclaim: progress }),
   });
   if (reclaim.status === "reclaimed" || reclaim.status === "nothing-to-reclaim") {
@@ -416,6 +447,15 @@ export async function runLedgerCompaction(store: PGliteStore, options: LedgerCom
   return { status: "compacted", reclaim, ...tally() };
 }
 
+/**
+ * Every chunk committed and the reclaim neither failed nor was stopped. A
+ * reclaim the disk had no room for counts: the redundant rows are gone, and
+ * a backup the owner did not keep would only take the room it needs.
+ */
+function endedAsDone(result: LedgerCompactionJobResult): boolean {
+  return result.status === "compacted" && result.reclaim.status !== "failed" && result.reclaim.status !== "stopped";
+}
+
 export type LedgerCompactor = Readonly<{
   /** Runs a compaction; refuses with `already-running` while another runs. */
   compact(signal?: AbortSignal, request?: LedgerCompactionRequest): Promise<LedgerCompactionJobResult>;
@@ -425,10 +465,10 @@ export type LedgerCompactor = Readonly<{
   stop(): boolean;
 }>;
 
-/** The worker's one compaction at a time, whose status and stop other requests reach, as `createLedgerReclaimer`. */
+/** The worker's one cleanup at a time, whose status and stop other requests reach. */
 export function createLedgerCompactor(
   store: PGliteStore,
-  options: Pick<LedgerCompactionJobOptions, "runStep" | "reclaim" | "backup"> = {},
+  options: Pick<LedgerCompactionJobOptions, "runStep" | "reclaim"> & Readonly<{ backup?: LedgerCleanupBackupPort }> = {},
 ): LedgerCompactor {
   const runStep = options.runStep ?? runAtOnce;
   const unavailable = async () => { throw new LedgerBackupError("unavailable", "This ledger has no folder to back up."); };
@@ -436,6 +476,7 @@ export function createLedgerCompactor(
   let last: LedgerCompactionJobResult | null = null;
   return Object.freeze({
     async compact(signal?: AbortSignal, request: LedgerCompactionRequest = { backup: false }) {
+      const port = options.backup;
       if (running) return { status: "already-running" } as const;
       const run = { controller: new AbortController(), progress: null as LedgerCompactionProgress | null };
       const stopOnAbort = () => run.controller.abort();
@@ -445,14 +486,19 @@ export function createLedgerCompactor(
         // Starting again is the owner's answer to a recorded failure. A store
         // that cannot delete it fails the run's plan too, which records it again.
         await runStep(() => clearRecordedFailure(store)).catch(() => undefined);
+        let taken: string | undefined;
         const result = await runLedgerCompaction(store, {
           runStep: options.runStep,
           reclaim: options.reclaim,
-          backup: request.backup ? options.backup ?? unavailable : undefined,
+          backup: !request.backup ? undefined : port ? async (context) => { taken = await port.take(context); } : unavailable,
           signal: run.controller.signal,
           onProgress: (progress) => { run.progress = progress; },
         });
         last = result;
+        // A failed or stopped run keeps its backup; so does one the owner chose to keep, until it expires.
+        if (taken !== undefined && port && request.keepBackup === false && endedAsDone(result)) {
+          await port.remove(taken).catch(() => undefined);
+        }
         // Kept in memory regardless, so this process still shows it if the write fails.
         if (result.status === "failed") await runStep(() => recordFailure(store, result)).catch(() => undefined);
         return result;

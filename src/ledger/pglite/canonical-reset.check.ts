@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { createPGliteFinancialRegistry } from "../../../electron/pglite-financial-registry.ts";
 import { assertPgliteBaseline } from "./baseline.ts";
 import { createTestPGlite } from "./baseline-test-template.ts";
 import { resetPGliteCanonicalStore } from "./canonical-reset.ts";
 import { FAILURE_RECORD, readRecordedFailure } from "./compaction-job.ts";
+import { readLedgerCleanupBackup, removeAllLedgerBackups } from "./data-dir-backup.ts";
 import { commitCathay } from "./direct-source-precedence-fixture.ts";
 import { createPgliteOperationalProvider } from "./operational.ts";
 import { PGliteStore } from "./transaction.ts";
@@ -109,5 +113,56 @@ test("a Canonical Reset removes a compaction's recorded failure and keeps its ma
     assert.equal(await readRecordedFailure(store), null, "Settings no longer reports rows of the emptied store");
     const kept = await store.query("SELECT 1 FROM pglite_operational_migrations WHERE migration_key = 'ledger-compaction-kept-marker-check'");
     assert.equal(kept.rows.length, 1, "every other operational row stays");
+  });
+});
+
+test("a Canonical Reset deletes the Cleanup Backup, which holds the data it deletes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "octopus-beak-reset-backup-check-"));
+  const dataDir = join(root, "ledger");
+  try {
+    await mkdir(dataDir);
+    const finished = `${dataDir}.before-compaction-2026-11-01T00-00-00Z`;
+    await mkdir(finished);
+    await writeFile(join(finished, "PG_VERSION"), "17");
+    await writeFile(`${finished}.versions.json`, JSON.stringify({ canonical: 1, operational: 1 }));
+    await mkdir(`${dataDir}.before-compaction-2026-11-02T00-00-00Z.partial`);
+    const versions = { canonical: 1, operational: 1 };
+    await withDesktopStore(async (store) => {
+      const registry = createPGliteFinancialRegistry(store, createPGliteFinancialPageActions(store), {
+        ledgerBackup: {
+          room: async () => { throw new Error("unused"); },
+          take: async () => { throw new Error("unused"); },
+          remove: async () => { throw new Error("unused"); },
+          newest: () => readLedgerCleanupBackup(dataDir, versions),
+          removeAll: () => removeAllLedgerBackups(dataDir),
+        },
+      });
+      assert.equal((await registry["financial.ledger.cleanupBackup"]([]))?.path, finished);
+      await commitCathay(store);
+      await registry["financial.canonical.reset"]([]);
+      assert.equal(await registry["financial.ledger.cleanupBackup"]([]), null);
+      assert.equal((await rowCounts(store)).financial_accounts, 0, "and the store is emptied");
+    });
+    assert.deepEqual(await readdir(root), ["ledger"], "no backup, partial copy or versions file is left");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a Canonical Reset whose backup removal fails leaves the store as it was and says so", async () => {
+  await withDesktopStore(async (store) => {
+    const registry = createPGliteFinancialRegistry(store, createPGliteFinancialPageActions(store), {
+      ledgerBackup: {
+        room: async () => { throw new Error("unused"); },
+        take: async () => { throw new Error("unused"); },
+        remove: async () => { throw new Error("unused"); },
+        newest: async () => null,
+        removeAll: async () => { throw new Error("EACCES: the backup could not be removed"); },
+      },
+    });
+    await commitCathay(store);
+    const before = await rowCounts(store);
+    await assert.rejects(() => registry["financial.canonical.reset"]([]), /EACCES/u);
+    assert.deepEqual(await rowCounts(store), before, "nothing was emptied, so the person can run the reset again");
   });
 });

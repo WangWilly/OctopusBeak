@@ -10,6 +10,8 @@
   export let onClose: () => void;
   /** False while the dialog must stay open, such as during a send. */
   export let closable = true;
+  /** False hides the X: a dialog that cannot be closed at all, rather than one locked for a moment. */
+  export let showClose = true;
   /** The backdrop names what closing dismisses; the X button stays a plain "Close". */
   export let backdropLabel: string | null = null;
   /** The gap above the subtitle; the report dialogs keep their wider spacing. */
@@ -58,7 +60,9 @@
       </div>
       <div class="modal-head-actions">
         <slot name="actions" />
-        <button class="modal-close" type="button" aria-label={$t.common.close} disabled={!closable} onclick={requestClose}><X size={20} /></button>
+        {#if showClose}
+          <button class="modal-close" type="button" aria-label={$t.common.close} disabled={!closable} onclick={requestClose}><X size={20} /></button>
+        {/if}
       </div>
     </div>
     <slot />

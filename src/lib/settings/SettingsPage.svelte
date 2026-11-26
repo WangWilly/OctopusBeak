@@ -7,25 +7,28 @@
     ChevronsUpDown,
     CircleAlert,
     CircleCheck,
+    CircleHelp,
     CircleStop,
     Clock,
     Compass,
     DatabaseZap,
     Download,
     FlaskConical,
+    FolderOpen,
     Globe,
     Languages,
     RotateCcw,
   } from "@lucide/svelte";
   import { isMacPlatform } from "$lib/desktop/platform.ts";
-  import { estimateView, megabytes, resumeLedgerReclaim, runLedgerReclaim, type LedgerReclaimView } from "$lib/settings/ledger-reclaim.ts";
   import {
-    compactionEstimateView,
-    resumeLedgerCompaction,
-    rowCount,
-    runLedgerCompaction,
-    type LedgerCompactionView,
-  } from "$lib/settings/ledger-compaction.ts";
+    cleanupEstimateView,
+    cleanupProgressBar,
+    megabytes,
+    resumeLedgerCleanup,
+    runLedgerCleanup,
+    type LedgerCleanupView,
+  } from "$lib/settings/ledger-cleanup.ts";
+  import Modal from "$lib/shared-shell/components/Modal.svelte";
   import { locale, localeLabels, locales, setLocale, t, type Locale } from "$lib/i18n/i18n.ts";
   import {
     DISPLAY_SCALE_DEFAULT,
@@ -59,7 +62,7 @@
     downloadPercent,
     type AppUpdateUiContext,
   } from "$lib/shared-shell/app-update-context.ts";
-  import type { SettingsFocus, SignInDataStatus } from "$lib/desktop/api.ts";
+  import type { CleanupBackupDto, SettingsFocus, SignInDataStatus } from "$lib/desktop/api.ts";
   import { signInDataGuidance } from "$lib/automation/credentials-unreadable.ts";
   import { activeSectionAt } from "$lib/settings/section-spy.ts";
 
@@ -131,18 +134,20 @@
   $: signInGuidance = signInDataGuidance(signInStatus);
   let collectStatus: "idle" | "pending" | "started" | "error" = "idle";
   let manualDeleteStatus: DataActionStatus = "idle";
-  let reclaimView: LedgerReclaimView = { kind: "idle" };
-  let reclaimStopping = false;
-  // Stops following a reclaim once Settings closes; the reclaim itself goes on.
-  const reclaimFollow = new AbortController();
-  $: reclaimBusy = reclaimView.kind === "checking" || reclaimView.kind === "running";
-  let compactionView: LedgerCompactionView = { kind: "idle" };
-  let compactionStopping = false;
-  // Off by default (ADR 0154); offered only when the disk has room for a copy of the ledger.
-  let compactionBackup = false;
-  $: compactionBusy = compactionView.kind === "checking" || compactionView.kind === "running";
+  let cleanupView: LedgerCleanupView = { kind: "idle" };
+  let cleanupStopping = false;
+  // Stops following a cleanup once Settings closes; the cleanup itself goes on.
+  const cleanupFollow = new AbortController();
+  // Ticked by default (ADR 0156); offered only when the disk has room for the run and the backup.
+  let cleanupKeepBackup = true;
+  /** What the last run asked for, which Try again repeats. */
+  let cleanupRequest = { backup: true, keepBackup: true };
+  let cleanupBackup: CleanupBackupDto | null = null;
+  let cleanupBackupStatus: "idle" | "confirming" | "pending" | "error" = "idle";
+  $: cleanupBusy = cleanupView.kind === "checking" || cleanupView.kind === "running";
+  $: cleanupBar = cleanupView.kind === "running" ? cleanupProgressBar(cleanupView.progress) : null;
   $: dataActionPending = financialDeleteStatus === "pending" || signInClearStatus === "pending" || manualDeleteStatus === "pending"
-    || reclaimBusy || compactionBusy;
+    || cleanupBusy || cleanupBackupStatus === "pending";
   let saveStatus: "idle" | "pending" | "success" | "error" = "idle";
   let saveError = "";
   let saveVersion = 0;
@@ -178,10 +183,10 @@
   onMount(() => {
     displayScaleAvailable = supportsDisplayScale(window.octopusBeak);
     void readSignInStatus();
-    // A reclaim started before Settings was left is still running in the worker.
-    void resumeLedgerReclaim(window.octopusBeak.settings, (view) => (reclaimView = view), { signal: reclaimFollow.signal });
-    // So is a compaction, and a failed one shows until the person starts again, across restarts.
-    void resumeLedgerCompaction(window.octopusBeak.settings, (view) => (compactionView = view), { signal: reclaimFollow.signal });
+    void readCleanupBackup();
+    // A cleanup started before Settings was left is still running in the worker, and its dialog shows again;
+    // a failed one shows until the person starts again, across restarts.
+    void resumeLedgerCleanup(window.octopusBeak.settings, showCleanup, { signal: cleanupFollow.signal });
     shortcutModifier = isMacPlatform(navigator) ? "⌘" : "Ctrl";
     const clock = setInterval(() => (now = new Date()), 60_000);
     // Every scroll re-reads every section, so a section still in view is never
@@ -207,7 +212,7 @@
     for (const type of ["wheel", "touchmove", "keydown"] as const) window.addEventListener(type, releaseChoice, { passive: true });
     window.addEventListener("pointerdown", releaseOnPress, { passive: true });
     return () => {
-      reclaimFollow.abort();
+      cleanupFollow.abort();
       clearInterval(clock);
       window.removeEventListener("scroll", followScroll, { capture: true });
       window.removeEventListener("resize", followScroll);
@@ -420,52 +425,74 @@
     }
   }
 
-  async function estimateLedgerReclaim() {
-    reclaimView = { kind: "checking" };
+  /** Shows the cleanup's state; once a run ends, its backup may have appeared or gone. */
+  function showCleanup(view: LedgerCleanupView) {
+    const ended = cleanupView.kind === "running" && view.kind !== "running";
+    cleanupView = view;
+    if (ended) void readCleanupBackup();
+  }
+
+  async function estimateCleanup() {
+    cleanupView = { kind: "checking" };
+    cleanupKeepBackup = true;
     try {
-      reclaimView = estimateView(await window.octopusBeak.settings.ledgerReclaimEstimate());
+      cleanupView = cleanupEstimateView(await window.octopusBeak.settings.ledgerCleanupEstimate());
     } catch {
-      reclaimView = { kind: "failed", reclaimedBytes: 0 };
+      cleanupView = { kind: "failed", freedBytes: 0 };
     }
   }
 
-  async function reclaimLedgerSpace() {
-    reclaimStopping = false;
-    await runLedgerReclaim(window.octopusBeak.settings, (view) => (reclaimView = view), { signal: reclaimFollow.signal });
+  async function cleanUp(request: { backup: boolean; keepBackup: boolean }) {
+    cleanupRequest = request;
+    cleanupStopping = false;
+    await runLedgerCleanup(window.octopusBeak.settings, request, showCleanup, { signal: cleanupFollow.signal });
   }
 
-  async function stopLedgerReclaim() {
-    reclaimStopping = true;
+  function confirmCleanup() {
+    if (cleanupView.kind !== "estimated") return;
+    const backup = cleanupView.backup.kind === "fits";
+    void cleanUp({ backup, keepBackup: backup && cleanupKeepBackup });
+  }
+
+  async function stopCleanup() {
+    cleanupStopping = true;
     try {
-      await window.octopusBeak.settings.stopLedgerReclaim();
+      await window.octopusBeak.settings.stopLedgerCleanup();
     } catch {
-      reclaimStopping = false;
+      cleanupStopping = false;
     }
   }
 
-  async function estimateLedgerCompaction() {
-    compactionView = { kind: "checking" };
-    compactionBackup = false;
+  async function readCleanupBackup() {
     try {
-      compactionView = compactionEstimateView(await window.octopusBeak.settings.ledgerCompactionEstimate());
+      cleanupBackup = await window.octopusBeak.settings.cleanupBackup();
     } catch {
-      compactionView = { kind: "failed", removedRows: 0, backup: false };
+      // Shows what was read last; the next run or visit reads again.
     }
   }
 
-  async function compactLedger() {
-    const backup = compactionView.kind === "estimated" && compactionView.backupOffered && compactionBackup;
-    compactionStopping = false;
-    await runLedgerCompaction(window.octopusBeak.settings, { backup }, (view) => (compactionView = view), { signal: reclaimFollow.signal });
+  async function revealCleanupBackup() {
+    try {
+      await window.octopusBeak.settings.revealCleanupBackup();
+    } catch {
+      // Finder did not open; nothing in Settings changed.
+    }
   }
 
-  async function stopLedgerCompaction() {
-    compactionStopping = true;
+  async function deleteCleanupBackup() {
+    cleanupBackupStatus = "pending";
     try {
-      await window.octopusBeak.settings.stopLedgerCompaction();
+      cleanupBackup = await window.octopusBeak.settings.deleteCleanupBackup();
+      cleanupBackupStatus = "idle";
     } catch {
-      compactionStopping = false;
+      cleanupBackupStatus = "error";
+      void readCleanupBackup();
     }
+  }
+
+  /** The day a backup expires, as the system timezone reads it. */
+  function backupDate(value: string, timeZone: string) {
+    return dateInTimeZone(new Date(value), timeZone).replaceAll("-", "/");
   }
 
   async function deleteManualAssets() {
@@ -1037,150 +1064,191 @@
           {/if}
           <div class="setting-row">
             <div class="setting-label-group">
-              <span class="setting-label">{$t.settings.reclaimLedgerSpace}</span>
-              <small class="setting-hint">{$t.settings.reclaimLedgerSpaceHint}</small>
+              <span class="setting-label">{$t.settings.cleanUpAppData}</span>
+              <small class="setting-hint">{$t.settings.cleanUpAppDataHint}</small>
+              {#if cleanupBackup}
+                <small id="cleanup-backup-status" class="setting-hint">
+                  {cleanupBackup.bytes === null
+                    ? $t.settings.cleanupBackupStatusUnmeasured(backupDate(cleanupBackup.expiresAt, $systemTimezone))
+                    : $t.settings.cleanupBackupStatus(megabytes(cleanupBackup.bytes), backupDate(cleanupBackup.expiresAt, $systemTimezone))}
+                </small>
+                {#if !cleanupBackup.restorable}
+                  <small id="cleanup-backup-stale" class="setting-hint warning-hint">{$t.settings.cleanupBackupNotRestorable}</small>
+                {/if}
+              {/if}
             </div>
             <div class="onboarding-setting-actions">
-              {#if reclaimView.kind === "done" || reclaimView.kind === "stopped"}
-                <span class="chip status-chip good" role="status">
-                  <Check size={13} strokeWidth={2.5} aria-hidden="true" />
-                  {reclaimView.kind === "done"
-                    ? $t.settings.reclaimLedgerSpaceDone(megabytes(reclaimView.reclaimedBytes))
-                    : $t.settings.reclaimLedgerSpaceStopped(megabytes(reclaimView.reclaimedBytes))}
-                </span>
-              {:else if reclaimView.kind === "nothing"}
-                <span class="chip status-chip good" role="status">
-                  <Check size={13} strokeWidth={2.5} aria-hidden="true" />
-                  {$t.settings.reclaimLedgerSpaceNothing}
-                </span>
-              {:else if reclaimView.kind === "running"}
+              {#if cleanupBackup && cleanupBackupStatus !== "confirming"}
                 <button
-                  id="stop-ledger-reclaim"
-                  class="button"
+                  id="reveal-cleanup-backup"
+                  class="button icon-only"
                   type="button"
-                  disabled={reclaimStopping}
-                  onclick={stopLedgerReclaim}
-                >{$t.settings.reclaimLedgerSpaceStop}</button>
-              {:else if reclaimView.kind !== "estimated"}
+                  aria-label={$t.settings.cleanupBackupReveal}
+                  title={$t.settings.cleanupBackupReveal}
+                  onclick={revealCleanupBackup}
+                ><FolderOpen size={16} strokeWidth={2} aria-hidden="true" /></button>
                 <button
-                  id="reclaim-ledger-space"
+                  id="delete-cleanup-backup"
                   class="button"
                   type="button"
                   disabled={dataActionPending}
-                  aria-busy={reclaimView.kind === "checking"}
-                  onclick={estimateLedgerReclaim}
-                >{reclaimView.kind === "checking" ? $t.settings.reclaimLedgerSpaceChecking : $t.settings.reclaimLedgerSpace}</button>
+                  aria-busy={cleanupBackupStatus === "pending"}
+                  onclick={() => (cleanupBackupStatus = "confirming")}
+                >{$t.settings.cleanupBackupDelete}</button>
+              {/if}
+              {#if cleanupView.kind === "done" || cleanupView.kind === "stopped"}
+                <span class="chip status-chip good" role="status">
+                  <Check size={13} strokeWidth={2.5} aria-hidden="true" />
+                  {cleanupView.kind === "done"
+                    ? $t.settings.cleanUpAppDataDone(megabytes(cleanupView.freedBytes))
+                    : $t.settings.cleanUpAppDataStopped(megabytes(cleanupView.freedBytes))}
+                </span>
+              {:else if cleanupView.kind === "nothing"}
+                <span class="chip status-chip good" role="status">
+                  <Check size={13} strokeWidth={2.5} aria-hidden="true" />
+                  {$t.settings.cleanUpAppDataNothing}
+                </span>
+              {:else if cleanupView.kind !== "estimated" && cleanupView.kind !== "running" && cleanupView.kind !== "backup-failed"}
+                <button
+                  id="clean-up-app-data"
+                  class="button"
+                  type="button"
+                  disabled={dataActionPending}
+                  aria-busy={cleanupView.kind === "checking"}
+                  onclick={estimateCleanup}
+                >{cleanupView.kind === "checking" ? $t.settings.cleanUpAppDataChecking : $t.settings.cleanUpAppData}</button>
               {/if}
             </div>
           </div>
-          {#if reclaimView.kind === "estimated"}
-            <div class="restart-confirm" role="group" aria-labelledby="ledger-reclaim-estimate">
-              <p id="ledger-reclaim-estimate">{$t.settings.reclaimLedgerSpaceEstimate(megabytes(reclaimView.reclaimableBytes))}</p>
+          {#if cleanupBackupStatus === "confirming"}
+            <div class="restart-confirm" role="group" aria-labelledby="cleanup-backup-delete-confirm">
+              <p id="cleanup-backup-delete-confirm">{$t.settings.cleanupBackupDeleteConfirm}</p>
               <div class="onboarding-setting-actions">
-                <button class="button" type="button" onclick={() => (reclaimView = { kind: "idle" })}>{$t.common.cancel}</button>
-                <button id="confirm-reclaim-ledger-space" class="button primary" type="button" disabled={dataActionPending} onclick={reclaimLedgerSpace}>{$t.settings.reclaimLedgerSpaceAction}</button>
+                <button class="button" type="button" onclick={() => (cleanupBackupStatus = "idle")}>{$t.common.cancel}</button>
+                <button id="confirm-delete-cleanup-backup" class="button danger" type="button" disabled={dataActionPending} onclick={deleteCleanupBackup}>{$t.settings.cleanupBackupDeleteAction}</button>
               </div>
             </div>
-          {:else if reclaimView.kind === "running"}
-            <p id="ledger-reclaim-progress" class="setting-hint" role="status" aria-live="polite">
-              {reclaimView.progress
-                ? $t.settings.reclaimLedgerSpaceProgress(reclaimView.progress.index, reclaimView.progress.count)
-                : $t.settings.reclaimLedgerSpaceStarting}
-            </p>
-          {:else if reclaimView.kind === "no-room"}
+          {:else if cleanupBackupStatus === "error"}
             <div class="settings-error" role="alert">
               <CircleAlert size={16} strokeWidth={2.25} aria-hidden="true" />
-              <span>{$t.settings.reclaimLedgerSpaceNoRoom(megabytes(reclaimView.requiredFreeBytes), megabytes(reclaimView.freeBytes))}</span>
-            </div>
-          {:else if reclaimView.kind === "failed"}
-            <div class="settings-error" role="alert">
-              <CircleAlert size={16} strokeWidth={2.25} aria-hidden="true" />
-              <span>{reclaimView.reclaimedBytes > 0
-                ? $t.settings.reclaimLedgerSpaceFailedPartway(megabytes(reclaimView.reclaimedBytes))
-                : $t.settings.reclaimLedgerSpaceFailed}</span>
+              <span>{$t.settings.cleanupBackupDeleteFailed}</span>
             </div>
           {/if}
-          <div class="setting-row">
-            <div class="setting-label-group">
-              <span class="setting-label">{$t.settings.compactLedger}</span>
-              <small class="setting-hint">{$t.settings.compactLedgerHint}</small>
-            </div>
-            <div class="onboarding-setting-actions">
-              {#if compactionView.kind === "done" || compactionView.kind === "stopped"}
-                <span class="chip status-chip good" role="status">
-                  <Check size={13} strokeWidth={2.5} aria-hidden="true" />
-                  {compactionView.kind === "stopped"
-                    ? $t.settings.compactLedgerStopped(rowCount(compactionView.removedRows))
-                    : compactionView.reclaimedBytes === null
-                    ? $t.settings.compactLedgerDoneSpaceLeft(rowCount(compactionView.removedRows))
-                    : $t.settings.compactLedgerDone(rowCount(compactionView.removedRows), megabytes(compactionView.reclaimedBytes))}
-                </span>
-              {:else if compactionView.kind === "nothing"}
-                <span class="chip status-chip good" role="status">
-                  <Check size={13} strokeWidth={2.5} aria-hidden="true" />
-                  {$t.settings.compactLedgerNothing}
-                </span>
-              {:else if compactionView.kind === "running"}
-                <button
-                  id="stop-ledger-compaction"
-                  class="button"
+          {#if cleanupView.kind === "estimated"}
+            {@const total = cleanupView.redundantBytes + cleanupView.temporaryBytes}
+            <div class="restart-confirm" role="group" aria-labelledby="ledger-cleanup-estimate">
+              <p id="ledger-cleanup-estimate">
+                {$t.settings.cleanUpAppDataEstimateBefore}<button
                   type="button"
-                  disabled={compactionStopping}
-                  onclick={stopLedgerCompaction}
-                >{$t.settings.compactLedgerStop}</button>
-              {:else if compactionView.kind !== "estimated"}
-                <button
-                  id="compact-ledger"
-                  class="button"
-                  type="button"
-                  disabled={dataActionPending}
-                  aria-busy={compactionView.kind === "checking"}
-                  onclick={estimateLedgerCompaction}
-                >{compactionView.kind === "checking" ? $t.settings.compactLedgerChecking : $t.settings.compactLedger}</button>
-              {/if}
-            </div>
-          </div>
-          {#if compactionView.kind === "estimated"}
-            <div class="restart-confirm" role="group" aria-labelledby="ledger-compaction-estimate">
-              <p id="ledger-compaction-estimate">{$t.settings.compactLedgerEstimate(megabytes(compactionView.removableBytes))}</p>
-              {#if compactionView.backupOffered}
-                <label class="confirm-option">
-                  <input id="ledger-compaction-backup" type="checkbox" bind:checked={compactionBackup} aria-describedby="ledger-compaction-backup-hint" />
-                  <span>{$t.settings.compactLedgerBackup}</span>
+                  class="figure-tip"
+                  aria-describedby="ledger-cleanup-breakdown"
+                >{megabytes(total)} MB<span id="ledger-cleanup-breakdown" class="tip" role="tooltip">
+                    <span>{$t.settings.cleanUpAppDataRedundant(megabytes(cleanupView.redundantBytes))}</span>
+                    <span>{$t.settings.cleanUpAppDataTemporary(megabytes(cleanupView.temporaryBytes))}</span>
+                  </span></button>{$t.settings.cleanUpAppDataEstimateAfter}
+                {$t.settings.cleanUpAppDataUnchanged}
+              </p>
+              {#if cleanupView.backup.kind !== "unavailable"}
+                {@const fits = cleanupView.backup.kind === "fits"}
+                <label class="confirm-option" class:disabled={!fits}>
+                  <input
+                    id="ledger-cleanup-keep-backup"
+                    type="checkbox"
+                    checked={fits && cleanupKeepBackup}
+                    disabled={!fits}
+                    aria-describedby="ledger-cleanup-backup-hint"
+                    onchange={(event) => (cleanupKeepBackup = event.currentTarget.checked)}
+                  />
+                  <span>{$t.settings.cleanUpAppDataKeepBackup}</span>
+                  {#if cleanupView.backup.kind === "fits"}
+                    <span class="hint-tip">
+                      <CircleHelp size={14} strokeWidth={2} aria-hidden="true" />
+                      <span id="ledger-cleanup-backup-hint" class="tip" role="tooltip">
+                        {$t.settings.cleanUpAppDataKeepBackupHint(megabytes(cleanupView.backup.bytes))}
+                      </span>
+                    </span>
+                  {/if}
                 </label>
-                <small id="ledger-compaction-backup-hint" class="setting-hint">{$t.settings.compactLedgerBackupHint(megabytes(compactionView.storeBytes ?? 0))}</small>
+                {#if cleanupView.backup.kind === "no-room"}
+                  <small id="ledger-cleanup-backup-hint" class="setting-hint warning-hint" role="status">
+                    {$t.settings.cleanUpAppDataBackupNoRoom(megabytes(cleanupView.backup.neededBytes))}
+                  </small>
+                {:else if cleanupView.backup.kind === "unreadable"}
+                  <small id="ledger-cleanup-backup-hint" class="setting-hint warning-hint" role="status">
+                    {$t.settings.cleanUpAppDataBackupUnreadable}
+                  </small>
+                {/if}
               {/if}
               <div class="onboarding-setting-actions">
-                <button class="button" type="button" onclick={() => (compactionView = { kind: "idle" })}>{$t.common.cancel}</button>
-                <button id="confirm-compact-ledger" class="button primary" type="button" disabled={dataActionPending} onclick={compactLedger}>{$t.settings.compactLedgerAction}</button>
+                <button class="button" type="button" onclick={() => (cleanupView = { kind: "idle" })}>{$t.common.cancel}</button>
+                <button id="confirm-clean-up-app-data" class="button primary" type="button" disabled={dataActionPending} onclick={confirmCleanup}>{$t.settings.cleanUpAppDataAction}</button>
               </div>
             </div>
-          {:else if compactionView.kind === "running"}
-            <p id="ledger-compaction-progress" class="setting-hint" role="status" aria-live="polite">
-              {#if compactionView.progress === null}
-                {$t.settings.compactLedgerStarting}
-              {:else if compactionView.progress.phase === "backing-up"}
-                {$t.settings.compactLedgerBackingUp}
-              {:else if compactionView.progress.phase === "compacting"}
-                {$t.settings.compactLedgerProgress(compactionView.progress.index, compactionView.progress.count, rowCount(compactionView.progress.removedRows))}
-              {:else}
-                {$t.settings.compactLedgerReclaiming(compactionView.progress.index, compactionView.progress.count)}
-              {/if}
-            </p>
-          {:else if compactionView.kind === "cannot"}
+          {:else if cleanupView.kind === "no-room"}
             <div class="settings-error" role="alert">
               <CircleAlert size={16} strokeWidth={2.25} aria-hidden="true" />
-              <span>{$t.settings.compactLedgerCannot}</span>
+              <span>{$t.settings.cleanUpAppDataNoRoom(megabytes(cleanupView.neededBytes), megabytes(cleanupView.freeBytes))}</span>
             </div>
-          {:else if compactionView.kind === "failed"}
-            <div id="ledger-compaction-failed" class="settings-error" role="alert">
+          {:else if cleanupView.kind === "out-of-room"}
+            <div id="ledger-cleanup-out-of-room" class="settings-error" role="alert">
               <CircleAlert size={16} strokeWidth={2.25} aria-hidden="true" />
-              <span>{compactionView.backup
-                ? $t.settings.compactLedgerBackupFailed
-                : compactionView.removedRows > 0
-                ? $t.settings.compactLedgerFailedPartway(rowCount(compactionView.removedRows))
-                : $t.settings.compactLedgerFailed}</span>
+              <span>{$t.settings.cleanUpAppDataOutOfRoom(megabytes(cleanupView.remainingBytes), megabytes(cleanupView.neededBytes))}</span>
             </div>
+          {:else if cleanupView.kind === "failed"}
+            <div id="ledger-cleanup-failed" class="settings-error" role="alert">
+              <CircleAlert size={16} strokeWidth={2.25} aria-hidden="true" />
+              <span>{$t.settings.cleanUpAppDataFailed}{cleanupView.freedBytes > 0 ? ` ${$t.settings.cleanUpAppDataFreed(megabytes(cleanupView.freedBytes))}` : ""}</span>
+            </div>
+          {:else if cleanupView.kind === "backup-failed"}
+            <div id="ledger-cleanup-backup-failed" class="settings-error" role="alert">
+              <CircleAlert size={16} strokeWidth={2.25} aria-hidden="true" />
+              <span>{$t.settings.cleanUpAppDataBackupFailed}</span>
+              <span class="error-actions">
+                <button class="button" type="button" disabled={dataActionPending} onclick={() => void cleanUp({ ...cleanupRequest, backup: true })}>{$t.settings.cleanUpAppDataTryAgain}</button>
+                <button id="clean-up-without-backup" class="button" type="button" disabled={dataActionPending} onclick={() => void cleanUp({ backup: false, keepBackup: false })}>{$t.settings.cleanUpAppDataWithoutBackup}</button>
+              </span>
+            </div>
+          {/if}
+          {#if cleanupView.kind === "running"}
+            <Modal titleId="ledger-cleanup-title" title={$t.settings.cleanUpAppDataRunning} subtitle={$t.settings.cleanUpAppDataRunningHint} width="min(480px, 100%)" closable={false} showClose={false} onClose={() => {}}>
+              <div class="modal-body cleanup-run">
+                {#if cleanupBar}
+                  {@const label = cleanupView.progress === null
+                    ? $t.settings.cleanUpAppDataStarting
+                    : cleanupView.progress.phase === "backing-up"
+                    ? $t.settings.cleanUpAppDataBackingUp
+                    : cleanupView.progress.phase === "compacting"
+                    ? $t.settings.cleanUpAppDataCompacting(cleanupView.progress.index, cleanupView.progress.count)
+                    : $t.settings.cleanUpAppDataReclaiming(cleanupView.progress.index, cleanupView.progress.count)}
+                  <div
+                    id="ledger-cleanup-progress"
+                    class="cleanup-bar"
+                    role="progressbar"
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={cleanupBar.percent ?? undefined}
+                    aria-valuetext={label}
+                    aria-labelledby="ledger-cleanup-step"
+                  >
+                    {#each cleanupBar.segments as segment (segment.part)}
+                      <span class="cleanup-segment" class:indeterminate={segment.fill === null} data-part={segment.part}>
+                        <span style:width={segment.fill === null ? null : `${segment.fill * 100}%`}></span>
+                      </span>
+                    {/each}
+                  </div>
+                  <p id="ledger-cleanup-step" class="setting-hint" aria-live="polite">{label}</p>
+                {/if}
+                <div class="onboarding-setting-actions">
+                  <button
+                    id="stop-ledger-cleanup"
+                    class="button"
+                    type="button"
+                    disabled={cleanupStopping}
+                    onclick={stopCleanup}
+                  >{cleanupStopping ? $t.settings.cleanUpAppDataStopping : $t.settings.cleanUpAppDataStop}</button>
+                </div>
+              </div>
+            </Modal>
           {/if}
           <div class="setting-row">
             <div class="setting-label-group">
@@ -1692,6 +1760,107 @@
 
   .settings-error :global(svg) { flex: none; }
   .settings-error .button { margin-left: auto; flex: none; }
+  .settings-error .error-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-left: auto; }
+  .settings-error .error-actions .button { margin-left: 0; }
+
+  .onboarding-setting-actions .button.icon-only {
+    justify-content: center;
+    width: 34px;
+    padding: 0;
+  }
+
+  .confirm-option.disabled { color: var(--muted); }
+  .confirm-option.disabled input { cursor: not-allowed; }
+
+  .figure-tip,
+  .hint-tip {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .figure-tip {
+    padding: 0;
+    border: 0;
+    border-bottom: 1px dotted currentColor;
+    background: none;
+    color: var(--fg);
+    font: inherit;
+    font-weight: 700;
+    cursor: help;
+  }
+
+  .hint-tip { color: var(--muted); cursor: help; }
+
+  .tip {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    z-index: 40;
+    display: none;
+    width: max-content;
+    max-width: 300px;
+    padding: var(--space-2) var(--space-3);
+    border-radius: 6px;
+    background: color-mix(in oklch, var(--surface-strong) 92%, transparent);
+    color: white;
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 1.45;
+    text-align: left;
+    white-space: normal;
+    pointer-events: none;
+  }
+
+  .figure-tip .tip { flex-direction: column; gap: 2px; }
+  .figure-tip:hover .tip,
+  .figure-tip:focus-visible .tip { display: flex; }
+  .hint-tip:hover .tip,
+  .confirm-option:focus-within .hint-tip .tip { display: block; }
+
+  .cleanup-run {
+    display: grid;
+    gap: var(--space-3);
+    padding: var(--space-5);
+  }
+
+  .cleanup-bar {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 4px;
+  }
+
+  .cleanup-segment {
+    position: relative;
+    height: 8px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--fg) 10%, transparent);
+  }
+
+  .cleanup-segment > span {
+    position: absolute;
+    inset: 0 auto 0 0;
+    border-radius: inherit;
+    background: var(--fg);
+    transition: width 240ms ease-out;
+  }
+
+  .cleanup-segment.indeterminate > span {
+    width: 40%;
+    animation: cleanup-indeterminate 1.2s ease-in-out infinite;
+  }
+
+  @keyframes cleanup-indeterminate {
+    from { transform: translateX(-100%); }
+    to { transform: translateX(250%); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .cleanup-segment.indeterminate > span { animation: none; width: 100%; opacity: 0.4; }
+  }
+
+  .cleanup-run .onboarding-setting-actions { justify-content: flex-end; }
 
   @media (max-width: 900px) {
     .settings-content { grid-template-columns: 1fr; }
