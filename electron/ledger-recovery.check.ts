@@ -169,15 +169,27 @@ test("a restore that cannot be recorded says so, changes nothing, and quits", ()
 }));
 
 test("the stuck-restore question defaults to trying again, quits when closed, and says switching back loses nothing", async () => {
-  for (const [locale, buttons, nothingLost] of [
-    ["en", ["Try again", "Switch back to the original ledger", "Quit"], /switching back loses nothing/u],
-    ["zh-TW", ["再試一次", "換回原本的帳本", "結束"], /換回不會遺失任何資料/u],
+  for (const [locale, buttons, conditional, damaged] of [
+    ["en", ["Try again", "Switch back to the original ledger", "Quit"],
+      /If OctopusBeak did open after the restore and you entered data, that data stays in the backup[^.]*while the backup is kept\. Otherwise switching back loses nothing/u,
+      /the damaged-ledger dialog will appear again/u],
+    ["zh-TW", ["再試一次", "換回原本的帳本", "結束"],
+      /如果還原後 OctopusBeak 曾經開啟、而你輸入了資料，那些資料會留在備份裡，備份保留期間可以從設定再還原；否則換回不會遺失任何資料/u,
+      /損壞的帳本，之後會再次出現帳本損壞的對話框/u],
   ] as const) {
+    for (const from of ["settings", "unusable"] as const) {
+      const asked: Parameters<LedgerRecoveryDeps["ask"]>[0][] = [];
+      await askAboutStuckRestore({ locale, takenAt: NOW, from, ask: async (options) => { asked.push(options); return 0; } });
+      assert.match(asked[0]!.detail, conditional, `${locale} ${from}: it does not claim what it cannot know`);
+      if (from === "unusable") assert.match(asked[0]!.detail, damaged, `${locale}: the damaged ledger comes back`);
+      else assert.doesNotMatch(asked[0]!.detail, damaged);
+    }
     for (const [index, choice] of [[0, "retry"], [1, "swap-back"], [2, "quit"], [7, "quit"]] as const) {
       const asked: Parameters<LedgerRecoveryDeps["ask"]>[0][] = [];
       const result = await askAboutStuckRestore({
         locale,
         takenAt: NOW,
+        from: "settings",
         formatDate: () => "2026/11/01",
         ask: async (options) => { asked.push(options); return index; },
       });
@@ -185,7 +197,6 @@ test("the stuck-restore question defaults to trying again, quits when closed, an
       assert.deepEqual(asked[0]!.buttons, buttons);
       assert.equal(asked[0]!.defaultId, 0);
       assert.equal(asked[0]!.cancelId, 2);
-      assert.match(asked[0]!.detail, nothingLost);
       assert.ok(asked[0]!.detail.includes("2026/11/01"));
     }
   }

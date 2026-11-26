@@ -172,6 +172,15 @@ export function ledgerRestoreOpenedPath(dataDir: string): string {
   return `${resolve(dataDir)}.restore-opened`;
 }
 
+/**
+ * A restore file that could not be read, kept: it may have named a
+ * `.replaced-` ledger, so while it exists no launch removes one. Only a
+ * Canonical Reset removes it.
+ */
+export function ledgerRestoreUnreadablePath(dataDir: string): string {
+  return `${resolve(dataDir)}.restore-unreadable`;
+}
+
 /** How the last restore ended, kept until Settings reads it. */
 export function ledgerRestoreOutcomePath(dataDir: string): string {
   return `${resolve(dataDir)}.restore-outcome`;
@@ -192,7 +201,12 @@ export function isReplacedLedgerName(dataDir: string, name: string): boolean {
  */
 export async function removeLedgerRestoreLeftovers(dataDir: string): Promise<void> {
   dataDir = resolve(dataDir);
-  for (const file of [ledgerRestorePendingPath(dataDir), ledgerRestoreOpenedPath(dataDir), ledgerRestoreOutcomePath(dataDir)]) {
+  for (const file of [
+    ledgerRestorePendingPath(dataDir),
+    ledgerRestoreOpenedPath(dataDir),
+    ledgerRestoreOutcomePath(dataDir),
+    ledgerRestoreUnreadablePath(dataDir),
+  ]) {
     await rm(file, { force: true });
     await rm(`${file}.tmp`, { force: true });
   }

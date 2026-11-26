@@ -8,6 +8,7 @@ import {
   ledgerRestoreOpenedPath,
   ledgerRestoreOutcomePath,
   ledgerRestorePendingPath,
+  ledgerRestoreUnreadablePath,
   parseLedgerBackupVersions,
   type LedgerBackupVersions,
 } from "../src/ledger/pglite/data-dir-backup.ts";
@@ -308,10 +309,10 @@ export async function takeFailedRestoreBackup(dataDir: string, fs: LedgerRestore
   dataDir = resolve(dataDir);
   const path = ledgerRestoreOutcomePath(dataDir);
   const outcome = parseOutcome(await fs.readText(path).catch(() => null));
+  if (outcome?.status !== "failed" || !outcome.backup || !ledgerBackupTakenAt(dataDir, outcome.backup)) return null;
+  // Only this outcome is the dialog's to take; any other waits for Settings.
   await fs.removeFile(path).catch(() => undefined);
-  return outcome?.status === "failed" && outcome.backup && ledgerBackupTakenAt(dataDir, outcome.backup)
-    ? join(dirname(dataDir), outcome.backup)
-    : null;
+  return join(dirname(dataDir), outcome.backup);
 }
 
 /** What the launch step left for the worker's open to decide. */
@@ -348,7 +349,7 @@ export type LedgerRestoreLaunchDeps = Readonly<{
    * launches began opening with no word from any of them. Without it, the
    * backup opens again.
    */
-  askStuck?: (backup: Readonly<{ takenAt: Date }>) => Promise<StuckRestoreChoice>;
+  askStuck?: (backup: Readonly<{ takenAt: Date; from: LedgerRestoreOrigin }>) => Promise<StuckRestoreChoice>;
   /** Codes only: a path or an error message stays out of the log. */
   log?: (code: string, detail?: string) => void;
 }>;
@@ -373,6 +374,7 @@ export async function resumeLedgerRestore(dataDir: string, deps: LedgerRestoreLa
   const openedPath = ledgerRestoreOpenedPath(dataDir);
   const outcomePath = ledgerRestoreOutcomePath(dataDir);
   const record = cleanShutdownRecord(dataDir);
+  const unreadablePath = ledgerRestoreUnreadablePath(dataDir);
 
   /** Runs a step whose failure must not stop the App from starting; a later launch tries again. */
   async function tryTo(code: string, step: () => Promise<unknown>): Promise<boolean> {
@@ -408,11 +410,20 @@ export async function resumeLedgerRestore(dataDir: string, deps: LedgerRestoreLa
       if (done) await fs.removeFile(openedPath);
     });
   }
+  /** Keeps a restore file that cannot be read under its own name, never deletes it: it may name the person's ledger. */
+  async function keepUnreadable(path: string) {
+    log("ledger-restore-unreadable");
+    await tryTo("ledger-restore-unreadable-rename-failed", () => fs.rename(path, unreadablePath));
+  }
   /** Finishes an earlier opened restore; true when its file is gone, so the name is free. */
   async function finishEarlierOpened(): Promise<boolean> {
     let text: string | null = null;
     await tryTo("ledger-restore-opened-read-failed", async () => { text = await fs.readText(openedPath); });
-    if (text !== null) await finishOpened(parsePending(dataDir, text));
+    if (text !== null) {
+      const state = parsePending(dataDir, text);
+      if (state) await finishOpened(state);
+      else await keepUnreadable(openedPath);
+    }
     let gone = false;
     await tryTo("ledger-restore-opened-read-failed", async () => { gone = await fs.kind(openedPath) === null; });
     return gone;
@@ -426,6 +437,8 @@ export async function resumeLedgerRestore(dataDir: string, deps: LedgerRestoreLa
    */
   async function removeUnnamedLeftovers() {
     await tryTo("ledger-restore-leftover-removal-failed", async () => {
+      // A kept unreadable file may have named any of them: nothing goes until a Canonical Reset.
+      if (await fs.kind(unreadablePath) !== null) return;
       const named = new Set<string>();
       for (const path of [pendingPath, openedPath]) {
         const text = await fs.readText(path);
@@ -460,10 +473,18 @@ export async function resumeLedgerRestore(dataDir: string, deps: LedgerRestoreLa
   if (text === null) return NONE;
   const pending = parsePending(dataDir, text);
   if (!pending) {
-    // Nothing it names can be trusted, so nothing is moved.
-    log("ledger-restore-unreadable");
+    // Nothing it names can be trusted, so nothing it may name is moved or removed; the file itself is kept.
+    await keepUnreadable(pendingPath);
     await writeOutcome({ status: "failed" });
-    await tryTo("ledger-restore-pending-removal-failed", () => fs.removeFile(pendingPath));
+    if (await fs.kind(dataDir) === null) {
+      // The App must not start on an empty folder: a single set-aside ledger can only be the one that was here.
+      const replaced = (await fs.list(folder)).filter((name) => isReplacedLedgerName(dataDir, name));
+      if (replaced.length > 1) throw new Error("ledger-restore-ledger-missing");
+      if (replaced.length === 1) {
+        await fs.rename(join(folder, replaced[0]!), dataDir);
+        await dropRecord();
+      }
+    }
     return NONE;
   }
   const backup = join(folder, pending.backup);
@@ -537,6 +558,8 @@ export async function resumeLedgerRestore(dataDir: string, deps: LedgerRestoreLa
     // and its clean-shutdown record is its own.
     if (await fs.kind(aside) === null && await fs.kind(dataDir) === "folder") {
       log("ledger-restore-swap-back-settled");
+      // A launch that died before saying so leaves no outcome; one Settings already read is said again only while the file sticks.
+      if (await fs.kind(outcomePath) === null) await writeOutcome({ status: "failed", backup: pending!.backup });
       await tryTo("ledger-restore-pending-removal-failed", () => fs.removeFile(pendingPath));
       return NONE;
     }
@@ -569,17 +592,13 @@ export async function resumeLedgerRestore(dataDir: string, deps: LedgerRestoreLa
         await markOpened(pending).catch((error: unknown) => log("ledger-restore-finish-failed", codeOf(error)));
         return NONE;
       }
-      // Nothing in the ledger's place: there is no used ledger to lose, so the person's own goes back.
-      if (await fs.kind(dataDir) !== "folder") {
-        if (pending.from === "settings") return swapBack();
-        log("ledger-restore-abandoned");
-        await abandon();
-        return NONE;
-      }
+      // Nothing in the ledger's place, as after a switch back cut short between its renames: there is no used
+      // ledger to lose, so the one set aside goes back, whichever dialog started the restore.
+      if (await fs.kind(dataDir) !== "folder") return swapBack();
       // No signal either way: the last launches may have run on the restored ledger, so nothing swaps back on a guess.
       // After several, the person decides; trying again is the default.
       if (pending.opens >= STUCK_OPENS && deps.askStuck) {
-        const choice = await deps.askStuck({ takenAt: new Date(takenAt) }).catch((error: unknown) => {
+        const choice = await deps.askStuck({ takenAt: new Date(takenAt), from: pending.from }).catch((error: unknown) => {
           log("ledger-restore-ask-failed", codeOf(error));
           return "retry" as const;
         });

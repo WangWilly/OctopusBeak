@@ -440,9 +440,10 @@ async function start() {
   const ledgerRestore = await resumeLedgerRestore(ledgerDataDir, {
     current: LEDGER_BASELINE_VERSIONS,
     // Before the worker exists: a backup several launches could not finish opening is the person's call.
-    askStuck: ({ takenAt }) => askAboutStuckRestore({
+    askStuck: ({ takenAt, from }) => askAboutStuckRestore({
       locale: ledgerLocale(),
       takenAt,
+      from,
       ask: async (options) => (await dialog.showMessageBox(options)).response,
       ...ledgerDateFormat(),
     }),

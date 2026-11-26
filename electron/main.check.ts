@@ -64,7 +64,7 @@ assert.match(
 );
 assert.match(
   source,
-  /const ledgerRestore = await resumeLedgerRestore\(ledgerDataDir, \{[\s\S]*?askStuck: \(\{ takenAt \}\) => askAboutStuckRestore\(\{[\s\S]*?\}\);\s*if \(ledgerRestore\.kind === "quit"\) \{\s*app\.quit\(\);\s*return;\s*\}[\s\S]*?const operationalRuntime = createPGliteOperationalRuntime\(/u,
+  /const ledgerRestore = await resumeLedgerRestore\(ledgerDataDir, \{[\s\S]*?askStuck: \(\{ takenAt, from \}\) => askAboutStuckRestore\(\{[\s\S]*?\}\);\s*if \(ledgerRestore\.kind === "quit"\) \{\s*app\.quit\(\);\s*return;\s*\}[\s\S]*?const operationalRuntime = createPGliteOperationalRuntime\(/u,
   "a backup that never finished opening is the person's call, asked before the worker exists",
 );
 assert.match(

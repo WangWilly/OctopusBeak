@@ -293,7 +293,7 @@ test("a restore refused before its backup opened never hides the backup from the
       await resumeLedgerRestore(ledger.dataDir, LAUNCH);
       assert.equal(which(ledger.dataDir), "original", label);
       assert.equal(await takeFailedRestoreBackup(ledger.dataDir), null, `${label}: the backup is offered again`);
-      assert.equal(await takeLedgerRestoreOutcome(ledger.dataDir), null, `${label}: the dialog took the outcome`);
+      assert.deepEqual(await takeLedgerRestoreOutcome(ledger.dataDir), { status: "failed" }, `${label}: left for Settings to say`);
     });
   }
 });
@@ -347,7 +347,7 @@ test("a swap back whose file will not go is settled once: later launches only re
   for (let index = 0; index < 2; index += 1) {
     assert.equal((await resumeLedgerRestore(ledger.dataDir, { ...LAUNCH, fs: stuck })).kind, "none");
     assert.ok(existsSync(ledger.record), "its clean-shutdown record stays");
-    assert.equal(await takeLedgerRestoreOutcome(ledger.dataDir), null, "the failure is said once");
+    assert.deepEqual(await takeLedgerRestoreOutcome(ledger.dataDir), { status: "failed" }, "said again only while the file sticks");
     assert.equal(which(ledger.backup), "backup");
   }
   assert.equal((await resumeLedgerRestore(ledger.dataDir, LAUNCH)).kind, "none");
@@ -568,7 +568,9 @@ test("a pending file that names anything but a sibling backup and aside, or is m
       assert.deepEqual(await settle(ledger, () => true), ["normal"], label);
       assert.equal(which(ledger.dataDir), "original", label);
       assert.equal(which(ledger.backup), "backup", label);
-      assert.deepEqual(siblings(ledger), [...before.filter((name) => name !== "pglite.restore-pending"), "pglite.restore-outcome"].sort(), label);
+      assert.deepEqual(siblings(ledger),
+        [...before.filter((name) => name !== "pglite.restore-pending"), "pglite.restore-outcome", "pglite.restore-unreadable"].sort(),
+        `${label}: the file is kept, never deleted`);
     });
   }
 });
@@ -758,4 +760,81 @@ test("quitting at the question changes nothing, and the next launch asks again",
   assert.equal(readFileSync(ledgerRestorePendingPath(ledger.dataDir), "utf8"), pending, "not counted as a launch that opened");
   assert.equal((await resumeLedgerRestore(ledger.dataDir, deps)).kind, "quit");
   assert.equal(asked.length, 2);
+}));
+
+/** Swaps, then leaves a pending file this App could not have written. */
+async function swapThenCorrupt(ledger: Ledger) {
+  await request(ledger);
+  assert.equal((await resumeLedgerRestore(ledger.dataDir, LAUNCH)).kind, "opening");
+  writeFileSync(ledgerRestorePendingPath(ledger.dataDir), "{");
+  const replaced = siblings(ledger).find((name) => name.includes(".replaced-"));
+  assert.ok(replaced);
+  return join(ledger.root, replaced);
+}
+
+test("an unreadable pending file after a swap is kept, and the set-aside ledger survives every later launch", () => withLedger(async (ledger) => {
+  const replaced = await swapThenCorrupt(ledger);
+  for (let index = 0; index < 3; index += 1) {
+    assert.equal((await resumeLedgerRestore(ledger.dataDir, LAUNCH)).kind, "none");
+    assert.equal(which(replaced), "original", `launch ${index + 1}: the person's ledger is still set aside`);
+  }
+  assert.equal(readFileSync(`${ledger.dataDir}.restore-unreadable`, "utf8"), "{", "the file is kept as it was");
+  assert.equal(which(ledger.dataDir), "backup", "with a ledger in place, nothing moves");
+  // Only a Canonical Reset removes the file and the folder.
+  await removeAllLedgerBackups(ledger.dataDir);
+  assert.equal(existsSync(replaced), false);
+  assert.equal(existsSync(`${ledger.dataDir}.restore-unreadable`), false);
+}));
+
+test("an unreadable pending file with the ledger missing puts the one set-aside ledger back", () => withLedger(async (ledger) => {
+  const replaced = await swapThenCorrupt(ledger);
+  await rm(ledger.dataDir, { recursive: true });
+  writeFileSync(ledger.record, "");
+  assert.equal((await resumeLedgerRestore(ledger.dataDir, LAUNCH)).kind, "none");
+  assert.equal(which(ledger.dataDir), "original", "the App does not start on an empty folder");
+  assert.equal(existsSync(replaced), false);
+  assert.equal(existsSync(ledger.record), false, "it checks every index when it opens");
+}));
+
+test("an unreadable pending file with the ledger missing and two set-aside ledgers does not start the App", () => withLedger(async (ledger) => {
+  await swapThenCorrupt(ledger);
+  store(`${ledger.dataDir}.replaced-2026-10-01T00-00-00Z`, "older");
+  await rm(ledger.dataDir, { recursive: true });
+  await assert.rejects(() => resumeLedgerRestore(ledger.dataDir, LAUNCH), /ledger-restore-ledger-missing/u);
+  assert.equal(existsSync(ledger.dataDir), false, "it cannot tell which was here, so it moves neither");
+}));
+
+test("a dialog restore whose switch back broke between its renames puts the damaged ledger back", () => withLedger(async (ledger) => {
+  const damaged = `${ledger.dataDir}.damaged-2026-11-20T08-00-00Z`;
+  await request(ledger, "unusable", { aside: damaged });
+  assert.equal((await resumeLedgerRestore(ledger.dataDir, LAUNCH)).kind, "opening");
+  // The switch back renamed the backup to its name, could not record it, and the App died before the second rename.
+  await NODE_RESTORE_FS.rename(ledger.dataDir, ledger.backup);
+  assert.equal((await resumeLedgerRestore(ledger.dataDir, LAUNCH)).kind, "none");
+  assert.equal(which(ledger.dataDir), "original", "the damaged ledger is back: the App does not start on an empty folder");
+  assert.equal(existsSync(damaged), false);
+  assert.equal(which(ledger.backup), "backup");
+  assert.equal((await readLedgerCleanupBackup(ledger.dataDir, CURRENT))?.restorable, true, "the backup keeps its versions");
+  assert.equal(await takeFailedRestoreBackup(ledger.dataDir), ledger.backup, "and an outcome says it did not open");
+}));
+
+test("the dialog takes only a failed outcome that names a backup", () => withLedger(async (ledger) => {
+  const outcome = `${ledger.dataDir}.restore-outcome`;
+  for (const value of [{ status: "restored", takenAt: TAKEN_AT }, { status: "failed" }]) {
+    writeFileSync(outcome, JSON.stringify(value));
+    assert.equal(await takeFailedRestoreBackup(ledger.dataDir), null);
+    assert.ok(existsSync(outcome), `${value.status}: left for Settings to say`);
+  }
+}));
+
+test("a settled swap back that died before its outcome writes one", () => withLedger(async (ledger) => {
+  await request(ledger);
+  assert.equal(await launch(ledger, (content) => content !== "backup"), "relaunch");
+  // The folders went back, then the App died before the outcome and the file's removal.
+  await NODE_RESTORE_FS.rename(ledger.dataDir, ledger.backup);
+  const replaced = siblings(ledger).find((name) => name.includes(".replaced-"))!;
+  await NODE_RESTORE_FS.rename(join(ledger.root, replaced), ledger.dataDir);
+  assert.equal((await resumeLedgerRestore(ledger.dataDir, LAUNCH)).kind, "none");
+  assert.deepEqual(await takeLedgerRestoreOutcome(ledger.dataDir), { status: "failed" });
+  assert.equal(await ledgerRestoreRequested(ledger.dataDir), false);
 }));

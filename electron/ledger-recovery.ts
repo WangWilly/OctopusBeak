@@ -1,5 +1,5 @@
 import { existsSync, renameSync } from "node:fs";
-import type { StuckRestoreChoice } from "./ledger-restore.ts";
+import type { LedgerRestoreOrigin, StuckRestoreChoice } from "./ledger-restore.ts";
 
 /** What the person chose when the local ledger refused to open (ADR 0150, ADR 0157). */
 export type LedgerRecoveryChoice = "retry" | "rebuild" | "restore" | "quit";
@@ -162,17 +162,20 @@ export async function recoverUnusableLedger(
 
 const STUCK_COPY: Readonly<Record<"zh-TW" | "en", Readonly<{
   message: string;
-  detail(date: string): string;
+  detail(date: string, from: LedgerRestoreOrigin): string;
   retry: string;
   swapBack: string;
   quit: string;
 }>>> = {
   "zh-TW": {
     message: "還原的備份帳本試了幾次都沒有開啟完成",
-    detail: (date) => [
+    detail: (date, from) => [
       `OctopusBeak 已經嘗試開啟 ${date} 清理前的備份帳本好幾次，每次都沒有完成。`,
       "再試一次：再開啟一次備份帳本。",
-      "換回原本的帳本：放回還原前的帳本，備份會留著，之後仍可還原。只有在還原後曾經使用過 OctopusBeak 的情況下，之後輸入的資料才會遺失；這次還原後一直無法使用，所以換回不會遺失任何資料。",
+      from === "settings"
+        ? "換回原本的帳本：放回還原前的帳本。"
+        : "換回原本的帳本：放回的是損壞的帳本，之後會再次出現帳本損壞的對話框。",
+      "如果還原後 OctopusBeak 曾經開啟、而你輸入了資料，那些資料會留在備份裡，備份保留期間可以從設定再還原；否則換回不會遺失任何資料。",
     ].join("\n\n"),
     retry: "再試一次",
     swapBack: "換回原本的帳本",
@@ -180,10 +183,13 @@ const STUCK_COPY: Readonly<Record<"zh-TW" | "en", Readonly<{
   },
   en: {
     message: "The restored backup has not finished opening after several tries",
-    detail: (date) => [
+    detail: (date, from) => [
       `OctopusBeak has tried to open the ledger backed up before the cleanup on ${date} several times, and it never finished opening.`,
       "Try again: open the backup once more.",
-      "Switch back to the original ledger: put back the ledger you had before the restore. The backup is kept and can still be restored. Anything entered since the restore would be lost only if you had been able to use OctopusBeak since; you have not, so switching back loses nothing.",
+      from === "settings"
+        ? "Switch back to the original ledger: put back the ledger you had before the restore."
+        : "Switch back to the original ledger: the ledger that comes back is the damaged one, and the damaged-ledger dialog will appear again.",
+      "If OctopusBeak did open after the restore and you entered data, that data stays in the backup and can be restored again from Settings while the backup is kept. Otherwise switching back loses nothing.",
     ].join("\n\n"),
     retry: "Try again",
     swapBack: "Switch back to the original ledger",
@@ -202,6 +208,7 @@ const STUCK_CHOICES: readonly StuckRestoreChoice[] = ["retry", "swap-back", "qui
 export async function askAboutStuckRestore(deps: Readonly<{
   locale: "zh-TW" | "en";
   takenAt: Date;
+  from: LedgerRestoreOrigin;
   ask: LedgerRecoveryDeps["ask"];
   formatDate?(value: Date): string;
 }>): Promise<StuckRestoreChoice> {
@@ -210,7 +217,7 @@ export async function askAboutStuckRestore(deps: Readonly<{
     type: "error",
     title: COPY[deps.locale].title,
     message: copy.message,
-    detail: copy.detail((deps.formatDate ?? localDate)(deps.takenAt)),
+    detail: copy.detail((deps.formatDate ?? localDate)(deps.takenAt), deps.from),
     buttons: [copy.retry, copy.swapBack, copy.quit],
     defaultId: 0,
     cancelId: 2,
