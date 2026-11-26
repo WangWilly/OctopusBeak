@@ -28,5 +28,5 @@ Other refusals to open, such as a schema that does not match its manifest, still
 
 ## Consequences
 
-- A backup stays until the person removes it. Nothing lists it in the App yet.
+- A backup stays until the person removes it or runs a Canonical Reset, which deletes it with the rest of the financial data, the hand-entered data only it holds included ([ADR 0156](./0156-one-cleanup-action-compacts-then-reclaims.md)). Nothing lists it in the App yet.
 - Data recorded only in the App, and history the sources no longer serve, is not restored automatically after a rebuild.

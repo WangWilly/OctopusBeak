@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import {
   LEDGER_RESTORE_REQUEST_TTL_MS,
@@ -639,15 +639,18 @@ test("nothing that removes backups touches the one a restore under way names", (
   assert.equal((await readLedgerCleanupBackup(ledger.dataDir, CURRENT))?.restorable, true, "given back, it can still be restored");
 }));
 
-test("a Canonical Reset removes every ledger a restore set aside, and the restore's files", () => withLedger(async (ledger) => {
+test("a Canonical Reset removes every ledger set aside, replaced or damaged, and the restore's files", () => withLedger(async (ledger) => {
   const orphan = `${ledger.dataDir}.replaced-2026-11-02T00-00-00Z`;
   store(orphan, "before the restore");
-  const damaged = `${ledger.dataDir}.damaged-2026-11-02T00-00-00Z`;
-  store(damaged, "damaged");
+  for (const stamp of ["2026-11-02T00-00-00Z", "2026-11-02T00-00-00Z-1"]) store(`${ledger.dataDir}.damaged-${stamp}`, "damaged");
+  // Not this ledger's, or not a name the App gives: left alone.
+  store(join(dirname(ledger.dataDir), "other.damaged-2026-11-02T00-00-00Z"), "another ledger's");
+  store(`${ledger.dataDir}.damaged-kept-by-hand`, "not a stamp");
   for (const file of ["restore-pending", "restore-opened", "restore-outcome", "restore-outcome.tmp"]) writeFileSync(`${ledger.dataDir}.${file}`, "{}");
   await removeAllLedgerBackups(ledger.dataDir);
-  assert.deepEqual(siblings(ledger), ["neighbour", "pglite", "pglite.clean-shutdown", "pglite.damaged-2026-11-02T00-00-00Z"],
-    "the backup, the replaced ledger and the restore's files go; the ledger, a damaged one and the neighbour stay");
+  assert.deepEqual(siblings(ledger),
+    ["neighbour", "other.damaged-2026-11-02T00-00-00Z", "pglite", "pglite.clean-shutdown", "pglite.damaged-kept-by-hand"],
+    "the backup, the replaced ledger, the damaged ledgers and the restore's files go; the ledger and what is not its own stay");
 }));
 
 test("temporary files a write cut short left are removed at launch", () => withLedger(async (ledger) => {

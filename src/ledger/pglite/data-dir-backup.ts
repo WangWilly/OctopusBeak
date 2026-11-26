@@ -194,6 +194,32 @@ export function isReplacedLedgerName(dataDir: string, name: string): boolean {
   return name.startsWith(prefix) && STAMP.test(name.slice(prefix.length));
 }
 
+const DAMAGED_INFIX = ".damaged-";
+
+/** Whether `name` is a bare name of the form an unusable ledger is set aside under (ADR 0150). */
+export function isDamagedLedgerName(dataDir: string, name: string): boolean {
+  const prefix = `${basename(resolve(dataDir))}${DAMAGED_INFIX}`;
+  return name.startsWith(prefix) && STAMP.test(name.slice(prefix.length));
+}
+
+/**
+ * Removes every unusable ledger set aside beside this one (ADR 0150). Each
+ * holds the financial data it had when it was moved, which a Canonical Reset
+ * must leave nowhere.
+ */
+export async function removeDamagedLedgers(dataDir: string): Promise<void> {
+  dataDir = resolve(dataDir);
+  let names: string[];
+  try {
+    names = await readdir(dirname(dataDir));
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (isDamagedLedgerName(dataDir, name)) await rm(join(dirname(dataDir), name), { recursive: true, force: true });
+  }
+}
+
 /**
  * Removes what a Cleanup Restore leaves beside the ledger: its files first,
  * so nothing names a folder any more, then every ledger a restore set aside
@@ -299,12 +325,15 @@ export async function removeExpiredLedgerBackups(dataDir: string, now: Date): Pr
 }
 
 /**
- * Removes every backup, finished or partial, and every ledger a restore set
- * aside: a Canonical Reset leaves none that holds the deleted data. Settings
- * refuses a reset once a restore is asked for, so none is under way here.
+ * Removes every backup, finished or partial, every ledger a restore set
+ * aside, and every unusable ledger moved aside: a Canonical Reset leaves none
+ * that holds the deleted data. Settings refuses a reset once a restore is
+ * asked for, so none is under way here; the restore's files go first, so
+ * nothing names a folder that is removed.
  */
 export async function removeAllLedgerBackups(dataDir: string): Promise<void> {
   await removeLedgerRestoreLeftovers(dataDir);
+  await removeDamagedLedgers(dataDir);
   await removePartialLedgerBackups(dataDir);
   for (const { path } of await listLedgerBackups(dataDir)) await removeLedgerBackup(path);
   await removePartialLedgerBackups(dataDir);
