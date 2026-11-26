@@ -171,6 +171,7 @@
   let cleanupRestoreNotice: CleanupRestoreOutcomeDto | null = null;
   /** The damaged ledgers the unusable-ledger dialog set aside (ADR 0150); the row shows only while one exists. */
   let damagedLedgers: DamagedLedgersView = NO_DAMAGED_LEDGERS;
+  $: damagedShown = damagedLedgersShown(damagedLedgers);
   $: cleanupBusy = cleanupView.kind === "checking" || cleanupView.kind === "running";
   $: cleanupBar = cleanupView.kind === "running" ? cleanupProgressBar(cleanupView.progress) : null;
   $: dataActionPending = resetPending || cleanupBusy || cleanupBackupStatus === "pending" || cleanupRestorePending
@@ -1208,11 +1209,13 @@
               </div>
             </Modal>
           {/if}
-          {#if damagedLedgersShown(damagedLedgers)}
+          {#if damagedShown !== "hidden"}
             <div id="damaged-ledgers-row" class="setting-row damaged-ledgers">
               <div class="setting-label-group">
                 <span class="setting-label">{$t.settings.damagedLedgers}</span>
-                <small class="setting-hint">{$t.settings.damagedLedgersHint}</small>
+                {#if damagedShown === "ledgers"}
+                  <small class="setting-hint">{$t.settings.damagedLedgersHint}</small>
+                {/if}
                 {#if damagedLedgers.action.kind === "deleted"}
                   <small id="damaged-ledger-deleted" class="setting-hint" role="status">{$t.settings.damagedLedgerDeleted}</small>
                 {/if}
@@ -1222,11 +1225,16 @@
                 {@const confirming = action.kind === "confirming" && action.id === ledger.id}
                 {@const date = backupDate(ledger.setAsideAt, $systemTimezone)}
                 <div class="damaged-ledger" data-damaged-ledger={ledger.id}>
-                  <small class="setting-hint">
-                    {ledger.bytes === null
-                      ? $t.settings.damagedLedgerStatusUnmeasured(date)
-                      : $t.settings.damagedLedgerStatus(date, megabytes(ledger.bytes))}
-                  </small>
+                  <div class="setting-label-group">
+                    <small class="setting-hint">
+                      {ledger.bytes === null
+                        ? $t.settings.damagedLedgerStatusUnmeasured(date)
+                        : $t.settings.damagedLedgerStatus(date, megabytes(ledger.bytes))}
+                    </small>
+                    {#if !ledger.deletable}
+                      <small id={`damaged-ledger-held-${ledger.id}`} class="setting-hint warning-hint">{$t.settings.damagedLedgerHeld[ledger.hold]}</small>
+                    {/if}
+                  </div>
                   {#if !confirming}
                     <div class="onboarding-setting-actions">
                       <button
@@ -1239,7 +1247,8 @@
                       <button
                         class="button"
                         type="button"
-                        disabled={dataActionPending}
+                        disabled={dataActionPending || !ledger.deletable}
+                        aria-describedby={ledger.deletable ? undefined : `damaged-ledger-held-${ledger.id}`}
                         aria-busy={action.kind === "deleting" && action.id === ledger.id}
                         onclick={() => (damagedLedgers = confirmDamagedLedgerDelete(damagedLedgers, ledger.id))}
                       >{$t.settings.damagedLedgerDelete}</button>

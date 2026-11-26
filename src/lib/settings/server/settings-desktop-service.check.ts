@@ -71,9 +71,10 @@ function harness(stored: AutomationSettingsFile = {}, overrides: Partial<Setting
     damagedLedgers: {
       list: async () => [],
       reveal: () => {},
-      remove: async () => {},
-      heldByRestore: async () => false,
+      remove: async () => ({ kind: "removed" }),
+      heldByRestore: async () => null,
     },
+    log: (code, detail) => { calls.push(["log", code, detail]); },
     cleanupRestore: {
       requested: async () => false,
       request: async (path) => { calls.push(["restore.request", path]); },
@@ -394,6 +395,19 @@ test("the main process refuses to delete the Cleanup Backup while a cleanup runs
   running = false;
   assert.equal(await service.deleteCleanupBackup(), null);
   assert.deepEqual(removed, [backup.path], "and still deleted");
+});
+
+test("a Cleanup Backup that cannot be deleted reaches the renderer and the log as a code, never its path", async () => {
+  const backup = { path: "/private/ledger.before-compaction-2026-11-01T00-00-00Z", bytes: 9, takenAt: "2026-11-01T00:00:00.000Z", expiresAt: "2026-12-31T00:00:00.000Z", restorable: true };
+  const { service, calls } = harness({}, {
+    cleanupBackup: {
+      newest: async () => backup,
+      reveal: () => {},
+      remove: async (path) => { throw Object.assign(new Error(`EPERM: operation not permitted, rename '${path}'`), { code: "EPERM" }); },
+    },
+  });
+  await assert.rejects(() => service.deleteCleanupBackup(), (error: Error) => error.message === "cleanup-backup-delete-failed: EPERM");
+  assert.deepEqual(calls.filter(([name]) => name === "log"), [["log", "cleanup-backup-delete-failed", "EPERM"]]);
 });
 
 const RESTORABLE = {

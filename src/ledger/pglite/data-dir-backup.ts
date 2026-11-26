@@ -257,12 +257,20 @@ export async function readDamagedLedgers(dataDir: string): Promise<DamagedLedger
 }
 
 /**
+ * How a damaged ledger's removal ended. `left-for-sweep`: it was renamed to
+ * `.partial`, so it is no damaged ledger any more and no longer listed, but
+ * its removal failed with `code`; the next open removes it.
+ */
+export type DamagedLedgerRemoval = Readonly<{ kind: "removed" }> | Readonly<{ kind: "left-for-sweep"; code: string }>;
+
+/**
  * Removes one damaged ledger. It is renamed to `.partial` first, as a backup
  * is, so a removal cut short never leaves part of a ledger under a damaged
  * ledger's name, which Settings would show as one; the next open removes
- * the rest (`removePartialLedgerBackups`).
+ * the rest (`removePartialLedgerBackups`). Throws only when the rename, or
+ * clearing its target first, fails: then nothing has moved.
  */
-export async function removeDamagedLedger(ledger: string): Promise<void> {
+export async function removeDamagedLedger(ledger: string): Promise<DamagedLedgerRemoval> {
   const partial = `${ledger}${PARTIAL_SUFFIX}`;
   // A removal cut short earlier may have left this name; a folder renamed onto it must find it free.
   await rm(partial, { recursive: true, force: true });
@@ -271,7 +279,13 @@ export async function removeDamagedLedger(ledger: string): Promise<void> {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
-  await rm(partial, { recursive: true, force: true });
+  try {
+    await rm(partial, { recursive: true, force: true });
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | null)?.code;
+    return { kind: "left-for-sweep", code: typeof code === "string" ? code : "unknown" };
+  }
+  return { kind: "removed" };
 }
 
 /**

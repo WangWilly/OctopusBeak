@@ -22,12 +22,21 @@ export type DamagedLedgersBridge = Readonly<{
 
 export const NO_DAMAGED_LEDGERS: DamagedLedgersView = { ledgers: [], action: { kind: "idle" } };
 
-/** Whether the row shows: while a damaged ledger exists, and after the last one is deleted, to say so. */
-export function damagedLedgersShown(view: DamagedLedgersView): boolean {
-  return view.ledgers.length > 0 || view.action.kind === "deleted";
+/**
+ * What the row shows: `ledgers` while a damaged ledger exists, with the
+ * hint about what one may hold; `all-deleted` once the last is deleted,
+ * only to say so; `hidden` otherwise.
+ */
+export function damagedLedgersShown(view: DamagedLedgersView): "ledgers" | "all-deleted" | "hidden" {
+  if (view.ledgers.length > 0) return "ledgers";
+  return view.action.kind === "deleted" ? "all-deleted" : "hidden";
 }
 
-/** The ledgers as read now; a step under way for one that is gone ends. A failed read keeps what was read last. */
+/**
+ * The ledgers as read now. A step under way for one that is gone, or that a
+ * restore file now keeps, ends: its line says why instead. A failed read
+ * keeps what was read last.
+ */
 export async function readDamagedLedgers(bridge: DamagedLedgersBridge, view: DamagedLedgersView): Promise<DamagedLedgersView> {
   let ledgers: readonly DamagedLedgerDto[];
   try {
@@ -36,13 +45,13 @@ export async function readDamagedLedgers(bridge: DamagedLedgersBridge, view: Dam
     return view;
   }
   const { action } = view;
-  const kept = !("id" in action) || ledgers.some((ledger) => ledger.id === action.id);
+  const kept = !("id" in action) || ledgers.some((ledger) => ledger.id === action.id && ledger.deletable);
   return { ledgers, action: kept ? action : { kind: "idle" } };
 }
 
-/** Opens the confirm for one ledger; another's confirm or notice closes. */
+/** Opens the confirm for one ledger; another's confirm or notice closes. One a restore file keeps has no Delete to confirm. */
 export function confirmDamagedLedgerDelete(view: DamagedLedgersView, id: string): DamagedLedgersView {
-  if (view.action.kind === "deleting" || !view.ledgers.some((ledger) => ledger.id === id)) return view;
+  if (view.action.kind === "deleting" || !view.ledgers.some((ledger) => ledger.id === id && ledger.deletable)) return view;
   return { ...view, action: { kind: "confirming", id } };
 }
 

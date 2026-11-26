@@ -201,7 +201,18 @@ export type DamagedLedgerDto = Readonly<{
   /** null when the folder could not be measured; it can still be deleted. */
   bytes: number | null;
   setAsideAt: string;
-}>;
+}> & (
+  | Readonly<{ deletable: true }>
+  /** A restore file keeps it until the restore ends or a Canonical Reset removes the file; trying again will not help. */
+  | Readonly<{ deletable: false; hold: DamagedLedgerHold }>
+);
+
+/**
+ * Why a damaged ledger cannot be deleted for now. `restore-under-way`: a
+ * restore not yet finished names it. `restore-unreadable`: a restore file
+ * cannot be read, so it may name it.
+ */
+export type DamagedLedgerHold = "restore-under-way" | "restore-unreadable";
 
 /** How the last Cleanup Restore ended (ADR 0157); `takenAt` is the restored backup's time. No path reaches the renderer. */
 export type CleanupRestoreOutcomeDto =

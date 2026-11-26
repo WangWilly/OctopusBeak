@@ -60,7 +60,7 @@ import { LEDGER_BASELINE_VERSIONS } from "../src/ledger/pglite/baseline-versions
 import {
   ledgerRestoreRequested,
   requestLedgerRestore,
-  restoreMayName,
+  restoreHold,
   resumeLedgerRestore,
   takeFailedRestoreBackup,
   takeLedgerRestoreOutcome,
@@ -798,8 +798,9 @@ async function start() {
       list: () => readDamagedLedgers(ledgerDataDir),
       reveal: (ledger) => shell.showItemInFolder(ledger),
       remove: removeDamagedLedger,
-      heldByRestore: (ledger) => restoreMayName(ledgerDataDir, path.basename(ledger)),
+      heldByRestore: (ledger) => restoreHold(ledgerDataDir, path.basename(ledger)),
     },
+    log: (code, detail) => console.error(code, ...(detail === undefined ? [] : [detail])),
     cleanupRestore: {
       requested: () => ledgerRestoreRequested(ledgerDataDir),
       request: (backup) => requestLedgerRestore(ledgerDataDir, backup, {

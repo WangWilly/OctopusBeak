@@ -12,6 +12,7 @@ import {
   parseLedgerBackupVersions,
   type LedgerBackupVersions,
 } from "../src/ledger/pglite/data-dir-backup.ts";
+import type { DamagedLedgerHold } from "../src/lib/desktop/api.ts";
 
 /**
  * The Cleanup Restore of ADR 0157: the backup takes the ledger's place at
@@ -269,26 +270,29 @@ export async function ledgerRestoreRequested(dataDir: string, fs: LedgerRestoreF
 }
 
 /**
- * Whether a restore file may name the folder `name` beside the ledger: a
- * pending or opened file that names it, or one that cannot be read, or a
- * kept unreadable file, which may have named anything. A restore from the
- * unusable-ledger dialog names its `.damaged-` folder, which a swap back
- * puts in the ledger's place again, so Settings deletes none of these.
+ * Why a restore file keeps the folder `name` beside the ledger, or null when
+ * none does. `restore-under-way`: a pending or opened file names it as its
+ * backup or aside. `restore-unreadable`: a kept unreadable file exists, or a
+ * pending or opened one cannot be read or parsed, so it may name anything.
+ * A restore from the unusable-ledger dialog names its `.damaged-` folder,
+ * which a swap back puts in the ledger's place again, so Settings deletes
+ * none of these.
  */
-export async function restoreMayName(dataDir: string, name: string, fs: LedgerRestoreFs = NODE_RESTORE_FS): Promise<boolean> {
+export async function restoreHold(dataDir: string, name: string, fs: LedgerRestoreFs = NODE_RESTORE_FS): Promise<DamagedLedgerHold | null> {
   dataDir = resolve(dataDir);
   try {
-    if (await fs.kind(ledgerRestoreUnreadablePath(dataDir)) !== null) return true;
+    if (await fs.kind(ledgerRestoreUnreadablePath(dataDir)) !== null) return "restore-unreadable";
     for (const path of [ledgerRestorePendingPath(dataDir), ledgerRestoreOpenedPath(dataDir)]) {
       const text = await fs.readText(path);
       if (text === null) continue;
       const restore = parsePending(dataDir, text);
-      if (!restore || restore.aside === name || restore.backup === name) return true;
+      if (!restore) return "restore-unreadable";
+      if (restore.aside === name || restore.backup === name) return "restore-under-way";
     }
   } catch {
-    return true;
+    return "restore-unreadable";
   }
-  return false;
+  return null;
 }
 
 function parseOutcome(text: string | null): LedgerRestoreOutcome | null {
