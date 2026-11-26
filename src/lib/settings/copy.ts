@@ -121,7 +121,7 @@ const en = {
     },
     resetLedgerPartHints: {
       financial:
-        "Every account, transaction, and statement collected from every source, including e-invoices, which do not come from a financial institution, and the categories and transfer pairings you set on them. The cleanup backup and any damaged ledger set aside earlier are deleted too. Sources, schedules, exchange rates, and settings are kept.",
+        "Every account, transaction, and statement collected from every source, including e-invoices, which do not come from a financial institution, and the categories and transfer pairings you set on them. The cleanup backup is deleted too, and so is any damaged ledger set aside earlier, with everything in it: manual assets and other data you entered that only it still holds cannot be recovered afterwards. Sources, schedules, exchange rates, and settings are kept.",
       preview: "Every balance and transaction preview sources collected. Verified data is kept, and preview sources collect again on their next sync.",
       manual:
         "Every asset you entered by hand, with its valuations and transactions. Categories and pairings you set on collected transactions belong to financial data from financial institutions.",
@@ -344,7 +344,7 @@ const zh: typeof en = {
       "sign-in": "金融機構的登入資料",
     },
     resetLedgerPartHints: {
-      financial: "所有來源收集的帳戶、交易與帳單，包括不是來自金融機構的電子發票，以及你在這些交易上設定的分類與轉帳配對；清理應用資料的備份，以及先前因損壞而移到一旁的帳本，也會一併刪除。來源、排程、匯率與設定會保留。",
+      financial: "所有來源收集的帳戶、交易與帳單，包括不是來自金融機構的電子發票，以及你在這些交易上設定的分類與轉帳配對；清理應用資料的備份也會一併刪除；先前因損壞而移到一旁的帳本也會連同裡面所有內容刪除，只存在那裡的手動資產與其他你輸入的資料之後無法取回。來源、排程、匯率與設定會保留。",
       preview: "預覽來源收集的所有餘額與交易。已驗證的資料會保留，預覽來源下次同步時會重新收集。",
       manual: "你手動輸入的所有資產，以及估值與收支紀錄。你在收集的交易上設定的分類與配對屬於「金融機構的財務資料」。",
       "sign-in": "所有來源的登入資料、登入狀態與信任裝置註冊。每個來源都要重新輸入登入資料，需要時也要重新註冊裝置，才能再次同步。保留財務資料、來源與排程。",

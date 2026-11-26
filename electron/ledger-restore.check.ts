@@ -639,7 +639,7 @@ test("nothing that removes backups touches the one a restore under way names", (
   assert.equal((await readLedgerCleanupBackup(ledger.dataDir, CURRENT))?.restorable, true, "given back, it can still be restored");
 }));
 
-test("a Canonical Reset removes every ledger a restore set aside, and the restore's files", () => withLedger(async (ledger) => {
+test("a Canonical Reset removes every ledger set aside, replaced or damaged, and the restore's files", () => withLedger(async (ledger) => {
   const orphan = `${ledger.dataDir}.replaced-2026-11-02T00-00-00Z`;
   store(orphan, "before the restore");
   for (const stamp of ["2026-11-02T00-00-00Z", "2026-11-02T00-00-00Z-1"]) store(`${ledger.dataDir}.damaged-${stamp}`, "damaged");
