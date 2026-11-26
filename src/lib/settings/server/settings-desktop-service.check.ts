@@ -68,6 +68,12 @@ function harness(stored: AutomationSettingsFile = {}, overrides: Partial<Setting
       reveal: () => {},
       remove: async () => {},
     },
+    damagedLedgers: {
+      list: async () => [],
+      reveal: () => {},
+      remove: async () => {},
+      heldByRestore: async () => false,
+    },
     cleanupRestore: {
       requested: async () => false,
       request: async (path) => { calls.push(["restore.request", path]); },

@@ -50,11 +50,17 @@ import { applyOctopusBeakAppIdentity } from "./app-identity.ts";
 import { openSafeStorageCredentialStore } from "./credential-codec.ts";
 import { askAboutStuckRestore, recoverUnusableLedger } from "./ledger-recovery.ts";
 import { isLedgerUnusable } from "./ledger-unusable.ts";
-import { readLedgerCleanupBackup, removeLedgerBackup } from "../src/ledger/pglite/data-dir-backup.ts";
+import {
+  readDamagedLedgers,
+  readLedgerCleanupBackup,
+  removeDamagedLedger,
+  removeLedgerBackup,
+} from "../src/ledger/pglite/data-dir-backup.ts";
 import { LEDGER_BASELINE_VERSIONS } from "../src/ledger/pglite/baseline-versions.ts";
 import {
   ledgerRestoreRequested,
   requestLedgerRestore,
+  restoreMayName,
   resumeLedgerRestore,
   takeFailedRestoreBackup,
   takeLedgerRestoreOutcome,
@@ -786,6 +792,13 @@ async function start() {
       newest: () => readLedgerCleanupBackup(ledgerDataDir, LEDGER_BASELINE_VERSIONS),
       reveal: (backup) => shell.showItemInFolder(backup),
       remove: removeLedgerBackup,
+    },
+    // Listed, measured, revealed and deleted here; the renderer names one only by the time in its name.
+    damagedLedgers: {
+      list: () => readDamagedLedgers(ledgerDataDir),
+      reveal: (ledger) => shell.showItemInFolder(ledger),
+      remove: removeDamagedLedger,
+      heldByRestore: (ledger) => restoreMayName(ledgerDataDir, path.basename(ledger)),
     },
     cleanupRestore: {
       requested: () => ledgerRestoreRequested(ledgerDataDir),

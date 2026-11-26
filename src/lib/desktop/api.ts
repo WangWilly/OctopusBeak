@@ -194,6 +194,15 @@ export type CleanupBackupDto = Readonly<{
   restorable: boolean;
 }>;
 
+/** A damaged ledger set aside by the unusable-ledger dialog (ADR 0150); no path reaches the renderer. */
+export type DamagedLedgerDto = Readonly<{
+  /** The UTC time in the folder's name, which the main process checks against the folders it lists. */
+  id: string;
+  /** null when the folder could not be measured; it can still be deleted. */
+  bytes: number | null;
+  setAsideAt: string;
+}>;
+
 /** How the last Cleanup Restore ended (ADR 0157); `takenAt` is the restored backup's time. No path reaches the renderer. */
 export type CleanupRestoreOutcomeDto =
   | Readonly<{ status: "restored"; takenAt: string }>
@@ -328,6 +337,15 @@ export type OctopusBeakApi = {
     restoreCleanupBackup(): Promise<void>;
     /** How the last restore ended, once; null when there is nothing new to say. */
     takeCleanupRestoreOutcome(): Promise<CleanupRestoreOutcomeDto | null>;
+    /** The damaged ledgers set aside beside the ledger, newest first. */
+    damagedLedgers(): Promise<readonly DamagedLedgerDto[]>;
+    /** Shows the damaged ledger `id` names in Finder. */
+    revealDamagedLedger(id: string): Promise<void>;
+    /**
+     * Deletes the damaged ledger `id` names; resolves with those left. Refused while a cleanup or a reset runs,
+     * once a restore is asked for, and while a restore file names that folder or cannot be read.
+     */
+    deleteDamagedLedger(id: string): Promise<readonly DamagedLedgerDto[]>;
     /** Starts every enabled source, as scheduled collection would. */
     collectAllSources(): Promise<AutomationRunManyResult>;
   };

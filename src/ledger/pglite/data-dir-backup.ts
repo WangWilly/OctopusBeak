@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { access, cp, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { access, cp, lstat, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { directoryBytes, fsyncDirectory } from "./data-dir-files.ts";
@@ -107,7 +107,8 @@ export function ledgerBackupPath(dataDir: string, now: Date, exists: (path: stri
 
 /**
  * Removes the `.partial` copies a backup cut short left beside `dataDir`,
- * such as one the app quit during. Never touches a finished backup.
+ * such as one the app quit during, and what a removal cut short left of a
+ * backup or a damaged ledger. Never touches a finished backup.
  *
  * A worker killed while `cp` copies leaves `cp` running, and it would go on
  * writing the copy while it is removed. So the `cp` named in the copy's pid
@@ -131,6 +132,12 @@ export async function removePartialLedgerBackups(dataDir: string): Promise<void>
     await stopCopyInto(partial);
     await rm(partial, { recursive: true, force: true });
     await rm(`${partial}${PID_SUFFIX}`, { force: true });
+  }
+  // A damaged ledger whose removal from Settings was cut short after its rename.
+  for (const name of names) {
+    if (name.endsWith(PARTIAL_SUFFIX) && isDamagedLedgerName(dataDir, name.slice(0, -PARTIAL_SUFFIX.length))) {
+      await rm(join(dirname(dataDir), name), { recursive: true, force: true });
+    }
   }
   // A versions file whose backup is gone: written before a rename that never came, or left by a removal cut short.
   // A restore under way has renamed its backup into the ledger's place, and keeps that one's file until it ends.
@@ -200,6 +207,71 @@ const DAMAGED_INFIX = ".damaged-";
 export function isDamagedLedgerName(dataDir: string, name: string): boolean {
   const prefix = `${basename(resolve(dataDir))}${DAMAGED_INFIX}`;
   return name.startsWith(prefix) && STAMP.test(name.slice(prefix.length));
+}
+
+/** A damaged ledger beside this one. `id` is the time in its name, which is all the renderer is told of it. */
+export type DamagedLedgerEntry = Readonly<{ id: string; path: string; setAsideAt: Date }>;
+
+/** The damaged ledgers Settings shows (ADR 0150). `path` stays on the host. */
+export type DamagedLedger = DamagedLedgerEntry & Readonly<{
+  /** null when the folder could not be measured; it can still be deleted. */
+  bytes: number | null;
+}>;
+
+/** The time in a damaged ledger's name, or null when `name` is not one. */
+function damagedLedgerSetAsideAt(dataDir: string, name: string): Date | null {
+  if (!isDamagedLedgerName(dataDir, name)) return null;
+  const stamp = STAMP.exec(name.slice(`${basename(resolve(dataDir))}${DAMAGED_INFIX}`.length))!;
+  const setAsideAt = new Date(`${stamp[1]}T${stamp[2]}:${stamp[3]}:${stamp[4]}Z`);
+  return Number.isNaN(setAsideAt.getTime()) ? null : setAsideAt;
+}
+
+/**
+ * The damaged ledgers beside `dataDir`, newest first: folders named
+ * `<ledger>.damaged-<UTC time>[-N]`, never a link, whatever it points to.
+ */
+export async function listDamagedLedgers(dataDir: string): Promise<DamagedLedgerEntry[]> {
+  dataDir = resolve(dataDir);
+  const prefix = `${basename(dataDir)}${DAMAGED_INFIX}`;
+  let names: string[];
+  try {
+    names = await readdir(dirname(dataDir));
+  } catch {
+    return [];
+  }
+  const ledgers: DamagedLedgerEntry[] = [];
+  for (const name of names) {
+    const setAsideAt = damagedLedgerSetAsideAt(dataDir, name);
+    if (!setAsideAt) continue;
+    const path = join(dirname(dataDir), name);
+    if (!(await lstat(path).then((entry) => entry.isDirectory(), () => false))) continue;
+    ledgers.push({ id: name.slice(prefix.length), path, setAsideAt });
+  }
+  return ledgers.sort((a, b) => b.setAsideAt.getTime() - a.setAsideAt.getTime() || b.path.localeCompare(a.path));
+}
+
+/** The damaged ledgers with their sizes. One that cannot be measured is listed without a size. */
+export async function readDamagedLedgers(dataDir: string): Promise<DamagedLedger[]> {
+  const ledgers = await listDamagedLedgers(dataDir);
+  return Promise.all(ledgers.map(async (ledger) => ({ ...ledger, bytes: await directoryBytes(ledger.path).catch(() => null) })));
+}
+
+/**
+ * Removes one damaged ledger. It is renamed to `.partial` first, as a backup
+ * is, so a removal cut short never leaves part of a ledger under a damaged
+ * ledger's name, which Settings would show as one; the next open removes
+ * the rest (`removePartialLedgerBackups`).
+ */
+export async function removeDamagedLedger(ledger: string): Promise<void> {
+  const partial = `${ledger}${PARTIAL_SUFFIX}`;
+  // A removal cut short earlier may have left this name; a folder renamed onto it must find it free.
+  await rm(partial, { recursive: true, force: true });
+  try {
+    await rename(ledger, partial);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  await rm(partial, { recursive: true, force: true });
 }
 
 /**
