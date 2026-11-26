@@ -107,7 +107,7 @@ async function restoreOffer(dataDir: string) {
     backup,
     restore: {
       takenAt: new Date(newest.takenAt),
-      request: (aside: string) => requestLedgerRestore(dataDir, newest.path, { from: "unusable", aside, current: VERSIONS }),
+      request: (aside: string) => requestLedgerRestore(dataDir, newest.path, { from: "unusable", aside, current: VERSIONS, appVersion: "1.0.0", now: () => NOW }),
     },
   };
 }
@@ -138,7 +138,7 @@ test("restore moves the unusable ledger aside as damaged and puts the backup in 
   assert.deepEqual(calls, ["relaunch", "exit 0"]);
   assert.ok(existsSync(join(dataDir, "PG_VERSION")), "the dialog only records the restore; nothing opens the folders until the next launch");
 
-  const launch = await resumeLedgerRestore(dataDir, { current: VERSIONS });
+  const launch = await resumeLedgerRestore(dataDir, { current: VERSIONS, appVersion: "1.0.0", now: () => NOW });
   assert.equal(launch.kind, "opening");
   assert.equal(readFileSync(join(damaged, "PG_VERSION"), "utf8"), "17\n", "the unusable ledger is set aside untouched");
   assert.equal(readFileSync(join(dataDir, "PG_VERSION"), "utf8"), "backup\n");
@@ -151,8 +151,8 @@ test("restore moves the unusable ledger aside as damaged and puts the backup in 
 test("the dialog offers the restore in Traditional Chinese too", () => withLedger(async (dataDir) => {
   const { restore } = await restoreOffer(dataDir);
   const asked: Parameters<LedgerRecoveryDeps["ask"]>[0][] = [];
-  await recoverUnusableLedger(dataDir, { ...deps(3, [], asked), locale: "zh-TW", restore });
-  assert.match(asked[0]!.buttons[2]!, /^還原 \d{4}\/\d{2}\/\d{2} 的備份$/u);
+  await recoverUnusableLedger(dataDir, { ...deps(3, [], asked), locale: "zh-TW", restore, formatDate: () => "2026/11/01" });
+  assert.equal(asked[0]!.buttons[2], "還原 2026/11/01 的備份", "the day as Settings writes it, in the App's time zone");
   assert.match(asked[0]!.detail, /備份之後新增或收集的資料會遺失/u);
 }));
 

@@ -87,6 +87,8 @@ export type LedgerRecoveryDeps = Readonly<{
    * puts the backup in its place.
    */
   restore?: Readonly<{ takenAt: Date; request(aside: string): Promise<void> }> | null;
+  /** The day a backup was taken, as Settings writes it; the system clock's day when absent. */
+  formatDate?(value: Date): string;
 }>;
 
 /** Where a set-aside ledger goes: beside the original, named by when it was set aside. */
@@ -114,7 +116,7 @@ export async function recoverUnusableLedger(
   const exists = deps.exists ?? existsSync;
   const backupPath = damagedLedgerPath(dataDir, deps.now(), exists);
   const restore = deps.restore ?? null;
-  const date = restore ? localDate(restore.takenAt) : "";
+  const date = restore ? (deps.formatDate ?? localDate)(restore.takenAt) : "";
   const choices: LedgerRecoveryChoice[] = restore ? ["retry", "rebuild", "restore", "quit"] : ["retry", "rebuild", "quit"];
   const labels: Record<LedgerRecoveryChoice, string> = { retry: copy.retry, rebuild: copy.rebuild, restore: copy.restore(date), quit: copy.quit };
   const index = await deps.ask({

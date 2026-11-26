@@ -167,6 +167,46 @@ export function ledgerRestorePendingPath(dataDir: string): string {
   return `${resolve(dataDir)}${RESTORE_PENDING_SUFFIX}`;
 }
 
+/** The pending file once the restored store has opened: renamed, so the signal needs no free space. */
+export function ledgerRestoreOpenedPath(dataDir: string): string {
+  return `${resolve(dataDir)}.restore-opened`;
+}
+
+/** How the last restore ended, kept until Settings reads it. */
+export function ledgerRestoreOutcomePath(dataDir: string): string {
+  return `${resolve(dataDir)}.restore-outcome`;
+}
+
+const REPLACED_INFIX = ".replaced-";
+
+/** Whether `name` is a bare name of the form a restore from Settings sets the ledger aside under. */
+export function isReplacedLedgerName(dataDir: string, name: string): boolean {
+  const prefix = `${basename(resolve(dataDir))}${REPLACED_INFIX}`;
+  return name.startsWith(prefix) && STAMP.test(name.slice(prefix.length));
+}
+
+/**
+ * Removes what a Cleanup Restore leaves beside the ledger: its files first,
+ * so nothing names a folder any more, then every ledger a restore set aside
+ * as `.replaced-`, which holds the financial data of before the restore.
+ */
+export async function removeLedgerRestoreLeftovers(dataDir: string): Promise<void> {
+  dataDir = resolve(dataDir);
+  for (const file of [ledgerRestorePendingPath(dataDir), ledgerRestoreOpenedPath(dataDir), ledgerRestoreOutcomePath(dataDir)]) {
+    await rm(file, { force: true });
+    await rm(`${file}.tmp`, { force: true });
+  }
+  let names: string[];
+  try {
+    names = await readdir(dirname(dataDir));
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (isReplacedLedgerName(dataDir, name)) await rm(join(dirname(dataDir), name), { recursive: true, force: true });
+  }
+}
+
 /**
  * The backup a Cleanup Restore under way names, or null when none is under
  * way. Nothing that removes backups touches it: it is the restore's to use
@@ -245,11 +285,12 @@ export async function removeExpiredLedgerBackups(dataDir: string, now: Date): Pr
 }
 
 /**
- * Removes every backup, finished or partial: a Canonical Reset leaves none
- * that holds the deleted data. Settings refuses a reset once a restore is
- * asked for, so none is under way here.
+ * Removes every backup, finished or partial, and every ledger a restore set
+ * aside: a Canonical Reset leaves none that holds the deleted data. Settings
+ * refuses a reset once a restore is asked for, so none is under way here.
  */
 export async function removeAllLedgerBackups(dataDir: string): Promise<void> {
+  await removeLedgerRestoreLeftovers(dataDir);
   await removePartialLedgerBackups(dataDir);
   for (const { path } of await listLedgerBackups(dataDir)) await removeLedgerBackup(path);
   await removePartialLedgerBackups(dataDir);
