@@ -213,7 +213,7 @@ test("the cleanup reaches the renderer as sizes, phase and status only, and move
   const version = dataVersions.snapshot();
   assert.deepEqual(
     await service.ledgerCleanupEstimate(),
-    { redundantBytes: 390, temporaryBytes: 120, neededBytes: 800, freeBytes: 5_000, backup: { bytes: 1_000, neededBytes: 1_200 } },
+    { redundantBytes: 390, temporaryBytes: 120, neededBytes: 800, freeBytes: 5_000, backup: { kind: "room", bytes: 1_000, neededBytes: 1_200 } },
   );
   assert.deepEqual(await service.ledgerCleanupStatus(), { running: true, progress: { phase: "compacting", index: 2, count: 3 } },
     "no subject, record kind, namespace or row count");
@@ -290,4 +290,30 @@ test("the Cleanup Backup reaches the renderer without its path; the main process
   assert.equal(await service.cleanupBackup(), null);
   await service.revealCleanupBackup();
   assert.equal(revealed.length, 1, "nothing to reveal");
+});
+
+test("the main process refuses to delete the Cleanup Backup while a cleanup runs, whatever the renderer shows", async () => {
+  const backup = { path: "/ledger.before-compaction-2026-11-01T00-00-00Z", bytes: null, takenAt: "2026-11-01T00:00:00.000Z", expiresAt: "2026-12-31T00:00:00.000Z", restorable: true };
+  let running = true;
+  const removed: string[] = [];
+  const { service } = harness({}, {
+    ledgerCleanup: {
+      estimate: async () => { throw new Error("unused"); },
+      run: async () => ({ status: "already-running" }),
+      status: async () => (running ? { running: true, progress: { phase: "backing-up" } } : { running: false, last: null }),
+      stop: async () => true,
+    },
+    cleanupBackup: {
+      newest: async () => (removed.length > 0 ? null : backup),
+      reveal: () => {},
+      remove: async (path) => { removed.push(path); },
+    },
+  });
+  await assert.rejects(() => service.deleteCleanupBackup(), /while a cleanup runs/u);
+  assert.deepEqual(removed, [], "nothing was removed");
+  assert.deepEqual(await service.cleanupBackup(), { bytes: null, takenAt: backup.takenAt, expiresAt: backup.expiresAt, restorable: true },
+    "a backup that could not be measured is still shown");
+  running = false;
+  assert.equal(await service.deleteCleanupBackup(), null);
+  assert.deepEqual(removed, [backup.path], "and still deleted");
 });

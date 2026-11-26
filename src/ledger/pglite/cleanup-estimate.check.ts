@@ -6,7 +6,8 @@
  */
 import assert from "node:assert/strict";
 import test from "node:test";
-import { combineLedgerCleanupEstimate, estimateLedgerCleanup } from "./cleanup-estimate.ts";
+import { cleanupReclaimBytesNeeded, combineLedgerCleanupEstimate, estimateLedgerCleanup } from "./cleanup-estimate.ts";
+import { cleanupBackupBytesNeeded, ledgerBackupBytesNeeded } from "./data-dir-backup.ts";
 import { runLedgerCompaction } from "./compaction-job.ts";
 import type { CompactionPlan, CompactionTablePlan } from "./compaction-plan.ts";
 import { legacyStore } from "./compaction-fixtures.ts";
@@ -76,16 +77,44 @@ test("a compacted store is only reclaimed; one the planner cannot read removes n
   assert.deepEqual([clean.reclaimNeededBytes, clean.temporaryBytes, clean.freeBytes], [0, 0, null]);
 });
 
+test("with a backup the run needs the backup's room and the reclaim's together, since the backup stays on the disk during the reclaim", () => {
+  const GiB = 1024 * MiB;
+  // A 2 GB ledger whose largest table keeps 500 MB after the compaction, on a disk with 2.6 GB free.
+  const reserve = cleanupReclaimBytesNeeded(null, {
+    ...reclaim,
+    tables: [{ table: "public.big", bytes: 800 * MiB, reclaimableBytes: 300 * MiB }],
+    measured: [{ table: "public.big", bytes: 800 * MiB, compactBytes: 500 * MiB }],
+  });
+  assert.equal(reserve, 3 * 500 * MiB + LEDGER_RECLAIM_HEADROOM_BYTES);
+  const free = 2.6 * GiB;
+  assert.ok(reserve <= free, "the reclaim alone fits");
+  assert.ok(ledgerBackupBytesNeeded(2 * GiB) <= free, "the backup alone fits");
+  assert.equal(cleanupBackupBytesNeeded(2 * GiB, reserve), ledgerBackupBytesNeeded(2 * GiB) + reserve);
+  assert.ok(cleanupBackupBytesNeeded(2 * GiB, reserve) > free, "together they do not, so no backup is offered");
+});
+
 test("the estimate runs the dry run until the compaction's markers are written, and then only the reclaim's estimate", async () => {
   const { store } = await legacyStore();
   try {
-    const before = await estimateLedgerCleanup(store, { minBytes: 0, minShare: 0 });
+    const reserves: number[] = [];
+    const before = await estimateLedgerCleanup(store, {
+      minBytes: 0,
+      minShare: 0,
+      backupRoom: async (reserveBytes) => {
+        reserves.push(reserveBytes);
+        return { storeBytes: 10 * MiB, neededBytes: cleanupBackupBytesNeeded(10 * MiB, reserveBytes), freeBytes: 7_000 * MiB };
+      },
+    });
     assert.equal(before.compaction, "planned");
+    assert.deepEqual(reserves, [before.reclaimNeededBytes], "the backup's room is asked with the run's need on top");
+    assert.equal(before.backup !== null && before.backup !== "unreadable" && before.backup.neededBytes,
+      ledgerBackupBytesNeeded(10 * MiB) + before.reclaimNeededBytes);
     assert.ok(before.redundantBytes > 0, "an old-shaped store holds redundant rows");
     assert.ok(before.reclaimNeededBytes > LEDGER_RECLAIM_HEADROOM_BYTES);
     assert.equal((await runLedgerCompaction(store)).status, "compacted");
-    const after = await estimateLedgerCleanup(store);
-    assert.deepEqual([after.compaction, after.redundantBytes], ["compacted", 0]);
+    const after = await estimateLedgerCleanup(store, { backupRoom: async () => { throw new Error("EIO"); } });
+    assert.deepEqual([after.compaction, after.redundantBytes, after.backup], ["compacted", 0, "unreadable"],
+      "a room that could not be read is said, not hidden");
   } finally {
     await store.close();
   }

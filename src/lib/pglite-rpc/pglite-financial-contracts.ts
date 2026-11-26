@@ -60,7 +60,6 @@ import type {
 import type { TdccAdmittedFundAccount } from "../../ledger/canonical/tdcc-investment-admission.ts";
 import type { AccountIdentityContinuity, AccountIdentityContinuityRequest } from "../../ledger/pglite/account-identity-continuity.ts";
 import type { SpendingPageVersion } from "../../ledger/pglite/spending-page.ts";
-import type { CompactionPlanResult } from "../../ledger/pglite/compaction-plan.ts";
 import type { LedgerCompactionJobResult, LedgerCompactionRequest, LedgerCompactionStatus } from "../../ledger/pglite/compaction-job.ts";
 import type { LedgerCleanupBackup } from "../../ledger/pglite/data-dir-backup.ts";
 import type { LedgerCleanupEstimate } from "../../ledger/pglite/cleanup-estimate.ts";
@@ -353,17 +352,6 @@ export const PGLITE_FINANCIAL_CONTRACTS = Object.freeze({
   "financial.canonical.cardAccountNamespaces": operation<[], readonly string[]>(
     (args) => args.length === 0,
     { lane: "background" },
-  ),
-  /**
-   * What a ledger compaction would remove, read without changing anything,
-   * one step at a time. Host-only: no renderer route and no workflow access.
-   * Settings shows its estimate before a compaction, only when the owner asks
-   * for one. One large subject's step can hold the ledger for seconds, and
-   * for tens of seconds on a store of several GB (ADR 0154).
-   */
-  "financial.canonical.compactionPlan": operation<[], CompactionPlanResult>(
-    (args) => args.length === 0,
-    { lane: "background-steps" },
   ),
   /**
    * The App Data Cleanup's estimate (ADR 0156): the compaction's dry run,

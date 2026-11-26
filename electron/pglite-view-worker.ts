@@ -143,7 +143,7 @@ export async function startPGliteViewWorker(
     ledgerFolder: { bytes: () => directoryBytes(ownedDataDir), sync: () => fsyncDirectory(ownedDataDir) },
     // A temporary ledger, removed when the worker closes, has nothing worth backing up.
     ledgerBackup: ownsDataDir ? undefined : {
-      room: () => ledgerBackupRoom(ownedDataDir, freeDiskBytes),
+      room: (reserveBytes) => ledgerBackupRoom(ownedDataDir, freeDiskBytes, reserveBytes),
       take: (context) => backUpLedger(database, ownedDataDir, { freeBytes: freeDiskBytes, exists: existsSync, versions, ...context }),
       remove: removeLedgerBackup,
       newest: () => readLedgerCleanupBackup(ownedDataDir, versions),

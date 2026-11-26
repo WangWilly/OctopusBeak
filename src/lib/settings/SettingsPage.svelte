@@ -1068,7 +1068,9 @@
               <small class="setting-hint">{$t.settings.cleanUpAppDataHint}</small>
               {#if cleanupBackup}
                 <small id="cleanup-backup-status" class="setting-hint">
-                  {$t.settings.cleanupBackupStatus(megabytes(cleanupBackup.bytes), backupDate(cleanupBackup.expiresAt, $systemTimezone))}
+                  {cleanupBackup.bytes === null
+                    ? $t.settings.cleanupBackupStatusUnmeasured(backupDate(cleanupBackup.expiresAt, $systemTimezone))
+                    : $t.settings.cleanupBackupStatus(megabytes(cleanupBackup.bytes), backupDate(cleanupBackup.expiresAt, $systemTimezone))}
                 </small>
                 {#if !cleanupBackup.restorable}
                   <small id="cleanup-backup-stale" class="setting-hint warning-hint">{$t.settings.cleanupBackupNotRestorable}</small>
@@ -1171,6 +1173,10 @@
                   <small id="ledger-cleanup-backup-hint" class="setting-hint warning-hint" role="status">
                     {$t.settings.cleanUpAppDataBackupNoRoom(megabytes(cleanupView.backup.neededBytes))}
                   </small>
+                {:else if cleanupView.backup.kind === "unreadable"}
+                  <small id="ledger-cleanup-backup-hint" class="setting-hint warning-hint" role="status">
+                    {$t.settings.cleanUpAppDataBackupUnreadable}
+                  </small>
                 {/if}
               {/if}
               <div class="onboarding-setting-actions">
@@ -1204,7 +1210,7 @@
             </div>
           {/if}
           {#if cleanupView.kind === "running"}
-            <Modal titleId="ledger-cleanup-title" title={$t.settings.cleanUpAppDataRunning} subtitle={$t.settings.cleanUpAppDataRunningHint} width="min(480px, 100%)" closable={false} onClose={() => {}}>
+            <Modal titleId="ledger-cleanup-title" title={$t.settings.cleanUpAppDataRunning} subtitle={$t.settings.cleanUpAppDataRunningHint} width="min(480px, 100%)" closable={false} showClose={false} onClose={() => {}}>
               <div class="modal-body cleanup-run">
                 {#if cleanupBar}
                   {@const label = cleanupView.progress === null

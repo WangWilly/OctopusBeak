@@ -46,7 +46,8 @@ export type SettingsDesktopServiceDeps = Readonly<{
   /** The ledger worker's App Data Cleanup (ADR 0154, ADR 0156): its estimate, the run, its status and its stop. */
   ledgerCleanup: Readonly<{
     estimate(): Promise<LedgerCleanupEstimate>;
-    run(request: LedgerCompactionRequest): Promise<LedgerCompactionJobResult>;
+    /** The service always says whether to keep the backup; the worker keeps it when told nothing. */
+    run(request: Required<LedgerCompactionRequest>): Promise<LedgerCompactionJobResult>;
     status(): Promise<LedgerCompactionStatus>;
     stop(): Promise<boolean>;
   }>;
@@ -111,7 +112,9 @@ function cleanupEstimateDto(estimate: LedgerCleanupEstimate): LedgerCleanupEstim
     temporaryBytes: estimate.temporaryBytes,
     neededBytes: estimate.reclaimNeededBytes,
     freeBytes: estimate.freeBytes,
-    backup: estimate.backup && { bytes: estimate.backup.storeBytes, neededBytes: estimate.backup.neededBytes },
+    backup: estimate.backup === null ? null
+      : estimate.backup === "unreadable" ? { kind: "unreadable" }
+      : { kind: "room", bytes: estimate.backup.storeBytes, neededBytes: estimate.backup.neededBytes },
   };
 }
 
@@ -163,6 +166,8 @@ export function createSettingsDesktopService(deps: SettingsDesktopServiceDeps) {
       if (backup) deps.cleanupBackup.reveal(backup.path);
     },
     async deleteCleanupBackup(): Promise<CleanupBackupDto | null> {
+      // A running cleanup may be taking or removing a backup; the renderer's own guard is not the only one.
+      if ((await deps.ledgerCleanup.status()).running) throw new Error("A backup cannot be deleted while a cleanup runs.");
       // At most one exists, but a version before ADR 0156 could leave several; none stays.
       for (let backup = await deps.cleanupBackup.newest(); backup; backup = await deps.cleanupBackup.newest()) {
         await deps.cleanupBackup.remove(backup.path);

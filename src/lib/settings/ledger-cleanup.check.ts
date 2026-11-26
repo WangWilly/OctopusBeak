@@ -12,33 +12,36 @@ import {
 } from "./ledger-cleanup.ts";
 
 const MiB = 1024 * 1024;
-// The run needs 400 MiB free; a backup of the 500 MiB folder needs 806 MiB (`ledgerBackupBytesNeeded`).
-const estimate = (freeBytes: number | null, backup: LedgerCleanupEstimateDto["backup"] = { bytes: 500 * MiB, neededBytes: 806 * MiB }) =>
+const GiB = 1024 * MiB;
+// The run needs 400 MiB free alone; with a backup of the 500 MiB folder, 806 MiB (`ledgerBackupBytesNeeded`) more.
+const estimate = (freeBytes: number | null, backup: LedgerCleanupEstimateDto["backup"] = { kind: "room", bytes: 500 * MiB, neededBytes: 1_206 * MiB }) =>
   ({ redundantBytes: 300 * MiB, temporaryBytes: 120 * MiB, neededBytes: 400 * MiB, freeBytes, backup }) satisfies LedgerCleanupEstimateDto;
 const estimated = (backup: Extract<LedgerCleanupView, { kind: "estimated" }>["backup"]) =>
   ({ kind: "estimated", redundantBytes: 300 * MiB, temporaryBytes: 120 * MiB, backup });
 
-test("the estimate is one figure, split into its two parts, and offers the backup only when the run and the backup both fit", () => {
-  assert.deepEqual(cleanupEstimateView(estimate(900 * MiB)), estimated({ kind: "fits", bytes: 500 * MiB }));
-  assert.deepEqual(cleanupEstimateView(estimate(806 * MiB)), estimated({ kind: "fits", bytes: 500 * MiB }), "exactly the backup's need is enough");
-  assert.deepEqual(cleanupEstimateView(estimate(806 * MiB - 1)), estimated({ kind: "no-room", neededBytes: 806 * MiB }),
-    "a disk short of the backup's room still cleans up, without one");
+test("the estimate is one figure, split into its two parts, and offers the backup only when the run and the backup fit together", () => {
+  assert.deepEqual(cleanupEstimateView(estimate(1_300 * MiB)), estimated({ kind: "fits", bytes: 500 * MiB }));
+  assert.deepEqual(cleanupEstimateView(estimate(1_206 * MiB)), estimated({ kind: "fits", bytes: 500 * MiB }), "exactly the sum is enough");
+  assert.deepEqual(cleanupEstimateView(estimate(1_206 * MiB - 1)), estimated({ kind: "no-room", neededBytes: 1_206 * MiB }),
+    "room for the run but not the backup on top: clean up without one");
+  assert.deepEqual(cleanupEstimateView(estimate(900 * MiB)), estimated({ kind: "no-room", neededBytes: 1_206 * MiB }),
+    "room for each alone is not room for both");
   assert.deepEqual(
     cleanupEstimateView({ ...estimate(900 * MiB), neededBytes: 1_000 * MiB }),
     { kind: "no-room", neededBytes: 1_000 * MiB, freeBytes: 900 * MiB },
     "the reclaim's room is checked before anything is deleted, backup or not",
   );
+  // A 2 GB ledger whose largest table keeps 500 MB, on a disk with 2.6 GB free: the reclaim alone fits, the backup with it does not.
+  const reclaimNeeded = 3 * 500 * MiB + 64 * MiB;
+  const backupNeeded = 2 * GiB + Math.ceil(0.2 * GiB) + 256 * MiB;
   assert.deepEqual(
-    cleanupEstimateView({ ...estimate(900 * MiB, { bytes: 100 * MiB, neededBytes: 400 * MiB }), neededBytes: 850 * MiB }),
-    estimated({ kind: "fits", bytes: 100 * MiB }),
-    "with a backup the run needs the larger of the two, not their sum",
-  );
-  assert.deepEqual(
-    cleanupEstimateView({ ...estimate(900 * MiB, { bytes: 100 * MiB, neededBytes: 400 * MiB }), neededBytes: 850 * MiB, freeBytes: 849 * MiB }),
-    { kind: "no-room", neededBytes: 850 * MiB, freeBytes: 849 * MiB },
+    cleanupEstimateView({ ...estimate(2.6 * GiB, { kind: "room", bytes: 2 * GiB, neededBytes: backupNeeded + reclaimNeeded }), neededBytes: reclaimNeeded }),
+    estimated({ kind: "no-room", neededBytes: backupNeeded + reclaimNeeded }),
   );
   assert.deepEqual(cleanupEstimateView(estimate(null, null)), estimated({ kind: "unavailable" }),
     "a ledger without a folder of its own offers no backup, and an unreadable free space lets the worker decide");
+  assert.deepEqual(cleanupEstimateView(estimate(1_300 * MiB, { kind: "unreadable" })), estimated({ kind: "unreadable" }),
+    "a room that could not be read disables the box rather than hiding it");
   assert.deepEqual(cleanupEstimateView({ ...estimate(900 * MiB), redundantBytes: 0, temporaryBytes: 0 }), { kind: "nothing" });
   assert.deepEqual(cleanupEstimateView({ ...estimate(900 * MiB), redundantBytes: 0 }).kind, "estimated", "a reclaim alone is still a cleanup");
   assert.equal(megabytes(302.4 * MiB), "302");

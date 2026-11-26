@@ -49,7 +49,6 @@ import { DEFAULT_SYSTEM_TIMEZONE } from "../src/lib/time/timezone.ts";
 import type { PGliteCanonicalCommitOptions } from "../src/ledger/pglite/canonical-source-store.ts";
 import type { CardIdentitySecret } from "../src/lib/shared-identity/card-identity-secret.ts";
 import { cardAccountNamespaces } from "../src/ledger/pglite/card-identity-secret.ts";
-import { planLedgerCompaction } from "../src/ledger/pglite/compaction-plan.ts";
 import { createLedgerCompactor, type LedgerCleanupBackupPort } from "../src/ledger/pglite/compaction-job.ts";
 import { estimateLedgerCleanup } from "../src/ledger/pglite/cleanup-estimate.ts";
 import type { LedgerBackupRoom, LedgerCleanupBackup } from "../src/ledger/pglite/data-dir-backup.ts";
@@ -101,8 +100,12 @@ export type PGliteFinancialRegistryOptions = Readonly<{
  * locked part runs as one background step), the newest one, and removing
  * one or all of them.
  */
-export type LedgerBackupPort = LedgerCleanupBackupPort & Readonly<{
-  room(): Promise<LedgerBackupRoom>;
+export type LedgerBackupPort = Readonly<{
+  /** `reserveBytes`: what the run needs free after the backup, which the room adds to the backup's own need. */
+  room(reserveBytes: number): Promise<LedgerBackupRoom>;
+  /** Refuses without room for the backup and `reserveBytes` on top (`cleanupBackupBytesNeeded`). */
+  take(context: Parameters<LedgerCleanupBackupPort["take"]>[0] & Readonly<{ reserveBytes: number }>): Promise<string>;
+  remove: LedgerCleanupBackupPort["remove"];
   newest(): Promise<LedgerCleanupBackup | null>;
   /** Every backup, partial ones included; a Canonical Reset leaves none. */
   removeAll(): Promise<void>;
@@ -124,10 +127,25 @@ export function createPGliteFinancialRegistry(
   const source = createPGliteCanonicalSourceStore(store);
   const previewVisibilityListeners = new Set<() => void>();
   const backup = options.ledgerBackup;
+  const estimateCleanup = (runStep: typeof options.runBackgroundStep, signal: AbortSignal | undefined) => estimateLedgerCleanup(store, {
+    runStep,
+    signal,
+    freeBytes: options.freeDiskBytes,
+    backupRoom: backup?.room,
+  });
+  // What the run needs after the backup, as the estimate the owner confirmed read it.
+  let reserveBytes: number | undefined;
   const compactor = createLedgerCompactor(store, {
     runStep: options.runBackgroundStep,
     reclaim: { freeBytes: options.freeDiskBytes, folderBytes: options.ledgerFolder?.bytes, syncToDisk: options.ledgerFolder?.sync },
-    backup: backup && { take: backup.take, remove: backup.remove },
+    backup: backup && {
+      // A run with no estimate in this process, such as Try again after a restart, reads one first.
+      take: async (context) => backup.take({
+        ...context,
+        reserveBytes: reserveBytes ?? (await estimateCleanup(context.runStep, context.signal)).reclaimNeededBytes,
+      }),
+      remove: backup.remove,
+    },
   });
   return Object.freeze({
     "financial.overview.current": ([expectedSources = []]) =>
@@ -185,25 +203,21 @@ export function createPGliteFinancialRegistry(
     "financial.manualAssets.apply"([command]) {
       return applyManualAssetCommand(store, command, manualClock);
     },
-    // A Cleanup Backup holds the financial data the reset deletes (ADR 0156), so it goes too. A
-    // removal that fails fails the reset, which the person can run again.
+    // A Cleanup Backup holds the financial data the reset deletes (ADR 0156), so it goes first: a
+    // removal that fails leaves the store as it was, and the person can run the reset again.
     "financial.canonical.reset": async () => {
-      await resetPGliteCanonicalStore(store);
       await backup?.removeAll();
+      await resetPGliteCanonicalStore(store);
     },
     "financial.canonical.resetRequired": () =>
       canonicalResetRequiredNamespaces(store, options.cardIdentitySecret?.()),
     "financial.canonical.cardAccountNamespaces": () => cardAccountNamespaces(store),
-    // Settings' estimate before a compaction. One large subject's step can
-    // hold the ledger for seconds (see planLedgerCompaction).
-    "financial.canonical.compactionPlan": (_args, request) =>
-      planLedgerCompaction(store, { runStep: options.runBackgroundStep, signal: request?.signal }),
-    "financial.ledger.cleanupEstimate": (_args, request) => estimateLedgerCleanup(store, {
-      runStep: options.runBackgroundStep,
-      signal: request?.signal,
-      freeBytes: options.freeDiskBytes,
-      backupRoom: backup?.room,
-    }),
+    // One large subject's dry-run step can hold the ledger for seconds (see planLedgerCompaction).
+    async "financial.ledger.cleanupEstimate"(_args, request) {
+      const estimate = await estimateCleanup(options.runBackgroundStep, request?.signal);
+      reserveBytes = estimate.reclaimNeededBytes;
+      return estimate;
+    },
     "financial.ledger.cleanupBackup": async () => (backup ? backup.newest() : null),
     "financial.canonical.compact": ([compaction], request) => compactor.compact(request?.signal, compaction),
     "financial.canonical.compactionStatus": () => compactor.status(),

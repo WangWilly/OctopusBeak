@@ -9,8 +9,10 @@ import type {
 export type CleanupBackupChoice =
   /** The disk has room for the run and the backup; the box is offered, ticked. `bytes` is the ledger folder's size. */
   | Readonly<{ kind: "fits"; bytes: number }>
-  /** The disk has room for the run but not the backup: the box is disabled and unticked. */
+  /** The disk has room for the run but not for the backup on top: the box is disabled and unticked. */
   | Readonly<{ kind: "no-room"; neededBytes: number }>
+  /** The room for a backup could not be read: the box is disabled and unticked. */
+  | Readonly<{ kind: "unreadable" }>
   /** The ledger has no folder of its own to copy. */
   | Readonly<{ kind: "unavailable" }>;
 
@@ -38,17 +40,18 @@ export function megabytes(bytes: number): string {
 
 /**
  * The estimate as the row shows it. The run needs the reclaim's room; with a
- * backup it needs the larger of that and the backup's (ADR 0156).
+ * backup it needs `backup.neededBytes`, which the worker computes as the
+ * backup's need plus the reclaim's (ADR 0156).
  */
 export function cleanupEstimateView(estimate: LedgerCleanupEstimateDto): LedgerCleanupView {
   if (estimate.redundantBytes + estimate.temporaryBytes === 0) return { kind: "nothing" };
   const free = estimate.freeBytes;
   if (free !== null && free < estimate.neededBytes) return { kind: "no-room", neededBytes: estimate.neededBytes, freeBytes: free };
-  let backup: CleanupBackupChoice = { kind: "unavailable" };
-  if (estimate.backup !== null) {
-    const neededBytes = Math.max(estimate.neededBytes, estimate.backup.neededBytes);
-    backup = free !== null && free >= neededBytes ? { kind: "fits", bytes: estimate.backup.bytes } : { kind: "no-room", neededBytes };
-  }
+  const room = estimate.backup;
+  const backup: CleanupBackupChoice = room === null ? { kind: "unavailable" }
+    : room.kind === "unreadable" || free === null ? { kind: "unreadable" }
+    : free >= room.neededBytes ? { kind: "fits", bytes: room.bytes }
+    : { kind: "no-room", neededBytes: room.neededBytes };
   return { kind: "estimated", redundantBytes: estimate.redundantBytes, temporaryBytes: estimate.temporaryBytes, backup };
 }
 

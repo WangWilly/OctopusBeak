@@ -489,20 +489,23 @@ test("a backup asked for is a consistent copy, taken as one step before the firs
   }
 });
 
-test("a backup the owner did not keep goes once the run ends as done; a failed run keeps it, and a reclaim-only run takes one too", async () => {
+test("a backup the owner did not keep goes once the run ends as done or out of room; a failed or stopped run keeps it, and a reclaim-only run takes one too", async () => {
   const { store, dataDir, root } = await legacyStoreInFolder();
   try {
     let failAfterBackup = true;
+    let freeForReclaim = Number.MAX_SAFE_INTEGER;
+    let stopAfterBackup: AbortController | null = null;
     const taken: string[] = [];
     const removed: string[] = [];
     const compactor = createLedgerCompactor(store, {
       // While set, every step after the backup fails: the first chunk does.
       runStep: (step) => (failAfterBackup && taken.length > 0 ? Promise.reject(new Error("The worker stopped.")) : step()),
-      reclaim: { ...REWRITE_ALL, folderBytes: () => directoryBytes(dataDir) },
+      reclaim: { ...REWRITE_ALL, folderBytes: () => directoryBytes(dataDir), freeBytes: async () => freeForReclaim },
       backup: {
         take: async (context) => {
           const path = await backUpLedger(store, dataDir, { freeBytes: async () => Number.MAX_SAFE_INTEGER, exists: existsSync, ...context });
           taken.push(path);
+          stopAfterBackup?.abort();
           return path;
         },
         remove: async (path) => {
@@ -531,6 +534,23 @@ test("a backup the owner did not keep goes once the run ends as done; a failed r
     assert.equal(taken.length, 3);
     assert.deepEqual(await backups(), [name(taken[2]!)], "a kept backup stays");
     assert.ok(reclaimOnly.status === "compacted" && reclaimOnly.freedBytes !== null, "the result says what the folder lost");
+
+    stopAfterBackup = new AbortController();
+    const stopped = await compactor.compact(stopAfterBackup.signal, { backup: true, keepBackup: false });
+    stopAfterBackup = null;
+    assert.equal(stopped.status, "stopped", JSON.stringify(stopped));
+    assert.deepEqual([removed.length, await backups()], [1, [name(taken[3]!)]], "a stopped run keeps the backup the owner did not keep");
+
+    freeForReclaim = 1;
+    const outOfRoom = await compactor.compact(undefined, { backup: true, keepBackup: false });
+    assert.equal(outOfRoom.status === "compacted" && outOfRoom.reclaim.status, "not-enough-space", JSON.stringify(outOfRoom));
+    assert.deepEqual([removed.at(-1), await backups()], [taken[4], []],
+      "a run whose reclaim had no room removes it: the backup would hold the room the reclaim needs");
+
+    freeForReclaim = Number.MAX_SAFE_INTEGER;
+    const omitted = await compactor.compact(undefined, { backup: true });
+    assert.equal(omitted.status, "compacted");
+    assert.deepEqual(await backups(), [name(taken[5]!)], "a request that does not say keeps the backup");
   } finally {
     await store.close();
     await rm(root, { recursive: true, force: true });
@@ -646,7 +666,6 @@ test("the compaction operations are host-only, and the compaction queues its own
     "financial.canonical.compact",
     "financial.canonical.compactionStatus",
     "financial.canonical.compactionStop",
-    "financial.canonical.compactionPlan",
     "financial.ledger.cleanupEstimate",
     "financial.ledger.cleanupBackup",
   ] as const;

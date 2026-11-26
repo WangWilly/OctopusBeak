@@ -141,9 +141,28 @@ test("a Canonical Reset deletes the Cleanup Backup, which holds the data it dele
       await commitCathay(store);
       await registry["financial.canonical.reset"]([]);
       assert.equal(await registry["financial.ledger.cleanupBackup"]([]), null);
+      assert.equal((await rowCounts(store)).financial_accounts, 0, "and the store is emptied");
     });
     assert.deepEqual(await readdir(root), ["ledger"], "no backup, partial copy or versions file is left");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("a Canonical Reset whose backup removal fails leaves the store as it was and says so", async () => {
+  await withDesktopStore(async (store) => {
+    const registry = createPGliteFinancialRegistry(store, createPGliteFinancialPageActions(store), {
+      ledgerBackup: {
+        room: async () => { throw new Error("unused"); },
+        take: async () => { throw new Error("unused"); },
+        remove: async () => { throw new Error("unused"); },
+        newest: async () => null,
+        removeAll: async () => { throw new Error("EACCES: the backup could not be removed"); },
+      },
+    });
+    await commitCathay(store);
+    const before = await rowCounts(store);
+    await assert.rejects(() => registry["financial.canonical.reset"]([]), /EACCES/u);
+    assert.deepEqual(await rowCounts(store), before, "nothing was emptied, so the person can run the reset again");
+  });
 });

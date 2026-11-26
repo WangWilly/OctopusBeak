@@ -140,8 +140,9 @@ test("the dry run changes no row", async () => {
   }
 });
 
-test("the dry run is a host-only financial operation", () => {
-  const contract = PGLITE_FINANCIAL_CONTRACTS["financial.canonical.compactionPlan"];
+test("the dry run is no financial operation: the cleanup's estimate reads it, host-only", () => {
+  assert.equal("financial.canonical.compactionPlan" in PGLITE_FINANCIAL_CONTRACTS, false);
+  const contract = PGLITE_FINANCIAL_CONTRACTS["financial.ledger.cleanupEstimate"];
   assert.equal("renderer" in contract, false);
   assert.equal(contract.workflow, undefined);
   assert.equal(contract.lane, "background-steps");

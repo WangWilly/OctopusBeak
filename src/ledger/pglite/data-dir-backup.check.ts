@@ -13,6 +13,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { PGlite } from "@electric-sql/pglite";
 import {
   backUpLedger,
+  cleanupBackupBytesNeeded,
   LEDGER_BACKUP_HEADROOM_BYTES,
   LedgerBackupError,
   ledgerBackupBytesNeeded,
@@ -133,6 +134,14 @@ test("a backup needs the folder's size plus a margin free, so the WAL after it s
     assert.deepEqual(await readdir(root), ["ledger"]);
     const path = await backUpLedger(store, dataDir, { ...roomy, freeBytes: async () => neededBytes });
     assert.ok(path.startsWith(`${dataDir}.before-compaction-`));
+    // Before it copies, the backup checks the same rule as the estimate: its own need plus the run's after it.
+    const { neededBytes: withRun } = await ledgerBackupRoom(dataDir, async () => 0, 100 * 1024 * 1024);
+    assert.equal(withRun, cleanupBackupBytesNeeded((await ledgerBackupRoom(dataDir, async () => 0)).storeBytes, 100 * 1024 * 1024));
+    await assert.rejects(
+      () => backUpLedger(store, dataDir, { ...roomy, reserveBytes: 100 * 1024 * 1024, freeBytes: async () => withRun - 1 }),
+      (error) => error instanceof LedgerBackupError && error.reason === "no-room",
+      "room for the backup alone is not room for the backup and the reclaim after it",
+    );
   } finally {
     await store.close();
     await rm(root, { recursive: true, force: true });
@@ -234,8 +243,12 @@ test("a backup expires 60 days after the time in its name, and the row reads its
     await mkdir(dataDir);
     const current = { canonical: 5, operational: 5 };
     const old = await plantedBackup(dataDir, "2026-09-01T00-00-00Z", null);
+    // A second backup in the same second, as `ledgerBackupPath` names it.
+    const oldSameSecond = await plantedBackup(dataDir, "2026-09-01T00-00-00Z-1", null);
     const recent = await plantedBackup(dataDir, "2026-11-01T12-00-00Z", current);
     await mkdir(join(root, "other.before-compaction-2026-01-01T00-00-00Z"));
+    // The copy a ledger that refused to open was set aside under, which is not a Cleanup Backup.
+    await mkdir(join(root, "ledger.damaged-2026-01-01T00-00-00Z"));
     await writeFile(join(root, "ledger.before-compaction-not-a-time"), "");
     assert.equal(LEDGER_BACKUP_RETENTION_DAYS, 60);
 
@@ -251,16 +264,40 @@ test("a backup expires 60 days after the time in its name, and the row reads its
 
     // 2026-09-01 plus 60 days is 2026-10-31.
     await removeExpiredLedgerBackups(dataDir, new Date("2026-10-30T23:59:59Z"));
-    assert.ok(existsSync(old), "kept until its 60 days are up");
+    assert.ok(existsSync(old) && existsSync(oldSameSecond), "kept until its 60 days are up");
     await removeExpiredLedgerBackups(dataDir, new Date("2026-10-31T00:00:00Z"));
-    assert.equal(existsSync(old), false);
-    assert.ok(existsSync(recent) && existsSync(join(root, "other.before-compaction-2026-01-01T00-00-00Z")), "nothing else is touched");
+    assert.equal(existsSync(old) || existsSync(oldSameSecond), false);
+    assert.ok(existsSync(recent) && existsSync(join(root, "other.before-compaction-2026-01-01T00-00-00Z"))
+      && existsSync(join(root, "ledger.damaged-2026-01-01T00-00-00Z")), "nothing else is touched");
     assert.equal((await readLedgerCleanupBackup(dataDir, current))?.path, recent);
 
     await removeLedgerBackup(recent);
     assert.equal(await readLedgerCleanupBackup(dataDir, current), null);
-    assert.deepEqual((await readdir(root)).sort(), ["ledger", "ledger.before-compaction-not-a-time", "other.before-compaction-2026-01-01T00-00-00Z"],
+    assert.deepEqual((await readdir(root)).sort(),
+      ["ledger", "ledger.before-compaction-not-a-time", "ledger.damaged-2026-01-01T00-00-00Z", "other.before-compaction-2026-01-01T00-00-00Z"],
       "the versions file goes with its backup");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a backup that cannot be measured is still shown and can still be deleted", async () => {
+  const root = await mkdtemp(join(tmpdir(), "octopus-beak-backup-check-"));
+  const dataDir = join(root, "ledger");
+  try {
+    await mkdir(dataDir);
+    const backup = await plantedBackup(dataDir, "2026-11-01T00-00-00Z", { canonical: 5, operational: 5 });
+    await chmod(join(backup, "PG_VERSION"), 0o000);
+    await mkdir(join(backup, "locked"), { mode: 0o000 });
+    assert.deepEqual(await readLedgerCleanupBackup(dataDir, { canonical: 5, operational: 5 }), {
+      path: backup,
+      bytes: null,
+      takenAt: "2026-11-01T00:00:00.000Z",
+      expiresAt: "2026-12-31T00:00:00.000Z",
+      restorable: true,
+    });
+    await removeLedgerBackup(backup);
+    assert.deepEqual(await readdir(root), ["ledger"]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

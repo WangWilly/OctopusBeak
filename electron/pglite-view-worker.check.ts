@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
@@ -238,6 +238,26 @@ test("a clean close is recorded beside the data directory and consumed by the ne
     const second = await startPGliteViewWorker(new MessageChannel().port1, () => noViews, { readSettings: () => ({}), dataDir });
     assert.equal(existsSync(marker), false, "an open store has no record, so a crash leaves none");
     await second.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("opening the store removes expired Cleanup Backups and partial copies, and keeps a recent backup", async () => {
+  const root = await mkdtemp(join(tmpdir(), "octopus-beak-backup-expiry-"));
+  const dataDir = join(root, "pglite");
+  const stamp = (date: Date) => date.toISOString().replaceAll(":", "-").replace(/\.\d+Z$/u, "Z");
+  try {
+    const expired = `${dataDir}.before-compaction-${stamp(new Date(Date.now() - 61 * 24 * 60 * 60 * 1000))}`;
+    const recent = `${dataDir}.before-compaction-${stamp(new Date(Date.now() - 24 * 60 * 60 * 1000))}`;
+    const partial = `${dataDir}.before-compaction-${stamp(new Date())}.partial`;
+    for (const folder of [expired, recent, partial]) await mkdir(folder);
+    const runtime = await startPGliteViewWorker(new MessageChannel().port1, () => noViews, { readSettings: () => ({}), dataDir });
+    try {
+      assert.deepEqual([existsSync(expired), existsSync(partial), existsSync(recent)], [false, false, true]);
+    } finally {
+      await runtime.close();
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -40,10 +40,22 @@ export function ledgerBackupBytesNeeded(storeBytes: number): number {
   return storeBytes + Math.ceil(storeBytes * LEDGER_BACKUP_HEADROOM_SHARE) + LEDGER_BACKUP_HEADROOM_BYTES;
 }
 
+/**
+ * Free bytes a cleanup with a backup needs: the backup's own need plus
+ * `reserveBytes`, what the run needs after it (ADR 0156). The backup stays on
+ * the disk while the reclaim runs: a byte copy has already used the folder's
+ * size, and a clone keeps the old blocks of every table the reclaim
+ * rewrites, so the two needs add up. The estimate and the backup's own check
+ * before it copies both use this rule.
+ */
+export function cleanupBackupBytesNeeded(storeBytes: number, reserveBytes: number): number {
+  return ledgerBackupBytesNeeded(storeBytes) + reserveBytes;
+}
+
 export type LedgerBackupRoom = Readonly<{
   /** What the ledger's folder takes now, WAL included. */
   storeBytes: number;
-  /** `ledgerBackupBytesNeeded(storeBytes)`: what a backup needs free. */
+  /** `cleanupBackupBytesNeeded(storeBytes, reserveBytes)`: what a backup and the run after it need free. */
   neededBytes: number;
   freeBytes: number;
 }>;
@@ -193,7 +205,8 @@ export async function removeAllLedgerBackups(dataDir: string): Promise<void> {
 /** The backup Settings shows: the newest finished one. `path` stays on the host. */
 export type LedgerCleanupBackup = Readonly<{
   path: string;
-  bytes: number;
+  /** null when the folder could not be measured; it can still be deleted. */
+  bytes: number | null;
   takenAt: string;
   expiresAt: string;
   /** The versions it recorded are the App's, so the worker would open it. */
@@ -207,7 +220,7 @@ export async function readLedgerCleanupBackup(dataDir: string, current: LedgerBa
   const versions = await readLedgerBackupVersions(newest.path);
   return {
     path: newest.path,
-    bytes: await directoryBytes(newest.path),
+    bytes: await directoryBytes(newest.path).catch(() => null),
     takenAt: newest.takenAt.toISOString(),
     expiresAt: ledgerBackupExpiresAt(newest.takenAt).toISOString(),
     restorable: versions !== null && versions.canonical === current.canonical && versions.operational === current.operational,
@@ -267,6 +280,8 @@ export type LedgerBackupOptions = Readonly<{
   flushEntry?: (folder: string) => Promise<void>;
   /** Written beside the backup before it gets its name; the worker passes the open store's. */
   versions?: LedgerBackupVersions;
+  /** Free bytes the run needs after the backup, on top of the backup's own (`cleanupBackupBytesNeeded`). */
+  reserveBytes?: number;
 }>;
 
 const run = promisify(execFile);
@@ -329,9 +344,9 @@ async function fsyncPath(path: string): Promise<void> {
   }
 }
 
-export async function ledgerBackupRoom(dataDir: string, freeBytes: () => Promise<number>): Promise<LedgerBackupRoom> {
+export async function ledgerBackupRoom(dataDir: string, freeBytes: () => Promise<number>, reserveBytes = 0): Promise<LedgerBackupRoom> {
   const [storeBytes, free] = await Promise.all([directoryBytes(dataDir), freeBytes()]);
-  return { storeBytes, neededBytes: ledgerBackupBytesNeeded(storeBytes), freeBytes: free };
+  return { storeBytes, neededBytes: cleanupBackupBytesNeeded(storeBytes, reserveBytes), freeBytes: free };
 }
 
 /**
@@ -346,7 +361,7 @@ export async function backUpLedger(store: PGliteStore, dataDir: string, options:
   const { signal } = options;
   dataDir = resolve(dataDir);
   await removePartialLedgerBackups(dataDir);
-  const room = await ledgerBackupRoom(dataDir, options.freeBytes);
+  const room = await ledgerBackupRoom(dataDir, options.freeBytes, options.reserveBytes);
   if (room.freeBytes < room.neededBytes) {
     throw new LedgerBackupError("no-room", `A backup needs ${room.neededBytes} bytes free; ${room.freeBytes} are free.`);
   }

@@ -110,7 +110,8 @@ export type LedgerCompactionStatus =
 
 /**
  * What the owner chose when starting a cleanup: whether to back up first,
- * and whether to keep that backup once the run ends as done.
+ * and whether to keep that backup once the run ends as done. A request that
+ * leaves `keepBackup` out keeps it: only an explicit false removes a backup.
  */
 export type LedgerCompactionRequest = Readonly<{ backup: boolean; keepBackup?: boolean }>;
 

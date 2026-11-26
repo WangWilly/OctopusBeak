@@ -34,25 +34,25 @@ export type LedgerCleanupEstimate = Readonly<{
    * no table would be rewritten.
    */
   reclaimNeededBytes: number;
-  /** The folder's size and what a backup needs free; null when the ledger has no folder of its own. */
-  backup: LedgerBackupRoom | null;
+  /**
+   * The folder's size and what the run needs free with a backup: the
+   * backup's own need plus `reclaimNeededBytes` (`cleanupBackupBytesNeeded`).
+   * `unreadable` when the folder's size or the free space could not be read;
+   * null when the ledger has no folder of its own.
+   */
+  backup: LedgerBackupRoom | "unreadable" | null;
   /** Free space on the ledger's disk; null when it could not be read. */
   freeBytes: number | null;
 }>;
 
 export type LedgerCleanupThresholds = Readonly<{ minBytes?: number; minShare?: number }>;
 
-/**
- * Combines the dry run, the reclaim estimate and the backup room. The
- * estimate is read before the compaction, which only removes as much as the
- * dry run says or more, so the need is not understated by the compaction.
- */
-export function combineLedgerCleanupEstimate(
+/** About what the run needs free after the compaction, without a backup. */
+export function cleanupReclaimBytesNeeded(
   plan: CompactionPlanResult | null,
   reclaim: LedgerReclaimEstimate,
-  backup: LedgerBackupRoom | null,
   { minBytes = LEDGER_RECLAIM_MIN_BYTES, minShare = LEDGER_RECLAIM_MIN_SHARE }: LedgerCleanupThresholds = {},
-): LedgerCleanupEstimate {
+): number {
   const removedBytes = new Map<string, number>();
   if (plan?.status === "planned") {
     for (const { table, estimatedBytes } of [...plan.phaseA, ...plan.phaseB.tables, plan.phaseC]) {
@@ -66,13 +66,27 @@ export function combineLedgerCleanupEstimate(
     const after = Math.max(0, compactBytes - (removedBytes.get(table) ?? 0));
     if (worthRewriting(bytes, bytes - after, minBytes, minShare)) largest = Math.max(largest ?? 0, after);
   }
+  return reclaimFreeBytesNeeded(largest);
+}
+
+/**
+ * Combines the dry run, the reclaim estimate and the backup room. The
+ * estimate is read before the compaction, which only removes as much as the
+ * dry run says or more, so the need is not understated by the compaction.
+ */
+export function combineLedgerCleanupEstimate(
+  plan: CompactionPlanResult | null,
+  reclaim: LedgerReclaimEstimate,
+  backup: LedgerCleanupEstimate["backup"],
+  thresholds: LedgerCleanupThresholds = {},
+): LedgerCleanupEstimate {
   return {
     compaction: plan === null ? "compacted" : plan.status === "planned" ? "planned" : "cannot",
     redundantBytes: plan?.status === "planned" ? plan.estimatedBytes : 0,
     temporaryBytes: reclaim.reclaimableBytes,
-    reclaimNeededBytes: reclaimFreeBytesNeeded(largest),
+    reclaimNeededBytes: cleanupReclaimBytesNeeded(plan, reclaim, thresholds),
     backup,
-    freeBytes: backup?.freeBytes ?? reclaim.freeBytes,
+    freeBytes: backup !== null && backup !== "unreadable" ? backup.freeBytes : reclaim.freeBytes,
   };
 }
 
@@ -81,8 +95,8 @@ export type LedgerCleanupEstimateOptions = Readonly<{
   runStep?: <T>(step: () => Promise<T>) => Promise<T>;
   signal?: AbortSignal;
   freeBytes?: () => Promise<number>;
-  /** Reads the folder's size and the disk's free space; absent when the ledger has no folder of its own. */
-  backupRoom?: () => Promise<LedgerBackupRoom>;
+  /** Reads the folder's size and the disk's free space, with what the run needs after the backup; absent when the ledger has no folder of its own. */
+  backupRoom?: (reserveBytes: number) => Promise<LedgerBackupRoom>;
 }> & LedgerCleanupThresholds;
 
 /**
@@ -104,6 +118,7 @@ export async function estimateLedgerCleanup(store: PGliteStore, options: LedgerC
     minBytes: options.minBytes,
     minShare: options.minShare,
   });
-  const backup = options.backupRoom ? await options.backupRoom().catch(() => null) : null;
+  const reserveBytes = cleanupReclaimBytesNeeded(plan, reclaim, options);
+  const backup = options.backupRoom ? await options.backupRoom(reserveBytes).catch(() => "unreadable" as const) : null;
   return combineLedgerCleanupEstimate(plan, reclaim, backup, options);
 }

@@ -145,8 +145,9 @@ export type SignInDataStatus = Readonly<{
 /**
  * What an App Data Cleanup would free (ADR 0156), in bytes. `redundantBytes`
  * is the compaction's part and `temporaryBytes` the reclaim's. The run needs
- * `neededBytes` free, and with a backup `backup.neededBytes` too, whichever
- * is larger. `backup` is null when the ledger cannot be backed up.
+ * `neededBytes` free without a backup, and `backup.neededBytes`, the backup's
+ * need and the run's together, with one. `backup` is `unreadable` when the
+ * room for one could not be read, and null when the ledger cannot be backed up.
  */
 export type LedgerCleanupEstimateDto = Readonly<{
   redundantBytes: number;
@@ -154,7 +155,7 @@ export type LedgerCleanupEstimateDto = Readonly<{
   neededBytes: number;
   /** null when the free space could not be read. */
   freeBytes: number | null;
-  backup: Readonly<{ bytes: number; neededBytes: number }> | null;
+  backup: Readonly<{ kind: "room"; bytes: number; neededBytes: number }> | Readonly<{ kind: "unreadable" }> | null;
 }>;
 
 /** The running cleanup: the backup, step `index` of `count`, or table `index` of `count` being rewritten. */
@@ -182,7 +183,8 @@ export type LedgerCleanupStatusDto =
 
 /** The Cleanup Backup Settings shows; no path reaches the renderer. */
 export type CleanupBackupDto = Readonly<{
-  bytes: number;
+  /** null when the backup could not be measured; it can still be deleted. */
+  bytes: number | null;
   takenAt: string;
   expiresAt: string;
   /** False when the App has changed the ledger's versions since, so the backup can no longer be opened. */
@@ -311,7 +313,7 @@ export type OctopusBeakApi = {
     cleanupBackup(): Promise<CleanupBackupDto | null>;
     /** Shows the Cleanup Backup in Finder. */
     revealCleanupBackup(): Promise<void>;
-    /** Deletes the Cleanup Backup; resolves with what is left, which is nothing. */
+    /** Deletes the Cleanup Backup; resolves with what is left, which is nothing. Refused while a cleanup runs. */
     deleteCleanupBackup(): Promise<CleanupBackupDto | null>;
     /** Starts every enabled source, as scheduled collection would. */
     collectAllSources(): Promise<AutomationRunManyResult>;

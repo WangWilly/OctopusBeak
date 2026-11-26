@@ -139,6 +139,7 @@ const en = {
     cleanUpAppDataKeepBackupHint: (megabytes: string) =>
       `If something goes wrong, this backup can replace the ledger. It takes about ${megabytes} MB and can be safely deleted once everything works.`,
     cleanUpAppDataBackupNoRoom: (megabytes: string) => `Not enough free disk space for a backup (needs about ${megabytes} MB)`,
+    cleanUpAppDataBackupUnreadable: "The free disk space could not be read, so no backup can be made",
     cleanUpAppDataAction: "Clean up",
     cleanUpAppDataRunning: "Cleaning up app data",
     cleanUpAppDataRunningHint: "OctopusBeak pauses briefly during each step. A running sync waits and then continues.",
@@ -159,6 +160,7 @@ const en = {
     cleanUpAppDataOutOfRoom: (remaining: string, needed: string) =>
       `The redundant data is removed, but there is not enough disk space: about ${remaining} MB has not been freed yet. Free up ${needed} MB of disk space and clean up again.`,
     cleanupBackupStatus: (megabytes: string, date: string) => `Backup takes about ${megabytes} MB, kept until ${date}`,
+    cleanupBackupStatusUnmeasured: (date: string) => `Backup kept until ${date}`,
     cleanupBackupNotRestorable: "This backup can no longer be restored and can be deleted.",
     cleanupBackupReveal: "Show in Finder",
     cleanupBackupDelete: "Delete backup",
@@ -342,6 +344,7 @@ const zh: typeof en = {
     cleanUpAppDataKeepBackupHint: (megabytes: string) =>
       `系統出錯時可以用這份備份換回帳本。佔用約 ${megabytes} MB，系統穩定時可以安全刪除。`,
     cleanUpAppDataBackupNoRoom: (megabytes: string) => `磁碟可用空間不足，無法備份（需要約 ${megabytes} MB）`,
+    cleanUpAppDataBackupUnreadable: "無法讀取磁碟可用空間，所以無法備份",
     cleanUpAppDataAction: "清理",
     cleanUpAppDataRunning: "正在清理應用資料",
     cleanUpAppDataRunningHint: "每個步驟進行時 OctopusBeak 會短暫暫停；進行中的同步會等待，之後繼續。",
@@ -361,6 +364,7 @@ const zh: typeof en = {
     cleanUpAppDataOutOfRoom: (remaining: string, needed: string) =>
       `已清除重複資料，但磁碟空間不足，還有約 ${remaining} MB 尚未釋出。釋出 ${needed} MB 可用空間後再清理一次。`,
     cleanupBackupStatus: (megabytes: string, date: string) => `備份佔約 ${megabytes} MB，保留至 ${date}`,
+    cleanupBackupStatusUnmeasured: (date: string) => `備份保留至 ${date}`,
     cleanupBackupNotRestorable: "此備份已無法還原，可以刪除",
     cleanupBackupReveal: "在 Finder 顯示",
     cleanupBackupDelete: "刪除備份",

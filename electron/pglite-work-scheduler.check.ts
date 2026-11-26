@@ -175,7 +175,7 @@ test("a stepped operation queues its steps, and queued work runs between them", 
   const order: string[] = [];
   const financial = {
     async request(operation: string) {
-      if (operation !== "financial.canonical.compactionPlan") {
+      if (operation !== "financial.ledger.cleanupEstimate") {
         order.push(operation);
         return [];
       }
@@ -183,17 +183,17 @@ test("a stepped operation queues its steps, and queued work runs between them", 
         order.push(`plan step ${step}`);
         await new Promise((resolve) => setTimeout(resolve, 5));
       });
-      return { status: "unrecognised-citations", problems: [] };
+      return { compaction: "cannot" };
     },
   } as unknown as PGliteFinancialPort;
   const server = createPGliteFinancialRpcServer(port("server", "client") as never, financial, { scheduler });
   const client = createPGliteFinancialRpcClient(port("client", "server") as never);
   try {
-    const plan = client.request("financial.canonical.compactionPlan", []);
+    const plan = client.request("financial.ledger.cleanupEstimate", []);
     await new Promise((resolve) => setTimeout(resolve, 2));
     const read = client.request("financial.canonical.resetRequired", []);
     // Queued itself, the plan would wait on its own steps and never answer.
-    assert.deepEqual(await plan, { status: "unrecognised-citations", problems: [] });
+    assert.deepEqual(await plan, { compaction: "cannot" });
     await read;
     assert.deepEqual(order, ["plan step 1", "financial.canonical.resetRequired", "plan step 2"]);
   } finally {
