@@ -78,7 +78,6 @@ test("each settings service channel calls its bridge method's namesake with the 
   const { service, calls } = recordingService<SettingsServiceForwards>();
   const handlers = settingsForwardHandlers(service);
 
-  assert.equal(Object.hasOwn(handlers, "settings:clearSignInData"), false, "sign-in erasure stays with automation");
   await assertForwards(handlers, SETTINGS_SERVICE_CHANNELS, calls);
 });
 

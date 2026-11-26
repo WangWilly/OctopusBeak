@@ -41,14 +41,21 @@ function harness(stored: AutomationSettingsFile = {}, overrides: Partial<Setting
       },
     },
     dataVersions,
-    collection: { pauseSchedules: () => () => {}, whileStopped: (work) => work() },
-    preview: { deleteAll: async () => {} },
-    financial: { reset: async () => {} },
-    deleteAllPreviewData: async (preview, versions) => {
-      calls.push(["deleteAllPreviewData", preview, versions]);
+    collection: {
+      pauseSchedules: () => {
+        calls.push(["collection.pauseSchedules"]);
+        return () => calls.push(["collection.resume"]);
+      },
+      whileStopped: async (work) => {
+        calls.push(["collection.whileStopped"]);
+        return work();
+      },
     },
-    deleteAllFinancialData: async (collection, financial, versions) => {
-      calls.push(["deleteAllFinancialData", collection, financial, versions]);
+    ledgerReset: {
+      financial: async () => { calls.push(["reset.financial"]); },
+      preview: async () => { calls.push(["reset.preview"]); },
+      manual: async () => { calls.push(["reset.manual"]); },
+      "sign-in": async () => { calls.push(["reset.sign-in"]); },
     },
     ledgerCleanup: {
       estimate: async () => ({ compaction: "compacted", redundantBytes: 0, temporaryBytes: 0, reclaimNeededBytes: 0, backup: null, freeBytes: null }),
@@ -139,13 +146,72 @@ test("a data version acknowledgement must be a non-negative safe integer", () =>
   assert.equal(service.getVersion().stale, false);
 });
 
-test("deleting data hands the injected ports to the erasure functions", async () => {
+test("a ledger reset runs the ticked parts in order with collection stopped once, and skips preview data the reset deletes", async () => {
   const { service, calls, dataVersions } = harness();
-  await service.deletePreviewData();
-  await service.deleteFinancialData();
-  assert.deepEqual(calls.map(([name]) => name), ["deleteAllPreviewData", "deleteAllFinancialData"]);
-  assert.equal(calls[0]![2], dataVersions);
-  assert.equal(calls[1]![3], dataVersions);
+  const result = await service.resetLedger(["sign-in", "preview", "financial"]);
+  assert.deepEqual(result, { done: ["financial", "preview", "sign-in"], failed: null, notRun: [] });
+  assert.deepEqual(calls.map(([name]) => name), [
+    "collection.pauseSchedules",
+    "collection.whileStopped",
+    "reset.financial",
+    "reset.sign-in",
+    "collection.resume",
+  ]);
+  assert.equal(dataVersions.snapshot().stale, true, "the views reload");
+});
+
+test("a ledger reset whose part fails reports what finished and what did not run", async () => {
+  const { service, calls } = harness({}, {
+    ledgerReset: {
+      financial: async () => { calls.push(["reset.financial"]); },
+      preview: async () => { calls.push(["reset.preview"]); },
+      manual: async () => { throw new Error("worker closed"); },
+      "sign-in": async () => { calls.push(["reset.sign-in"]); },
+    },
+  });
+  assert.deepEqual(await service.resetLedger(["preview", "manual", "sign-in"]), { done: ["preview"], failed: "manual", notRun: ["sign-in"] });
+  assert.equal(calls.some(([name]) => name === "reset.sign-in"), false);
+});
+
+test("a ledger reset request names at least one known part, each once, and nothing else", async () => {
+  const { service, calls } = harness();
+  for (const request of [[], ["financial", "financial"], ["everything"], "financial", { financial: true }, null, undefined, [["financial"]]]) {
+    await assert.rejects(() => service.resetLedger(request), TypeError, JSON.stringify(request));
+  }
+  assert.deepEqual(calls, [], "nothing stopped collection or deleted anything");
+});
+
+test("the main process refuses a ledger reset while a cleanup runs, and a cleanup while a ledger reset runs", async () => {
+  let running = true;
+  let finishReset!: () => void;
+  const runs: unknown[] = [];
+  const { service, calls } = harness({}, {
+    ledgerCleanup: {
+      estimate: async () => { throw new Error("unused"); },
+      run: async (request) => { runs.push(request); return { status: "already-running" }; },
+      status: async () => (running ? { running: true, progress: null } : { running: false, last: null }),
+      stop: async () => true,
+    },
+    ledgerReset: {
+      financial: () => new Promise<void>((resolve) => { finishReset = resolve; }),
+      preview: async () => {},
+      manual: async () => {},
+      "sign-in": async () => {},
+    },
+  });
+  await assert.rejects(() => service.resetLedger(["financial", "preview"]), /while a cleanup runs/u);
+  assert.deepEqual(calls, [], "collection was not stopped and nothing was deleted");
+
+  running = false;
+  const reset = service.resetLedger(["financial", "preview"]);
+  await assert.rejects(() => service.cleanUpLedger({ backup: true, keepBackup: true }), /while the ledger is being reset/u);
+  await assert.rejects(() => service.resetLedger(["manual"]), /already being reset/u);
+  await new Promise((resolve) => setImmediate(resolve));
+  finishReset();
+  assert.deepEqual(await reset, { done: ["financial", "preview"], failed: null, notRun: [] });
+  assert.deepEqual(runs, [], "the refused cleanup never reached the worker");
+  await service.cleanUpLedger({ backup: false, keepBackup: false });
+  assert.deepEqual(runs, [{ backup: false, keepBackup: false }], "a cleanup starts once the reset ends");
 });
 
 const removed = (rows: number) => ({

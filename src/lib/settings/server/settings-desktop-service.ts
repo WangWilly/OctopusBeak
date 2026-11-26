@@ -1,7 +1,5 @@
 import type { AutomationSettingsFile } from "../../automation/server/config-files.ts";
 import { automationFlagEnabled } from "../../automation/statement-selection.ts";
-import type { PGlitePreviewFinancialDataPort } from "../../../ledger/pglite/preview-financial-data.ts";
-import type { deleteAllPreviewData } from "../../preview-sources/delete-preview-data.ts";
 import type { DataVersionStore } from "../../shared-shell/data-version.ts";
 import type {
   LedgerCompactionJobResult,
@@ -19,7 +17,14 @@ import type {
   LedgerCleanupResultDto,
   LedgerCleanupStatusDto,
 } from "../../desktop/api.ts";
-import type { CollectionControl, deleteAllFinancialData } from "../data-erasure.ts";
+import {
+  LEDGER_RESET_PARTS,
+  resetLedger,
+  type CollectionControl,
+  type LedgerResetPart,
+  type LedgerResetResult,
+  type LedgerResetSteps,
+} from "../data-erasure.ts";
 import {
   systemSettings,
   systemSettingsFileEntries,
@@ -39,10 +44,8 @@ export type SettingsDesktopServiceDeps = Readonly<{
   usagePing: Readonly<{ preview(): UsagePing; shouldAsk(): boolean; answer(enabled: boolean): void }>;
   dataVersions: Pick<DataVersionStore, "snapshot" | "acknowledge" | "markStale">;
   collection: CollectionControl;
-  preview: Pick<PGlitePreviewFinancialDataPort, "deleteAll">;
-  financial: Readonly<{ reset(): Promise<void> }>;
-  deleteAllPreviewData: typeof deleteAllPreviewData;
-  deleteAllFinancialData: typeof deleteAllFinancialData;
+  /** The deletions Reset ledger runs, each on its own; the service stops collection around them. */
+  ledgerReset: LedgerResetSteps;
   /** The ledger worker's App Data Cleanup (ADR 0154, ADR 0156): its estimate, the run, its status and its stop. */
   ledgerCleanup: Readonly<{
     estimate(): Promise<LedgerCleanupEstimate>;
@@ -106,6 +109,16 @@ function cleanupRequest(input: unknown): Required<LedgerCompactionRequest> {
   return { backup, keepBackup };
 }
 
+/** A non-empty list of distinct parts Reset ledger knows, and nothing else. */
+function ledgerResetRequest(input: unknown): ReadonlySet<LedgerResetPart> {
+  const parts = Array.isArray(input) ? new Set<unknown>(input) : null;
+  if (!parts || parts.size === 0 || parts.size !== (input as unknown[]).length
+    || [...parts].some((part) => !(LEDGER_RESET_PARTS as readonly unknown[]).includes(part))) {
+    throw new TypeError("A ledger reset must name at least one known part, each once.");
+  }
+  return parts as ReadonlySet<LedgerResetPart>;
+}
+
 function cleanupEstimateDto(estimate: LedgerCleanupEstimate): LedgerCleanupEstimateDto {
   return {
     redundantBytes: estimate.redundantBytes,
@@ -126,6 +139,8 @@ export type SettingsDesktopService = ReturnType<typeof createSettingsDesktopServ
 
 export function createSettingsDesktopService(deps: SettingsDesktopServiceDeps) {
   const { settingsFile, usagePing, dataVersions } = deps;
+  // Set before the cleanup's status is read, so a cleanup asked for meanwhile is refused too.
+  let resetting = false;
   return {
     load: () => systemSettings(settingsFile.read()),
     async save(input: SystemSettingsDto) {
@@ -149,11 +164,25 @@ export function createSettingsDesktopService(deps: SettingsDesktopServiceDeps) {
       usagePing.answer(enabled);
       return systemSettings(settingsFile.read());
     },
-    deletePreviewData: () => deps.deleteAllPreviewData(deps.preview, dataVersions),
-    deleteFinancialData: () => deps.deleteAllFinancialData(deps.collection, deps.financial, dataVersions),
+    async resetLedger(request: unknown): Promise<LedgerResetResult> {
+      const parts = ledgerResetRequest(request);
+      // The renderer's own guards are not the only ones: a cleanup copies, compacts and rewrites the store a reset empties.
+      if (resetting) throw new Error("The ledger is already being reset.");
+      resetting = true;
+      try {
+        if ((await deps.ledgerCleanup.status()).running) throw new Error("The ledger cannot be reset while a cleanup runs.");
+        return await resetLedger(deps.collection, deps.ledgerReset, dataVersions, parts);
+      } finally {
+        resetting = false;
+      }
+    },
     ledgerCleanupEstimate: async () => cleanupEstimateDto(await deps.ledgerCleanup.estimate()),
     // Removes only rows no reader answers differently without, and rewrites tables, so no data version moves and no view reloads.
-    cleanUpLedger: async (request: unknown) => cleanupResultDto(await deps.ledgerCleanup.run(cleanupRequest(request))),
+    async cleanUpLedger(request: unknown): Promise<LedgerCleanupResultDto> {
+      const parsed = cleanupRequest(request);
+      if (resetting) throw new Error("A cleanup cannot start while the ledger is being reset.");
+      return cleanupResultDto(await deps.ledgerCleanup.run(parsed));
+    },
     async ledgerCleanupStatus(): Promise<LedgerCleanupStatusDto> {
       const status = await deps.ledgerCleanup.status();
       if (status.running) return { running: true, progress: status.progress && cleanupProgressDto(status.progress) };

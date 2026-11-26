@@ -28,6 +28,12 @@
     runLedgerCleanup,
     type LedgerCleanupView,
   } from "$lib/settings/ledger-cleanup.ts";
+  import {
+    ledgerResetChoices,
+    runLedgerReset,
+    tickLedgerResetPart,
+    type LedgerResetOutcome,
+  } from "$lib/settings/ledger-reset.ts";
   import Modal from "$lib/shared-shell/components/Modal.svelte";
   import { locale, localeLabels, locales, setLocale, t, type Locale } from "$lib/i18n/i18n.ts";
   import {
@@ -62,7 +68,7 @@
     downloadPercent,
     type AppUpdateUiContext,
   } from "$lib/shared-shell/app-update-context.ts";
-  import type { CleanupBackupDto, SettingsFocus, SignInDataStatus } from "$lib/desktop/api.ts";
+  import type { CleanupBackupDto, LedgerResetPart, SettingsFocus, SignInDataStatus } from "$lib/desktop/api.ts";
   import { signInDataGuidance } from "$lib/automation/credentials-unreadable.ts";
   import { activeSectionAt } from "$lib/settings/section-spy.ts";
 
@@ -123,17 +129,17 @@
   $: updateLine = updateState ? updateStatusLine(updateState, $t, $systemTimezone) : "";
   let usagePayload: string | null = null;
   let usagePayloadStatus: "idle" | "pending" | "error" = "idle";
-  let previewDeleteConfirming = false;
-  let previewDeleteStatus: "idle" | "pending" | "deleted" | "error" = "idle";
-  type DataActionStatus = "idle" | "confirming" | "pending" | "done" | "error";
-  let financialDeleteStatus: DataActionStatus = "idle";
-  let signInClearStatus: DataActionStatus = "idle";
+  /** The Reset ledger dialog: open while choosing and while the reset runs. */
+  let resetOpen = false;
+  let resetPending = false;
+  let resetTicked: ReadonlySet<LedgerResetPart> = new Set();
+  let resetOutcome: LedgerResetOutcome | null = null;
+  $: resetChoices = ledgerResetChoices(resetTicked);
   /** Unknown until read; a failed read shows nothing extra rather than a guess. */
   let signInStatus: SignInDataStatus | null = null;
   let signInStatusRead = 0;
   $: signInGuidance = signInDataGuidance(signInStatus);
   let collectStatus: "idle" | "pending" | "started" | "error" = "idle";
-  let manualDeleteStatus: DataActionStatus = "idle";
   let cleanupView: LedgerCleanupView = { kind: "idle" };
   let cleanupStopping = false;
   // Stops following a cleanup once Settings closes; the cleanup itself goes on.
@@ -146,8 +152,7 @@
   let cleanupBackupStatus: "idle" | "confirming" | "pending" | "error" = "idle";
   $: cleanupBusy = cleanupView.kind === "checking" || cleanupView.kind === "running";
   $: cleanupBar = cleanupView.kind === "running" ? cleanupProgressBar(cleanupView.progress) : null;
-  $: dataActionPending = financialDeleteStatus === "pending" || signInClearStatus === "pending" || manualDeleteStatus === "pending"
-    || cleanupBusy || cleanupBackupStatus === "pending";
+  $: dataActionPending = resetPending || cleanupBusy || cleanupBackupStatus === "pending";
   let saveStatus: "idle" | "pending" | "success" | "error" = "idle";
   let saveError = "";
   let saveVersion = 0;
@@ -310,12 +315,9 @@
 
   async function focusSection(target: SettingsFocus) {
     await tick();
-    if (target === "financial-data-deletion") {
+    if (target === "financial-data-deletion" || target === "sign-in-data") {
       showSection("settings-data");
-      document.getElementById("delete-financial-data")?.focus({ preventScroll: true });
-    } else if (target === "sign-in-data") {
-      showSection("settings-data");
-      document.getElementById("clear-sign-in-data")?.focus({ preventScroll: true });
+      document.getElementById("reset-ledger")?.focus({ preventScroll: true });
     } else {
       showSection("settings-updates");
     }
@@ -403,26 +405,29 @@
     }
   }
 
-  async function deletePreviewData() {
-    previewDeleteConfirming = false;
-    previewDeleteStatus = "pending";
-    try {
-      await window.octopusBeak.settings.deletePreviewData();
-      previewDeleteStatus = "deleted";
-    } catch {
-      previewDeleteStatus = "error";
-    }
+  function openReset() {
+    resetTicked = new Set();
+    resetOpen = true;
+    // Whether clearing sign-in data would also need the financial data deleted.
+    void readSignInStatus();
   }
 
-  async function deleteFinancialData() {
-    financialDeleteStatus = "pending";
+  async function resetLedger() {
+    if (!resetChoices.canConfirm) return;
+    resetPending = true;
     collectStatus = "idle";
-    try {
-      await window.octopusBeak.settings.deleteFinancialData();
-      financialDeleteStatus = "done";
-    } catch {
-      financialDeleteStatus = "error";
-    }
+    const outcome = await runLedgerReset(window.octopusBeak.settings, resetChoices.parts);
+    resetPending = false;
+    resetOpen = false;
+    resetOutcome = outcome;
+    // The reset deletes the Cleanup Backup; the sign-in status changes with a clear.
+    if (outcome.done.includes("financial")) void readCleanupBackup();
+    await readSignInStatus();
+  }
+
+  /** Names for a list of parts, in the person's language. */
+  function partList(parts: readonly LedgerResetPart[], dictionary: typeof $t) {
+    return dictionary.settings.resetLedgerList(parts.map((part) => dictionary.settings.resetLedgerParts[part]));
   }
 
   /** Shows the cleanup's state; once a run ends, its backup may have appeared or gone. */
@@ -495,16 +500,6 @@
     return dateInTimeZone(new Date(value), timeZone).replaceAll("-", "/");
   }
 
-  async function deleteManualAssets() {
-    manualDeleteStatus = "pending";
-    try {
-      const result = await window.octopusBeak.manualAssets.apply({ kind: "deleteAllManualAssets" });
-      manualDeleteStatus = result.ok ? "done" : "error";
-    } catch {
-      manualDeleteStatus = "error";
-    }
-  }
-
   async function collectAllSources() {
     collectStatus = "pending";
     try {
@@ -524,22 +519,6 @@
     } catch {
       // A failed read keeps what an earlier read knew.
     }
-  }
-
-  async function confirmClearSignInData() {
-    signInClearStatus = "confirming";
-    await readSignInStatus();
-  }
-
-  async function clearSignInData() {
-    signInClearStatus = "pending";
-    try {
-      await window.octopusBeak.settings.clearSignInData();
-      signInClearStatus = "done";
-    } catch {
-      signInClearStatus = "error";
-    }
-    await readSignInStatus();
   }
 
   function changeDisplayScale(value: number) {
@@ -795,45 +774,6 @@
               </button>
             </div>
           </div>
-          <div class="setting-row">
-            <div class="setting-label-group">
-              <span class="setting-label">{$t.settings.deletePreviewData}</span>
-              <small class="setting-hint">{$t.settings.deletePreviewDataHint}</small>
-            </div>
-            <div class="onboarding-setting-actions">
-              {#if previewDeleteStatus === "deleted"}
-                <span class="chip status-chip good" role="status">
-                  <Check size={13} strokeWidth={2.5} aria-hidden="true" />
-                  {$t.settings.previewDataDeleted}
-                </span>
-              {/if}
-              {#if !previewDeleteConfirming}
-                <button
-                  id="delete-preview-data"
-                  class="button danger"
-                  type="button"
-                  disabled={previewDeleteStatus === "pending"}
-                  aria-busy={previewDeleteStatus === "pending"}
-                  onclick={() => (previewDeleteConfirming = true)}
-                >{$t.settings.deletePreviewData}</button>
-              {/if}
-            </div>
-          </div>
-          {#if previewDeleteConfirming}
-            <div class="restart-confirm" role="group" aria-labelledby="preview-delete-confirm">
-              <p id="preview-delete-confirm">{$t.settings.deletePreviewDataConfirm}</p>
-              <div class="onboarding-setting-actions">
-                <button class="button" type="button" onclick={() => (previewDeleteConfirming = false)}>{$t.common.cancel}</button>
-                <button id="confirm-delete-preview-data" class="button danger" type="button" onclick={deletePreviewData}>{$t.settings.deletePreviewDataAction}</button>
-              </div>
-            </div>
-          {/if}
-          {#if previewDeleteStatus === "error"}
-            <div class="settings-error" role="alert">
-              <CircleAlert size={16} strokeWidth={2.25} aria-hidden="true" />
-              <span>{$t.settings.deletePreviewDataFailed}</span>
-            </div>
-          {/if}
         </div>
       </section>
 
@@ -965,103 +905,6 @@
           <p>{$t.settings.dataDescription}</p>
         </header>
         <div class="card settings-card">
-          <div class="setting-row">
-            <div class="setting-label-group">
-              <span class="setting-label">{$t.settings.deleteFinancialData}</span>
-              <small class="setting-hint">{$t.settings.deleteFinancialDataHint}</small>
-            </div>
-            <div class="onboarding-setting-actions">
-              {#if financialDeleteStatus === "done"}
-                <span class="chip status-chip good" role="status">
-                  <Check size={13} strokeWidth={2.5} aria-hidden="true" />
-                  {$t.settings.financialDataDeleted}
-                </span>
-                {#if collectStatus === "started"}
-                  <span class="chip status-chip good" role="status">
-                    <Check size={13} strokeWidth={2.5} aria-hidden="true" />
-                    {$t.settings.collectAllSourcesStarted}
-                  </span>
-                {:else}
-                  <button
-                    id="collect-all-sources"
-                    class="button primary"
-                    type="button"
-                    disabled={collectStatus === "pending"}
-                    aria-busy={collectStatus === "pending"}
-                    onclick={collectAllSources}
-                  >{$t.settings.collectAllSources}</button>
-                {/if}
-              {:else if financialDeleteStatus !== "confirming"}
-                <button
-                  id="delete-financial-data"
-                  class="button danger"
-                  type="button"
-                  disabled={dataActionPending}
-                  aria-busy={financialDeleteStatus === "pending"}
-                  onclick={() => (financialDeleteStatus = "confirming")}
-                >{financialDeleteStatus === "pending" ? $t.settings.deletingFinancialData : $t.settings.deleteFinancialData}</button>
-              {/if}
-            </div>
-          </div>
-          {#if financialDeleteStatus === "confirming"}
-            <div class="restart-confirm" role="group" aria-labelledby="financial-delete-confirm">
-              <p id="financial-delete-confirm">{$t.settings.deleteFinancialDataConfirm}</p>
-              <div class="onboarding-setting-actions">
-                <button class="button" type="button" onclick={() => (financialDeleteStatus = "idle")}>{$t.common.cancel}</button>
-                <button id="confirm-delete-financial-data" class="button danger" type="button" disabled={dataActionPending} onclick={deleteFinancialData}>{$t.settings.deleteFinancialDataAction}</button>
-              </div>
-            </div>
-          {/if}
-          {#if financialDeleteStatus === "error"}
-            <div class="settings-error" role="alert">
-              <CircleAlert size={16} strokeWidth={2.25} aria-hidden="true" />
-              <span>{$t.settings.deleteFinancialDataFailed}</span>
-            </div>
-          {/if}
-          {#if collectStatus === "error"}
-            <div class="settings-error" role="alert">
-              <CircleAlert size={16} strokeWidth={2.25} aria-hidden="true" />
-              <span>{$t.settings.collectAllSourcesFailed}</span>
-            </div>
-          {/if}
-          <div class="setting-row">
-            <div class="setting-label-group">
-              <span class="setting-label">{$t.manualAssets.deleteAll}</span>
-              <small class="setting-hint">{$t.manualAssets.deleteAllHint}</small>
-            </div>
-            <div class="onboarding-setting-actions">
-              {#if manualDeleteStatus === "done"}
-                <span class="chip status-chip good" role="status">
-                  <Check size={13} strokeWidth={2.5} aria-hidden="true" />
-                  {$t.manualAssets.deleteAllDone}
-                </span>
-              {:else if manualDeleteStatus !== "confirming"}
-                <button
-                  id="delete-manual-assets"
-                  class="button danger"
-                  type="button"
-                  disabled={dataActionPending}
-                  aria-busy={manualDeleteStatus === "pending"}
-                  onclick={() => (manualDeleteStatus = "confirming")}
-                >{$t.manualAssets.deleteAll}</button>
-              {/if}
-            </div>
-          </div>
-          {#if manualDeleteStatus === "confirming"}
-            <div class="restart-confirm" role="group" aria-labelledby="manual-delete-confirm">
-              <p id="manual-delete-confirm">{$t.manualAssets.deleteAllConfirm}</p>
-              <div class="onboarding-setting-actions">
-                <button class="button" type="button" onclick={() => (manualDeleteStatus = "idle")}>{$t.common.cancel}</button>
-                <button id="confirm-delete-manual-assets" class="button danger" type="button" disabled={dataActionPending} onclick={deleteManualAssets}>{$t.manualAssets.remove}</button>
-              </div>
-            </div>
-          {/if}
-          {#if manualDeleteStatus === "error"}
-            <div class="settings-error" role="alert">
-              <CircleAlert size={16} strokeWidth={2.25} aria-hidden="true" />
-              <span>{$t.manualAssets.failed}</span>
-            </div>
-          {/if}
           <div class="setting-row">
             <div class="setting-label-group">
               <span class="setting-label">{$t.settings.cleanUpAppData}</span>
@@ -1252,54 +1095,118 @@
           {/if}
           <div class="setting-row">
             <div class="setting-label-group">
-              <span class="setting-label">{$t.settings.clearSignInData}</span>
-              <small class="setting-hint">{$t.settings.clearSignInDataHint}</small>
-              {#if signInGuidance.unreadableHint && signInClearStatus !== "done"}
+              <span class="setting-label">{$t.settings.resetLedger}</span>
+              <small class="setting-hint">{$t.settings.resetLedgerHint}</small>
+              {#if signInGuidance.unreadableHint && !resetOutcome?.done.includes("sign-in")}
                 <small id="sign-in-data-unreadable" class="setting-hint warning-hint" role="status">{$t.settings.signInDataUnreadable}</small>
+              {/if}
+              {#if resetOutcome?.kind === "done"}
+                <small id="reset-ledger-done" class="setting-hint" role="status">{$t.settings.resetLedgerDone(partList(resetOutcome.done, $t))}</small>
               {/if}
             </div>
             <div class="onboarding-setting-actions">
-              {#if signInClearStatus === "done"}
-                <span class="chip status-chip good" role="status">
-                  <Check size={13} strokeWidth={2.5} aria-hidden="true" />
-                  {$t.settings.signInDataCleared}
-                </span>
-              {:else if signInClearStatus !== "confirming"}
-                <button
-                  id="clear-sign-in-data"
-                  class="button danger"
-                  type="button"
-                  disabled={dataActionPending}
-                  aria-busy={signInClearStatus === "pending"}
-                  onclick={() => void confirmClearSignInData()}
-                >{signInClearStatus === "pending" ? $t.settings.clearingSignInData : $t.settings.clearSignInData}</button>
+              {#if resetOutcome?.done.includes("financial")}
+                {#if collectStatus === "started"}
+                  <span class="chip status-chip good" role="status">
+                    <Check size={13} strokeWidth={2.5} aria-hidden="true" />
+                    {$t.settings.collectAllSourcesStarted}
+                  </span>
+                {:else}
+                  <button
+                    id="collect-all-sources"
+                    class="button primary"
+                    type="button"
+                    disabled={collectStatus === "pending"}
+                    aria-busy={collectStatus === "pending"}
+                    onclick={collectAllSources}
+                  >{$t.settings.collectAllSources}</button>
+                {/if}
               {/if}
+              <button
+                id="reset-ledger"
+                class="button danger"
+                type="button"
+                disabled={dataActionPending}
+                aria-haspopup="dialog"
+                onclick={openReset}
+              >{$t.settings.resetLedger}</button>
             </div>
           </div>
-          {#if signInClearStatus === "confirming"}
-            <div class="restart-confirm" role="group" aria-labelledby="sign-in-clear-confirm">
-              <p id="sign-in-clear-confirm">{$t.settings.clearSignInDataConfirm}</p>
-              {#if signInGuidance.resetWarning}
-                <p id="sign-in-clear-reset-warning" class="confirm-warning">{$t.settings.clearSignInDataResetWarning}</p>
-              {/if}
-              <div class="onboarding-setting-actions">
-                <button class="button" type="button" onclick={() => (signInClearStatus = "idle")}>{$t.common.cancel}</button>
-                <button
-                  id="confirm-clear-sign-in-data"
-                  class="button danger"
-                  type="button"
-                  aria-describedby={signInGuidance.resetWarning ? "sign-in-clear-confirm sign-in-clear-reset-warning" : "sign-in-clear-confirm"}
-                  disabled={dataActionPending}
-                  onclick={clearSignInData}
-                >{$t.settings.clearSignInDataAction}</button>
-              </div>
+          {#if resetOutcome?.kind === "failed"}
+            <div id="reset-ledger-failed" class="settings-error" role="alert">
+              <CircleAlert size={16} strokeWidth={2.25} aria-hidden="true" />
+              <span>{resetOutcome.failed === null
+                ? $t.settings.resetLedgerNotRun
+                : $t.settings.resetLedgerFailed(
+                  $t.settings.resetLedgerParts[resetOutcome.failed],
+                  resetOutcome.done.length > 0 ? partList(resetOutcome.done, $t) : null,
+                  resetOutcome.notRun.length > 0 ? partList(resetOutcome.notRun, $t) : null,
+                )}</span>
             </div>
           {/if}
-          {#if signInClearStatus === "error"}
+          {#if collectStatus === "error"}
             <div class="settings-error" role="alert">
               <CircleAlert size={16} strokeWidth={2.25} aria-hidden="true" />
-              <span>{$t.settings.clearSignInDataFailed}</span>
+              <span>{$t.settings.collectAllSourcesFailed}</span>
             </div>
+          {/if}
+          {#if resetOpen}
+            <Modal
+              titleId="reset-ledger-title"
+              title={$t.settings.resetLedger}
+              subtitle={$t.settings.resetLedgerSubtitle}
+              width="min(560px, 100%)"
+              closable={!resetPending}
+              onClose={() => (resetOpen = false)}
+            >
+              <div class="modal-body reset-ledger">
+                <fieldset class="reset-options" disabled={resetPending}>
+                  <legend class="visually-hidden">{$t.settings.resetLedgerChoose}</legend>
+                  {#each resetChoices.options as option (option.part)}
+                    <label class="reset-option" class:locked={option.locked}>
+                      <input
+                        id={`reset-ledger-${option.part}`}
+                        type="checkbox"
+                        checked={option.checked}
+                        disabled={option.locked}
+                        aria-describedby={`reset-ledger-${option.part}-hint`}
+                        onchange={(event) => (resetTicked = tickLedgerResetPart(resetTicked, option.part, event.currentTarget.checked))}
+                      />
+                      <span class="reset-option-text">
+                        <span class="reset-option-label">{$t.settings.resetLedgerParts[option.part]}</span>
+                        <small id={`reset-ledger-${option.part}-hint`} class="setting-hint">
+                          {$t.settings.resetLedgerPartHints[option.part]}{#if option.locked}{" "}{$t.settings.resetLedgerPreviewIncluded}{/if}
+                        </small>
+                        {#if option.part === "sign-in" && option.checked && !resetTicked.has("financial") && signInGuidance.resetWarning}
+                          <small id="reset-ledger-sign-in-warning" class="setting-hint warning-hint" role="status">{$t.settings.resetLedgerSignInWarning}</small>
+                        {/if}
+                      </span>
+                    </label>
+                  {/each}
+                </fieldset>
+                {#if resetChoices.canConfirm}
+                  <div id="reset-ledger-summary" class="reset-summary">
+                    <p>{$t.settings.resetLedgerWillDelete}</p>
+                    <ul>
+                      {#each resetChoices.parts as part (part)}<li>{$t.settings.resetLedgerParts[part]}</li>{/each}
+                    </ul>
+                    <p class="reset-irreversible">{$t.settings.resetLedgerIrreversible}</p>
+                  </div>
+                {/if}
+                <div class="onboarding-setting-actions">
+                  <button class="button" type="button" disabled={resetPending} onclick={() => (resetOpen = false)}>{$t.common.cancel}</button>
+                  <button
+                    id="confirm-reset-ledger"
+                    class="button danger"
+                    type="button"
+                    disabled={!resetChoices.canConfirm || resetPending || cleanupBusy || cleanupBackupStatus === "pending"}
+                    aria-busy={resetPending}
+                    aria-describedby={resetChoices.canConfirm ? "reset-ledger-summary" : undefined}
+                    onclick={resetLedger}
+                  >{resetPending ? $t.settings.resetLedgerDeleting : $t.settings.resetLedgerConfirm(resetChoices.parts.length)}</button>
+                </div>
+              </div>
+            </Modal>
           {/if}
         </div>
       </section>
@@ -1742,7 +1649,6 @@
     font-size: 13px;
   }
 
-  .restart-confirm .confirm-warning,
   .warning-hint { color: var(--warn); }
 
   .settings-error {
@@ -1861,6 +1767,55 @@
   }
 
   .cleanup-run .onboarding-setting-actions { justify-content: flex-end; }
+
+  .reset-ledger {
+    display: grid;
+    gap: var(--space-4);
+    padding: var(--space-5);
+  }
+
+  .reset-options {
+    display: grid;
+    gap: var(--space-3);
+    margin: 0;
+    padding: 0;
+    border: 0;
+  }
+
+  .reset-option {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: start;
+    gap: var(--space-3);
+    cursor: pointer;
+  }
+
+  .reset-option input { margin-top: 3px; }
+  .reset-option.locked { cursor: not-allowed; }
+  .reset-option.locked input { cursor: not-allowed; }
+
+  .reset-option-text {
+    display: grid;
+    gap: 2px;
+  }
+
+  .reset-option-label { font-size: 14px; font-weight: 600; }
+  .reset-option.locked .reset-option-label { color: var(--muted); }
+
+  .reset-summary {
+    display: grid;
+    gap: var(--space-1);
+    padding: var(--space-3);
+    border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--border));
+    border-radius: var(--radius);
+    font-size: 13px;
+  }
+
+  .reset-summary p { margin: 0; }
+  .reset-summary ul { margin: 0; padding-left: 1.25em; }
+  .reset-irreversible { color: var(--danger); font-weight: 600; }
+
+  .reset-ledger .onboarding-setting-actions { justify-content: flex-end; }
 
   @media (max-width: 900px) {
     .settings-content { grid-template-columns: 1fr; }

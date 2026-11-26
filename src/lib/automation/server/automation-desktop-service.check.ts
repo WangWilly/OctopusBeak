@@ -59,7 +59,7 @@ function harness(overrides: Partial<AutomationDesktopServiceDeps<string>> = {}) 
       return { cancelled: taskId };
     },
   } as unknown as AutomationRuntime;
-  let version: DataVersionSnapshot = { version: 3, stale: false, changedAt: null };
+  const version: DataVersionSnapshot = { version: 3, stale: false, changedAt: null };
   const published: AutomationRuntimeSnapshot[] = [];
   const fatal: Array<{ code: string; stage: string }> = [];
   let credentialReads = 0;
@@ -68,14 +68,6 @@ function harness(overrides: Partial<AutomationDesktopServiceDeps<string>> = {}) 
     provider: emptyProvider,
     dataVersions: {
       snapshot: () => version,
-      markStale: (reason) => {
-        version = { version: version.version + 1, stale: true, changedAt: "" };
-        return { version: version.version, reason, changedAt: "" };
-      },
-    },
-    collection: {
-      pauseSchedules: () => () => {},
-      whileStopped: (work) => work(),
     },
     credentials: countingReads(credentialStoreForCheck(join(directory, "credentials.json")), () => { credentialReads += 1; }),
     settings: settingsStoreForCheck(join(directory, "settings.json")),
@@ -269,7 +261,7 @@ test("runtime changes are published until the service closes", () => {
   assert.equal(published.length, 1);
 });
 
-test("clearing sign-in data cancels registrations, erases under the user data directory and rereads credentials", async () => {
+test("erasing sign-in data cancels registrations, erases under the user data directory and rereads credentials", async () => {
   const erased: unknown[] = [];
   const { service, calls, credentialReads } = harness({
     eraseSignInDetails: (options) => {
@@ -278,7 +270,7 @@ test("clearing sign-in data cancels registrations, erases under the user data di
   });
   await settle();
   const before = credentialReads();
-  await service.clearSignInData();
+  await service.eraseSignInData();
   assert.deepEqual(calls, [["registration.cancelAll"]]);
   assert.deepEqual(erased, [directory]);
   assert.equal(credentialReads(), before + 1, "the credential cache is refreshed after erasing");

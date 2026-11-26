@@ -118,8 +118,8 @@ const userActionMessages: Record<UserAction, Readonly<{ zh: string; en: string }
     en: "The source service changed its interface. Update OctopusBeak, then sync again.",
   },
   "delete-financial-data": {
-    zh: "資料格式已更新，這個來源要等刪除所有收集的財務資料後才能再同步。請到設定執行「刪除所有收集的財務資料」。",
-    en: "The data format was updated, so this source cannot sync until all collected financial data is deleted. Go to Settings and choose Delete all collected financial data.",
+    zh: "資料格式已更新，這個來源要等刪除所有收集的財務資料後才能再同步。請到設定的「重置帳本」刪除「金融機構的財務資料」。",
+    en: "The data format was updated, so this source cannot sync until all collected financial data is deleted. In Settings, choose Reset ledger and delete financial data from financial institutions.",
   },
 };
 

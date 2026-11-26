@@ -9,7 +9,7 @@ export function credentialsUnreadable(states: Readonly<Record<string, Automation
   return Object.values(states ?? {}).includes("read_failed");
 }
 
-/** What Settings says beside Clear all sign-in data; an unknown status says nothing extra. */
+/** What Settings says beside Reset ledger and its sign-in data box; an unknown status says nothing extra. */
 export function signInDataGuidance(status: SignInDataStatus | null): Readonly<{ unreadableHint: boolean; resetWarning: boolean }> {
   return {
     unreadableHint: status?.credentials === "undecodable",

@@ -47,7 +47,7 @@ A preview product is `deposit`, `credit_card`, `time_deposit`, `foreign_currency
 | Read preview data | `preview.accounts(visibility)`, `preview.transactions(visibility, id)`, `preview.creditAccounts(visibility)`, `preview.purchases(visibility, id)`, `preview.statements(visibility, id)`, `preview.loanAccounts(visibility)` on the operational provider | `src/lib/pglite-rpc/pglite-operational-rpc.ts` |
 | Show a product's rows on the Financial pages | One `outside-preview-<kind>.ts` reader returning `{ accounts, series }`, added to `readOutsideFinancialData`; counting stays in `outside-counting.ts` (`summaryMarkers`, `withBalanceSeriesHistory`) | `src/ledger/pglite/outside-financial-data.ts`, `src/ledger/pglite/outside-preview-*.ts`, `src/ledger/pglite/outside-counting.ts` |
 | Verified coverage | The `coverage` Institution and product pairs of each Verified source definition, collected as `VERIFIED_SOURCE_COVERAGE` | `src/lib/automation/server/sources/<id>.ts`, `src/lib/preview-sources/visibility.ts` |
-| Delete all preview data | `settings.deletePreviewData()` in the renderer, `deleteAllPreviewData` in main | `src/lib/preview-sources/delete-preview-data.ts` |
+| Delete all preview data | The `preview` part of `settings.resetLedger(parts)` (Settings' Reset ledger), run by `resetLedger` in main | `src/lib/settings/data-erasure.ts` |
 | Record a response for a structure report | `context.preview.observe({ endpoint, status, body })` inside `PreviewSource.run` | `src/lib/preview-sources/workflow.ts` |
 | Sanitize, bound, and share a report | `previewResponseShapes`, `previewStructureReports`, `previewStructureReportIssueUrl` | `src/lib/preview-sources/structure-report.ts` |
 

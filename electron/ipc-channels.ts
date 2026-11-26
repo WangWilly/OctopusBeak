@@ -95,7 +95,6 @@ export const AUTOMATION_SERVICE_CHANNELS = {
   "automation:takeNotificationTarget": "takeNotificationTarget",
   "automation:previewStructureReport": "previewStructureReport",
   "automation:openPreviewStructureReportIssue": "openPreviewStructureReportIssue",
-  "settings:clearSignInData": "clearSignInData",
   "settings:signInDataStatus": "signInDataStatus",
   "settings:collectAllSources": "collectAllSources",
 } as const satisfies { readonly [Channel in InvokeChannel]?: ChannelMethod<Channel> };
@@ -110,8 +109,7 @@ export const SETTINGS_SERVICE_CHANNELS = {
   "settings:previewUsagePing": "previewUsagePing",
   "settings:shouldAskUsageStatistics": "shouldAskUsageStatistics",
   "settings:answerUsageStatistics": "answerUsageStatistics",
-  "settings:deletePreviewData": "deletePreviewData",
-  "settings:deleteFinancialData": "deleteFinancialData",
+  "settings:resetLedger": "resetLedger",
   "settings:ledgerCleanupEstimate": "ledgerCleanupEstimate",
   "settings:cleanUpLedger": "cleanUpLedger",
   "settings:ledgerCleanupStatus": "ledgerCleanupStatus",
