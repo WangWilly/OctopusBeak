@@ -100,8 +100,8 @@ test("the damaged-ledger box shows only while one exists, after preview data, an
 
   const zh = settingsCopy["zh-TW"].settings;
   const en = settingsCopy.en.settings;
-  assert.equal(zh.resetLedgerDamagedLabel(2, "412"), "2 個損壞的帳本紀錄（約 412 MB）");
-  assert.equal(zh.resetLedgerDamagedLabel(2, null), "2 個損壞的帳本紀錄", "no size when one could not be measured");
+  assert.equal(zh.resetLedgerDamagedLabel(2, "412"), "2 個毀損的帳本紀錄（約 412 MB）");
+  assert.equal(zh.resetLedgerDamagedLabel(2, null), "2 個毀損的帳本紀錄", "no size when one could not be measured");
   assert.equal(en.resetLedgerDamagedLabel(1, "3.4"), "1 damaged ledger record (about 3.4 MB)");
   assert.equal(en.resetLedgerDamagedLabel(3, "412"), "3 damaged ledger records (about 412 MB)");
   assert.equal(en.resetLedgerDamagedLabel(3, null), "3 damaged ledger records");
@@ -152,11 +152,11 @@ test("a failed damaged-ledger part says some may already be gone, never that not
   const en = settingsCopy.en.settings;
   assert.equal(
     ledgerResetFailureText({ kind: "failed", done: [], failed: "damaged", notRun: [] }, zh),
-    "損壞的帳本紀錄沒有全部刪除，其中一部分可能已經刪除。請再試一次。",
+    "毀損的帳本紀錄沒有全部刪除，其中一部分可能已經刪除。請再試一次。",
   );
   assert.equal(
     ledgerResetFailureText({ kind: "failed", done: ["preview"], failed: "damaged", notRun: ["manual", "sign-in"] }, zh),
-    "損壞的帳本紀錄沒有全部刪除，其中一部分可能已經刪除。已刪除：預覽資料（金融機構）。未刪除：人工填入的財務資料、金融機構的登入資料。請再試一次。",
+    "毀損的帳本紀錄沒有全部刪除，其中一部分可能已經刪除。已刪除：預覽資料（金融機構）。未刪除：人工填入的財務資料、金融機構的登入資料。請再試一次。",
   );
   assert.equal(
     ledgerResetFailureText({ kind: "failed", done: [], failed: "damaged", notRun: ["manual"] }, en),

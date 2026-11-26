@@ -274,7 +274,7 @@ test("a damaged ledger that cannot be removed does not stop the others, and the 
 
   const zh = settingsCopy["zh-TW"].settings;
   const text = ledgerResetFailureText(ledgerResetOutcome(result) as Extract<LedgerResetOutcome, { kind: "failed" }>, zh);
-  assert.equal(text, "損壞的帳本紀錄沒有全部刪除，其中一部分可能已經刪除。未刪除：人工填入的財務資料。請再試一次。");
+  assert.equal(text, "毀損的帳本紀錄沒有全部刪除，其中一部分可能已經刪除。未刪除：人工填入的財務資料。請再試一次。");
   assert.doesNotMatch(text, /沒有刪除任何資料/u);
   assert.doesNotMatch(ledgerResetFailureText(ledgerResetOutcome(result) as Extract<LedgerResetOutcome, { kind: "failed" }>, settingsCopy.en.settings), /Nothing was deleted/u);
   assert.ok(existsSync(root));

@@ -352,19 +352,19 @@ const zh: typeof en = {
     resetLedgerParts: {
       financial: "金融機構的財務資料",
       preview: "預覽資料（金融機構）",
-      damaged: "損壞的帳本紀錄",
+      damaged: "毀損的帳本紀錄",
       manual: "人工填入的財務資料",
       "sign-in": "金融機構的登入資料",
     },
     resetLedgerPartHints: {
-      financial: "所有來源收集的帳戶、交易與帳單，包括不是來自金融機構的電子發票，以及你在這些交易上設定的分類與轉帳配對；清理應用資料的備份也會一併刪除；先前因損壞而移到一旁的帳本也會連同裡面所有內容刪除，只存在那裡的手動資產與其他你輸入的資料之後無法取回。來源、排程、匯率與設定會保留。",
+      financial: "所有來源收集的帳戶、交易與帳單，包括不是來自金融機構的電子發票，以及你在這些交易上設定的分類與轉帳配對；清理應用資料的備份也會一併刪除；先前因毀損而移到一旁的帳本也會連同裡面所有內容刪除，只存在那裡的手動資產與其他你輸入的資料之後無法取回。來源、排程、匯率與設定會保留。",
       preview: "預覽來源收集的所有餘額與交易。已驗證的資料會保留，預覽來源下次同步時會重新收集。",
       damaged: "毀損的帳本備援紀錄，刪除後無法取回。聯繫客服嘗試修復毀損的資料。",
       manual: "你手動輸入的所有資產，以及估值與收支紀錄。你在收集的交易上設定的分類與配對屬於「金融機構的財務資料」。",
       "sign-in": "所有來源的登入資料、登入狀態與信任裝置註冊。每個來源都要重新輸入登入資料，需要時也要重新註冊裝置，才能再次同步。保留財務資料、來源與排程。",
     },
     resetLedgerPreviewIncluded: "已包含在「金融機構的財務資料」中。",
-    resetLedgerDamagedLabel: (count, megabytes) => `${count} 個損壞的帳本紀錄${megabytes === null ? "" : `（約 ${megabytes} MB）`}`,
+    resetLedgerDamagedLabel: (count, megabytes) => `${count} 個毀損的帳本紀錄${megabytes === null ? "" : `（約 ${megabytes} MB）`}`,
     resetLedgerDamagedHeld: {
       "restore-under-way": "還原尚未完成，暫時無法刪除。",
       "restore-unreadable": "有一份無法讀取的還原紀錄，為了安全不會單獨刪除。勾選「金融機構的財務資料」會一併清除。",
@@ -381,7 +381,7 @@ const zh: typeof en = {
     resetLedgerFinancialFailed: (notRun) =>
       `金融機構的財務資料沒有重置完成，清理應用資料的備份可能已經刪除。${notRun ? `未刪除：${notRun}。` : ""}請再試一次。`,
     resetLedgerDamagedFailed: (done, notRun) =>
-      `損壞的帳本紀錄沒有全部刪除，其中一部分可能已經刪除。${done ? `已刪除：${done}。` : ""}${notRun ? `未刪除：${notRun}。` : ""}請再試一次。`,
+      `毀損的帳本紀錄沒有全部刪除，其中一部分可能已經刪除。${done ? `已刪除：${done}。` : ""}${notRun ? `未刪除：${notRun}。` : ""}請再試一次。`,
     resetLedgerNotRun: "無法重置帳本，請再試一次。",
     resetLedgerList: (parts) => parts.join("、"),
     cleanUpAppData: "清理應用資料",
