@@ -5,12 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
-  failedRestoreBackup,
   LEDGER_RESTORE_REQUEST_TTL_MS,
   ledgerRestoreRequested,
   NODE_RESTORE_FS,
   requestLedgerRestore,
   resumeLedgerRestore,
+  takeFailedRestoreBackup,
   takeLedgerRestoreOutcome,
   type LedgerRestoreFs,
   type LedgerRestoreOrigin,
@@ -29,7 +29,7 @@ const APP_VERSION = "1.4.0";
 const BACKUP_NAME = "pglite.before-compaction-2026-11-01T02-03-04Z";
 const TAKEN_AT = "2026-11-01T02:03:04.000Z";
 const NOW = new Date("2026-11-20T08:00:00.000Z");
-const LAUNCH = { current: CURRENT, appVersion: APP_VERSION, now: () => NOW };
+const LAUNCH = { current: CURRENT, now: () => NOW };
 
 type Ledger = Readonly<{ root: string; dataDir: string; backup: string; sidecar: string; record: string }>;
 
@@ -91,6 +91,7 @@ function faultyFs(at: number, mode: FaultMode): LedgerRestoreFs & { changes(): n
   return {
     readText: NODE_RESTORE_FS.readText,
     kind: NODE_RESTORE_FS.kind,
+    list: NODE_RESTORE_FS.list,
     writeFlushed: change(NODE_RESTORE_FS.writeFlushed),
     rename: change(NODE_RESTORE_FS.rename),
     removeFile: change(NODE_RESTORE_FS.removeFile),
@@ -263,10 +264,36 @@ test("a backup that does not open is swapped back for the ledger the person had,
   writeFileSync(ledger.record, "");
   assert.equal((await resumeLedgerRestore(ledger.dataDir, LAUNCH)).kind, "none");
   assert.equal(existsSync(ledger.record), false, "the ledger the person had checks every index at its next open");
-  assert.equal(await failedRestoreBackup(ledger.dataDir), ledger.backup, "the unusable-ledger dialog does not offer it again");
+  assert.equal(await takeFailedRestoreBackup(ledger.dataDir), ledger.backup, "the unusable-ledger dialog does not offer it again");
+  assert.equal(await takeFailedRestoreBackup(ledger.dataDir), null, "the dialog took the outcome, so it cannot stick");
   assert.equal(await assertSettled(ledger, "swapped back"), "unchanged");
-  assert.equal(await failedRestoreBackup(ledger.dataDir), null, "once Settings said so");
 }));
+
+test("a restore refused before its backup opened never hides the backup from the dialog", async () => {
+  for (const [label, prepare] of [
+    ["a stale request", (ledger: Ledger) => request(ledger, "settings", { now: new Date(NOW.getTime() - LEDGER_RESTORE_REQUEST_TTL_MS - 1) })],
+    ["a rename rolled back", async (ledger: Ledger) => {
+      await request(ledger);
+      let renames = 0;
+      const flaky: LedgerRestoreFs = {
+        ...NODE_RESTORE_FS,
+        rename: async (from, to) => {
+          if (++renames === 2) throw Object.assign(new Error("busy"), { code: "EBUSY" });
+          await NODE_RESTORE_FS.rename(from, to);
+        },
+      };
+      assert.equal((await resumeLedgerRestore(ledger.dataDir, { ...LAUNCH, fs: flaky })).kind, "none");
+    }],
+  ] as const) {
+    await withLedger(async (ledger) => {
+      await prepare(ledger);
+      await resumeLedgerRestore(ledger.dataDir, LAUNCH);
+      assert.equal(which(ledger.dataDir), "original", label);
+      assert.equal(await takeFailedRestoreBackup(ledger.dataDir), null, `${label}: the backup is offered again`);
+      assert.equal(await takeLedgerRestoreOutcome(ledger.dataDir), null, `${label}: the dialog took the outcome`);
+    });
+  }
+});
 
 test("a second failure after the swap back follows the App's own handling, with no third launch", () => withLedger(async (ledger) => {
   await request(ledger);
@@ -275,13 +302,131 @@ test("a second failure after the swap back follows the App's own handling, with 
   assert.equal(await ledgerRestoreRequested(ledger.dataDir), false);
 }));
 
-test("an App that dies opening the backup tries once more, then swaps back", () => withLedger(async (ledger) => {
+test("an App that dies with no word from the open opens the backup again; only a failure it saw swaps back", () => withLedger(async (ledger) => {
   await request(ledger);
-  assert.equal((await resumeLedgerRestore(ledger.dataDir, LAUNCH)).kind, "opening");
-  assert.equal((await resumeLedgerRestore(ledger.dataDir, LAUNCH)).kind, "opening");
-  assert.equal((await resumeLedgerRestore(ledger.dataDir, LAUNCH)).kind, "none");
-  assert.equal(await assertSettled(ledger, "died twice"), "unchanged");
+  for (let index = 0; index < 4; index += 1) {
+    assert.equal((await resumeLedgerRestore(ledger.dataDir, LAUNCH)).kind, "opening", "a ledger that may be in use is never swapped out");
+    assert.equal(which(ledger.dataDir), "backup");
+  }
+  assert.deepEqual(await settle(ledger, (content) => content !== "backup"), ["relaunch", "normal"]);
+  assert.equal(await assertSettled(ledger, "a failure seen at last"), "unchanged");
 }));
+
+test("a restore that reached ready stays, even when no signal landed and the App died, twice in a row", () => withLedger(async (ledger) => {
+  await request(ledger);
+  for (let index = 0; index < 2; index += 1) {
+    const { fs, state } = switchable({ writeFlushed: "ENOSPC", rename: "ENOSPC", removeFile: "EROFS", removeFolder: "EROFS" });
+    const step = await resumeLedgerRestore(ledger.dataDir, { ...LAUNCH, fs });
+    assert.equal(step.kind, "opening");
+    state.broken = true;
+    if (step.kind === "opening") await step.opened();
+    // The App dies: no clean close, no record.
+    assert.equal(which(ledger.dataDir), "backup", `after crash ${index + 1}`);
+  }
+  assert.equal((await resumeLedgerRestore(ledger.dataDir, LAUNCH)).kind, "opening");
+  assert.equal(which(ledger.dataDir), "backup", "the restored ledger stays in the ledger's place");
+  await settle(ledger, () => true);
+  assert.equal(await assertSettled(ledger, "two silent crashes"), "restored");
+}));
+
+test("a swap back whose file will not go is settled once: later launches only retry removing it", () => withLedger(async (ledger) => {
+  await request(ledger);
+  assert.equal(await launch(ledger, (content) => content !== "backup"), "relaunch");
+  const { fs, state } = switchable({ removeFile: "EBUSY" });
+  state.broken = true;
+  // The record goes through dropRecord's own call, so let that one through.
+  const stuck: LedgerRestoreFs = { ...fs, removeFile: (path) => path.endsWith(".restore-pending") ? fs.removeFile(path) : NODE_RESTORE_FS.removeFile(path) };
+  assert.equal((await resumeLedgerRestore(ledger.dataDir, { ...LAUNCH, fs: stuck })).kind, "none");
+  assert.equal(which(ledger.dataDir), "original");
+  assert.deepEqual(await takeLedgerRestoreOutcome(ledger.dataDir), { status: "failed" });
+  // The person's ledger ran and closed cleanly; the stuck file must not cost it its record or say the failure again.
+  writeFileSync(ledger.record, "");
+  for (let index = 0; index < 2; index += 1) {
+    assert.equal((await resumeLedgerRestore(ledger.dataDir, { ...LAUNCH, fs: stuck })).kind, "none");
+    assert.ok(existsSync(ledger.record), "its clean-shutdown record stays");
+    assert.equal(await takeLedgerRestoreOutcome(ledger.dataDir), null, "the failure is said once");
+    assert.equal(which(ledger.backup), "backup");
+  }
+  assert.equal((await resumeLedgerRestore(ledger.dataDir, LAUNCH)).kind, "none");
+  assert.equal(await ledgerRestoreRequested(ledger.dataDir), false);
+  assert.equal(await assertSettled(ledger, "stuck swap back"), "unchanged");
+}));
+
+test("a replaced ledger that no restore file names goes at launch, and one a file names stays", () => withLedger(async (ledger) => {
+  const orphan = `${ledger.dataDir}.replaced-2026-11-02T00-00-00Z`;
+  store(orphan, "left by a removal cut short");
+  const gone = join(ledger.root, "pglite.before-compaction-2026-10-01T00-00-00Z.versions.json");
+  writeFileSync(gone, JSON.stringify(CURRENT));
+  assert.equal((await resumeLedgerRestore(ledger.dataDir, LAUNCH)).kind, "none");
+  assert.equal(existsSync(orphan), false, "a .replaced- folder exists for a reason only while a file names it");
+  assert.equal(existsSync(gone), false, "a versions file whose backup is gone");
+  assert.ok(existsSync(ledger.sidecar), "a backup's own versions file stays");
+
+  // A pending file that cannot be read may name it: nothing goes at that launch.
+  store(orphan, "named, maybe");
+  writeFileSync(ledgerRestorePendingPath(ledger.dataDir), "{");
+  await resumeLedgerRestore(ledger.dataDir, LAUNCH);
+  assert.ok(existsSync(orphan));
+}));
+
+test("an earlier opened restore's file is finished first, never renamed over", () => withLedger(async (ledger) => {
+  const earlier = `${ledger.dataDir}.replaced-2026-10-01T00-00-00Z`;
+  store(earlier, "replaced by an earlier restore");
+  const earlierFile = {
+    from: "settings", backup: "pglite.before-compaction-2026-09-01T00-00-00Z", aside: "pglite.replaced-2026-10-01T00-00-00Z",
+    state: "swapped", opens: 1, requestedAt: NOW.toISOString(), appVersion: APP_VERSION,
+  };
+  writeFileSync(`${ledger.dataDir}.restore-opened`, JSON.stringify(earlierFile));
+  await request(ledger);
+  // The earlier leftovers will not go at this launch.
+  const { fs, state } = switchable({ removeFolder: "EBUSY" });
+  state.broken = true;
+  const step = await resumeLedgerRestore(ledger.dataDir, { ...LAUNCH, fs });
+  assert.equal(step.kind, "opening");
+  if (step.kind === "opening") await step.opened();
+  assert.deepEqual(JSON.parse(readFileSync(`${ledger.dataDir}.restore-opened`, "utf8")).aside, earlierFile.aside,
+    "the earlier file still names its own leftovers");
+  assert.equal(which(ledger.dataDir), "backup");
+  await resumeLedgerRestore(ledger.dataDir, LAUNCH);
+  await resumeLedgerRestore(ledger.dataDir, LAUNCH);
+  assert.equal(await assertSettled(ledger, "two opened restores"), "restored");
+}));
+
+test("an opened restore's finish never stops the App from starting, whatever the disk says", async () => {
+  await withLedger(async (ledger) => {
+    mkdirSync(`${ledger.dataDir}.restore-opened`);
+    assert.equal((await resumeLedgerRestore(ledger.dataDir, LAUNCH)).kind, "none", "a folder where the file should be");
+  });
+  await withLedger(async (ledger) => {
+    await request(ledger);
+    // Opened, with the replaced ledger left behind for a later launch.
+    const { fs: busy, state } = switchable({ removeFolder: "EBUSY" });
+    const step = await resumeLedgerRestore(ledger.dataDir, { ...LAUNCH, fs: busy });
+    state.broken = true;
+    if (step.kind === "opening") await step.opened();
+    assert.ok(existsSync(`${ledger.dataDir}.restore-opened`));
+    // Every call about the opened restore's leftovers fails, each way a disk can.
+    const leftover = (path: string) => /\.restore-opened|\.replaced-|\.versions\.json/u.test(path);
+    const codes = ["EISDIR", "EACCES", "EIO"];
+    let call = 0;
+    const failing = <Args extends [string, ...unknown[]], Result>(real: (...args: Args) => Promise<Result>) => async (...args: Args) => {
+      if (leftover(args[0])) throw Object.assign(new Error("injected"), { code: codes[call++ % codes.length] });
+      return real(...args);
+    };
+    const broken: LedgerRestoreFs = {
+      ...NODE_RESTORE_FS,
+      readText: failing(NODE_RESTORE_FS.readText),
+      kind: failing(NODE_RESTORE_FS.kind),
+      removeFile: failing(NODE_RESTORE_FS.removeFile),
+      removeFolder: failing(NODE_RESTORE_FS.removeFolder),
+      list: async () => { throw Object.assign(new Error("injected"), { code: "EIO" }); },
+    };
+    assert.equal((await resumeLedgerRestore(ledger.dataDir, { ...LAUNCH, fs: broken })).kind, "none", "the App starts");
+    assert.equal(which(ledger.dataDir), "backup");
+    await resumeLedgerRestore(ledger.dataDir, LAUNCH);
+    assert.equal(await assertSettled(ledger, "finish after a failing disk"), "restored");
+  });
+});
 
 /** The real filesystem until `broken` is set; then the calls it names fail. */
 function switchable(failing: Partial<Record<keyof LedgerRestoreFs, string>>) {
@@ -376,11 +521,10 @@ test("a request whose backup has gone, been renamed, emptied or cannot be restor
   }
 });
 
-test("only a fresh request from this App version is carried out", async () => {
+test("only a fresh request is carried out, whichever App version asked", async () => {
   for (const [label, options] of [
     ["a day old", { now: new Date(NOW.getTime() - LEDGER_RESTORE_REQUEST_TTL_MS - 1) }],
     ["from the future", { now: new Date(NOW.getTime() + 60 * 60 * 1000) }],
-    ["from another version", { appVersion: "1.3.9" }],
   ] as const) {
     await withLedger(async (ledger) => {
       await request(ledger, "settings", options);
@@ -391,6 +535,10 @@ test("only a fresh request from this App version is carried out", async () => {
   await withLedger(async (ledger) => {
     await request(ledger, "settings", { now: new Date(NOW.getTime() - LEDGER_RESTORE_REQUEST_TTL_MS + 60_000) });
     assert.deepEqual(await settle(ledger, () => true), ["restored"], "within the bound");
+  });
+  await withLedger(async (ledger) => {
+    await request(ledger, "settings", { appVersion: "1.3.9" });
+    assert.deepEqual(await settle(ledger, () => true), ["restored"], "an update applied by the restart, with the same baseline versions");
   });
 });
 
@@ -409,7 +557,6 @@ test("a pending file that names anything but a sibling backup and aside, or is m
     ["a Settings restore setting the ledger aside as damaged", { ...valid, aside: "pglite.damaged-2026-11-20T08-00-00Z" }],
     ["an unknown state", { ...valid, state: "opened" }],
     ["no request time", { ...valid, requestedAt: "yesterday" }],
-    ["no App version", { ...valid, appVersion: 1 }],
     ["not JSON", "{"],
   ] as const) {
     await withLedger(async (ledger) => {

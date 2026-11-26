@@ -138,7 +138,7 @@ test("restore moves the unusable ledger aside as damaged and puts the backup in 
   assert.deepEqual(calls, ["relaunch", "exit 0"]);
   assert.ok(existsSync(join(dataDir, "PG_VERSION")), "the dialog only records the restore; nothing opens the folders until the next launch");
 
-  const launch = await resumeLedgerRestore(dataDir, { current: VERSIONS, appVersion: "1.0.0", now: () => NOW });
+  const launch = await resumeLedgerRestore(dataDir, { current: VERSIONS, now: () => NOW });
   assert.equal(launch.kind, "opening");
   assert.equal(readFileSync(join(damaged, "PG_VERSION"), "utf8"), "17\n", "the unusable ledger is set aside untouched");
   assert.equal(readFileSync(join(dataDir, "PG_VERSION"), "utf8"), "backup\n");

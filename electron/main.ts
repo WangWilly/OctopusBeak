@@ -53,10 +53,10 @@ import { isLedgerUnusable } from "./ledger-unusable.ts";
 import { readLedgerCleanupBackup, removeLedgerBackup } from "../src/ledger/pglite/data-dir-backup.ts";
 import { LEDGER_BASELINE_VERSIONS } from "../src/ledger/pglite/baseline-versions.ts";
 import {
-  failedRestoreBackup,
   ledgerRestoreRequested,
   requestLedgerRestore,
   resumeLedgerRestore,
+  takeFailedRestoreBackup,
   takeLedgerRestoreOutcome,
   type LedgerRestoreLaunch,
 } from "./ledger-restore.ts";
@@ -429,7 +429,6 @@ async function start() {
   // A launch step that could not put the ledger back throws, and the App does not start on a missing ledger.
   const ledgerRestore = await resumeLedgerRestore(ledgerDataDir, {
     current: LEDGER_BASELINE_VERSIONS,
-    appVersion: app.getVersion(),
     log: (code, detail) => console.error(code, ...(detail === undefined ? [] : [detail])),
   });
   if (ledgerRestore.kind === "opening") ledgerRestoreOpening = ledgerRestore;
@@ -524,7 +523,7 @@ async function start() {
       // Read by the main process itself: the worker refused the ledger (ADR 0157).
       const backup = await readLedgerCleanupBackup(ledgerDataDir, LEDGER_BASELINE_VERSIONS).catch(() => null);
       // A backup a swap back just gave back did not open; it is not offered again.
-      const failed = await failedRestoreBackup(ledgerDataDir).catch(() => null);
+      const failed = await takeFailedRestoreBackup(ledgerDataDir).catch(() => null);
       const timeZone = (() => {
         try {
           return systemSettings(automationSettings.read()).systemTimezone;
