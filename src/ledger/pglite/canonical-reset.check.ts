@@ -166,3 +166,40 @@ test("a Canonical Reset whose backup removal fails leaves the store as it was an
     assert.deepEqual(await rowCounts(store), before, "nothing was emptied, so the person can run the reset again");
   });
 });
+
+test("a Canonical Reset that fails after removing the Cleanup Backup leaves no backup to offer", async () => {
+  const store = new PGliteStore(await createTestPGlite("full"));
+  let backups = 1;
+  const registry = createPGliteFinancialRegistry(store, createPGliteFinancialPageActions(store), {
+    ledgerBackup: {
+      room: async () => { throw new Error("unused"); },
+      take: async () => { throw new Error("unused"); },
+      remove: async () => { throw new Error("unused"); },
+      newest: async () => (backups > 0 ? { path: "backup", bytes: 1, takenAt: "", expiresAt: "", restorable: true } : null),
+      removeAll: async () => {
+        backups = 0;
+        // The store closes, as a worker that stops would, before the reset empties it.
+        await store.close();
+      },
+    },
+  });
+  await assert.rejects(() => registry["financial.canonical.reset"]([]), /closed/u);
+  assert.equal(await registry["financial.ledger.cleanupBackup"]([]), null, "Settings reads the backup again and finds none");
+});
+
+test("a Canonical Reset whose checkpoint fails after the empty store is committed is done", async () => {
+  class FailingCheckpoint extends PGliteStore {
+    override async exec(query: string) {
+      if (query === "CHECKPOINT") throw new Error("checkpoint failed");
+      return super.exec(query);
+    }
+  }
+  const store = new FailingCheckpoint(await createTestPGlite("full"));
+  try {
+    await commitCathay(store);
+    await resetPGliteCanonicalStore(store);
+    assert.equal((await rowCounts(store)).financial_accounts, 0, "the data is gone, so the reset reports done and the views reload");
+  } finally {
+    await store.close();
+  }
+});

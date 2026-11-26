@@ -130,7 +130,7 @@ const en = {
     },
     resetLedgerPreviewIncluded: "Included in financial data from financial institutions.",
     resetLedgerSignInWarning:
-      "Clearing also replaces the key that tells your credit cards apart. Credit card sources then need financial data from financial institutions deleted before they sync again, so no card is collected twice. Tick it too to do both now.",
+      "Clearing also replaces the key that tells your credit cards apart. Credit card sources then need financial data from financial institutions deleted before they sync again, so no card is collected twice. Tick financial data from financial institutions too to do both now.",
     resetLedgerWillDelete: "Deletes:",
     resetLedgerIrreversible: "This cannot be undone.",
     resetLedgerConfirm: (count: number) => count === 0 ? "Delete" : `Delete ${count} ${count === 1 ? "item" : "items"}`,
@@ -138,6 +138,8 @@ const en = {
     resetLedgerDone: (parts: string) => `Deleted: ${parts}.`,
     resetLedgerFailed: (failed: string, done: string | null, notRun: string | null) =>
       `${failed} could not be deleted.${done ? ` Deleted: ${done}.` : " Nothing was deleted."}${notRun ? ` Not deleted: ${notRun}.` : ""} You can try again.`,
+    resetLedgerFinancialFailed: (notRun: string | null) =>
+      `The reset of financial data from financial institutions did not finish, and the cleanup backup may already be removed.${notRun ? ` Not deleted: ${notRun}.` : ""} Try again.`,
     resetLedgerNotRun: "The ledger could not be reset. Try again.",
     resetLedgerList: (parts: readonly string[]) => parts.join(", "),
     cleanUpAppData: "Clean up app data",
@@ -339,14 +341,16 @@ const zh: typeof en = {
       "sign-in": "所有來源的登入資料、登入狀態與信任裝置註冊。每個來源都要重新輸入登入資料，需要時也要重新註冊裝置，才能再次同步。保留財務資料、來源與排程。",
     },
     resetLedgerPreviewIncluded: "已包含在「金融機構的財務資料」中。",
-    resetLedgerSignInWarning: "清除時也會換掉用來辨識信用卡的金鑰。之後信用卡來源要先刪除金融機構的財務資料才能再同步，同一張卡才不會被收集兩次。可以一併勾選，一次完成。",
+    resetLedgerSignInWarning: "清除時也會換掉用來辨識信用卡的金鑰。之後信用卡來源要先刪除金融機構的財務資料才能再同步，同一張卡才不會被收集兩次。可以一併勾選「金融機構的財務資料」，一次完成。",
     resetLedgerWillDelete: "將刪除：",
-    resetLedgerIrreversible: "此動作無法復原",
+    resetLedgerIrreversible: "此動作無法復原。",
     resetLedgerConfirm: (count) => count === 0 ? "刪除" : `刪除 ${count} 項`,
     resetLedgerDeleting: "刪除中...",
     resetLedgerDone: (parts) => `已刪除：${parts}。`,
     resetLedgerFailed: (failed, done, notRun) =>
       `無法刪除${failed}。${done ? `已刪除：${done}。` : "沒有刪除任何資料。"}${notRun ? `未刪除：${notRun}。` : ""}可以再試一次。`,
+    resetLedgerFinancialFailed: (notRun) =>
+      `金融機構的財務資料沒有重置完成，清理應用資料的備份可能已經刪除。${notRun ? `未刪除：${notRun}。` : ""}請再試一次。`,
     resetLedgerNotRun: "無法重置帳本，請再試一次。",
     resetLedgerList: (parts) => parts.join("、"),
     cleanUpAppData: "清理應用資料",

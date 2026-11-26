@@ -1,4 +1,5 @@
 import type { LedgerResetPart, LedgerResetResult } from "../desktop/api.ts";
+import type { SettingsCopy } from "./copy.ts";
 import { LEDGER_RESET_PARTS } from "./data-erasure.ts";
 
 /** One box in the Reset ledger dialog. A locked box is ticked because another part includes it. */
@@ -66,4 +67,21 @@ export async function runLedgerReset(
   } catch {
     return { kind: "failed", done: [], failed: null, notRun: parts };
   }
+}
+
+/**
+ * What the data section says after a reset that did not finish. The
+ * Canonical Reset removes the Cleanup Backup before it empties the store, so
+ * a failed one may already have deleted that backup: it never says nothing
+ * was deleted.
+ */
+export function ledgerResetFailureText(
+  outcome: Extract<LedgerResetOutcome, { kind: "failed" }>,
+  copy: SettingsCopy["settings"],
+): string {
+  const list = (parts: readonly LedgerResetPart[]) =>
+    parts.length > 0 ? copy.resetLedgerList(parts.map((part) => copy.resetLedgerParts[part])) : null;
+  if (outcome.failed === null) return copy.resetLedgerNotRun;
+  if (outcome.failed === "financial") return copy.resetLedgerFinancialFailed(list(outcome.notRun));
+  return copy.resetLedgerFailed(copy.resetLedgerParts[outcome.failed], list(outcome.done), list(outcome.notRun));
 }

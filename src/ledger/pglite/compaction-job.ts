@@ -485,16 +485,30 @@ export function createLedgerCompactor(
       try {
         // Starting again is the owner's answer to a recorded failure. A store
         // that cannot delete it fails the run's plan too, which records it again.
-        await runStep(() => clearRecordedFailure(store)).catch(() => undefined);
+        let cleared = false;
+        const clearFailure = async () => {
+          if (cleared) return;
+          cleared = true;
+          await runStep(() => clearRecordedFailure(store)).catch(() => undefined);
+        };
+        // With a backup the record is deleted once the backup is taken: the backup's room check
+        // compares the store with the estimate, and this run's own write would make it look changed.
+        const backsUp = request.backup && port !== undefined;
+        if (!backsUp) await clearFailure();
         let taken: string | undefined;
         const result = await runLedgerCompaction(store, {
           runStep: options.runStep,
           reclaim: options.reclaim,
-          backup: !request.backup ? undefined : port ? async (context) => { taken = await port.take(context); } : unavailable,
+          backup: !request.backup ? undefined : port ? async (context) => {
+            taken = await port.take(context);
+            await clearFailure();
+          } : unavailable,
           signal: run.controller.signal,
           onProgress: (progress) => { run.progress = progress; },
         });
         last = result;
+        // A run that ended before its backup was taken answers the recorded failure too.
+        await clearFailure();
         // A failed or stopped run keeps its backup; so does one the owner chose to keep, until it expires.
         if (taken !== undefined && port && request.keepBackup === false && endedAsDone(result)) {
           await port.remove(taken).catch(() => undefined);

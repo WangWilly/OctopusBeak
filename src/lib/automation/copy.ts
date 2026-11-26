@@ -337,7 +337,7 @@ const en = {
     selectOneStatementType: (bank: string) =>
       `Select at least one ${bank} statement type.`,
     needsSetup: "Needs setup",
-    resetRequired: "Delete all collected financial data to sync",
+    resetRequired: "To sync, delete financial data in Settings › Reset ledger",
     resetRequiredDetail:
       "A data format update changed how credit-card data is stored. This source syncs again after you delete financial data from financial institutions with Reset ledger in Settings. Sign-in details, enabled sources, schedules, what each source collects, exchange rates, settings, and manual assets are kept.",
     selectedStatementCount: (selected: number, total: number) =>
@@ -738,7 +738,7 @@ const zh: typeof en = {
     selectAllStatements: "全選",
     selectOneStatementType: (bank) => `請至少選擇一種 ${bank} 帳戶型態。`,
     needsSetup: "需要設定",
-    resetRequired: "需刪除收集的財務資料才能同步",
+    resetRequired: "需到設定的「重置帳本」刪除金融機構的財務資料才能同步",
     resetRequiredDetail:
       "資料格式更新後，信用卡資料改用新的儲存方式。到設定的「重置帳本」刪除「金融機構的財務資料」後，這個來源才能再同步。登入資料、已啟用的來源、排程、各來源要收集的項目、匯率、設定與手動資產都會保留。",
     selectedStatementCount: (selected, total) => `已選 ${selected} / ${total}`,

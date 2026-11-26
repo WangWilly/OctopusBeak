@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { LedgerResetPart, LedgerResetResult } from "../desktop/api.ts";
 import { settingsCopy } from "./copy.ts";
-import { ledgerResetChoices, runLedgerReset, tickLedgerResetPart } from "./ledger-reset.ts";
+import { ledgerResetChoices, ledgerResetFailureText, runLedgerReset, tickLedgerResetPart } from "./ledger-reset.ts";
 
 const box = (ticked: ReadonlySet<LedgerResetPart>, part: LedgerResetPart) =>
   ledgerResetChoices(ticked).options.find((option) => option.part === part)!;
@@ -72,4 +72,21 @@ test("the reset's answer becomes what the data section shows", async () => {
     zh.resetLedgerFailed(zh.resetLedgerParts["sign-in"], zh.resetLedgerList([zh.resetLedgerParts.manual]), null),
     "無法刪除金融機構的登入資料。已刪除：人工填入的財務資料。可以再試一次。",
   );
+});
+
+test("a failure says nothing was deleted only when that is true", () => {
+  const en = settingsCopy.en.settings;
+  const zh = settingsCopy["zh-TW"].settings;
+  const financial = { kind: "failed", done: [], failed: "financial", notRun: ["preview", "sign-in"] } as const;
+  assert.equal(
+    ledgerResetFailureText(financial, en),
+    "The reset of financial data from financial institutions did not finish, and the cleanup backup may already be removed. Not deleted: Preview data (financial institutions), Sign-in data for financial institutions. Try again.",
+  );
+  assert.equal(
+    ledgerResetFailureText(financial, zh),
+    "金融機構的財務資料沒有重置完成，清理應用資料的備份可能已經刪除。未刪除：預覽資料（金融機構）、金融機構的登入資料。請再試一次。",
+  );
+  assert.doesNotMatch(ledgerResetFailureText({ ...financial, notRun: [] }, en), /Nothing was deleted/u);
+  assert.match(ledgerResetFailureText({ kind: "failed", done: [], failed: "manual", notRun: [] }, en), /Nothing was deleted/u);
+  assert.equal(ledgerResetFailureText({ kind: "failed", done: [], failed: null, notRun: ["manual"] }, zh), "無法重置帳本，請再試一次。");
 });

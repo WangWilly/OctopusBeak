@@ -78,3 +78,15 @@ test("a run with no estimate in this worker reads one first", async () => {
     assert.deepEqual(takes, estimates);
   });
 });
+
+test("a run after a recorded failure leaves the room its estimate read; deleting that record is the run's own write", async () => {
+  await withBackupLedger(async ({ registry, estimates, takes }) => {
+    assert.equal((await registry["financial.canonical.compact"]([cleanUp])).status, "failed");
+    assert.equal((await registry["financial.canonical.compactionStatus"]([])).running, false);
+    const estimate = await registry["financial.ledger.cleanupEstimate"]([]);
+    assert.equal(estimates.length, 2);
+    await registry["financial.canonical.compact"]([cleanUp]);
+    assert.equal(estimates.length, 2, "no second dry run");
+    assert.deepEqual(takes.at(-1), estimate.reclaimNeededBytes);
+  });
+});

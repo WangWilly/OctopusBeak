@@ -30,6 +30,7 @@
   } from "$lib/settings/ledger-cleanup.ts";
   import {
     ledgerResetChoices,
+    ledgerResetFailureText,
     runLedgerReset,
     tickLedgerResetPart,
     type LedgerResetOutcome,
@@ -317,7 +318,10 @@
     await tick();
     if (target === "financial-data-deletion" || target === "sign-in-data") {
       showSection("settings-data");
-      document.getElementById("reset-ledger")?.focus({ preventScroll: true });
+      // While a cleanup runs the button is disabled and takes no focus; its row does.
+      const button = document.getElementById("reset-ledger");
+      (button instanceof HTMLButtonElement && !button.disabled ? button : document.getElementById("reset-ledger-row"))
+        ?.focus({ preventScroll: true });
     } else {
       showSection("settings-updates");
     }
@@ -416,12 +420,13 @@
     if (!resetChoices.canConfirm) return;
     resetPending = true;
     collectStatus = "idle";
-    const outcome = await runLedgerReset(window.octopusBeak.settings, resetChoices.parts);
+    const parts = resetChoices.parts;
+    const outcome = await runLedgerReset(window.octopusBeak.settings, parts);
     resetPending = false;
     resetOpen = false;
     resetOutcome = outcome;
-    // The reset deletes the Cleanup Backup; the sign-in status changes with a clear.
-    if (outcome.done.includes("financial")) void readCleanupBackup();
+    // The reset removes the Cleanup Backup before it empties the store, so even a failed one may have removed it.
+    if (parts.includes("financial")) void readCleanupBackup();
     await readSignInStatus();
   }
 
@@ -1093,7 +1098,7 @@
               </div>
             </Modal>
           {/if}
-          <div class="setting-row">
+          <div id="reset-ledger-row" class="setting-row" tabindex="-1">
             <div class="setting-label-group">
               <span class="setting-label">{$t.settings.resetLedger}</span>
               <small class="setting-hint">{$t.settings.resetLedgerHint}</small>
@@ -1135,13 +1140,7 @@
           {#if resetOutcome?.kind === "failed"}
             <div id="reset-ledger-failed" class="settings-error" role="alert">
               <CircleAlert size={16} strokeWidth={2.25} aria-hidden="true" />
-              <span>{resetOutcome.failed === null
-                ? $t.settings.resetLedgerNotRun
-                : $t.settings.resetLedgerFailed(
-                  $t.settings.resetLedgerParts[resetOutcome.failed],
-                  resetOutcome.done.length > 0 ? partList(resetOutcome.done, $t) : null,
-                  resetOutcome.notRun.length > 0 ? partList(resetOutcome.notRun, $t) : null,
-                )}</span>
+              <span>{ledgerResetFailureText(resetOutcome, $t.settings)}</span>
             </div>
           {/if}
           {#if collectStatus === "error"}
