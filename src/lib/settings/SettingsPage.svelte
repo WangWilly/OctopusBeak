@@ -148,6 +148,7 @@
   let resetOutcome: LedgerResetOutcome | null = null;
   /** The damaged ledgers set aside (ADR 0150), read from the main process when the dialog opens; null for none. */
   let damagedSummary: DamagedLedgerSummaryDto | null = null;
+  let damagedSummaryRead = 0;
   $: resetChoices = ledgerResetChoices(resetTicked, damagedSummary);
   /** Unknown until read; a failed read shows nothing extra rather than a guess. */
   let signInStatus: SignInDataStatus | null = null;
@@ -441,6 +442,7 @@
     if (!resetChoices.canConfirm) return;
     resetPending = true;
     collectStatus = "idle";
+    // Fixed at the click: a summary read that lands while the reset runs changes the boxes, never what is sent.
     const parts = resetChoices.parts;
     const outcome = await runLedgerReset(window.octopusBeak.settings, parts);
     resetPending = false;
@@ -448,13 +450,17 @@
     resetOutcome = outcome;
     // The reset removes the Cleanup Backup before it empties the store, so even a failed one may have removed it.
     if (parts.includes("financial")) void readCleanupBackup();
+    // Even a failed damaged-ledger part may have removed some of them.
     void readDamagedSummary();
     await readSignInStatus();
   }
 
   async function readDamagedSummary() {
+    const read = ++damagedSummaryRead;
     try {
-      damagedSummary = await window.octopusBeak.settings.damagedLedgerSummary();
+      const next = await window.octopusBeak.settings.damagedLedgerSummary();
+      // A slower earlier read must not overwrite a later one, such as the read after a reset.
+      if (read === damagedSummaryRead) damagedSummary = next;
     } catch {
       // Keeps what was read last; the main process refuses a deletion a restore keeps whatever the dialog shows.
     }
@@ -1265,7 +1271,9 @@
                         type="checkbox"
                         checked={option.checked}
                         disabled={option.locked || option.held !== null}
-                        aria-describedby={`reset-ledger-${option.part}-hint`}
+                        aria-describedby={option.held
+                          ? `reset-ledger-${option.part}-hint reset-ledger-${option.part}-held`
+                          : `reset-ledger-${option.part}-hint`}
                         onchange={(event) => (resetTicked = tickLedgerResetPart(resetTicked, option.part, event.currentTarget.checked))}
                       />
                       <span class="reset-option-text">
@@ -1278,7 +1286,7 @@
                           {$t.settings.resetLedgerPartHints[option.part]}{#if option.locked}{" "}{$t.settings.resetLedgerPreviewIncluded}{/if}
                         </small>
                         {#if option.held}
-                          <small id="reset-ledger-damaged-held" class="setting-hint warning-hint" role="status">{$t.settings.resetLedgerDamagedHeld[option.held]}</small>
+                          <small id={`reset-ledger-${option.part}-held`} class="setting-hint warning-hint" role="status">{$t.settings.resetLedgerDamagedHeld[option.held]}</small>
                         {/if}
                         {#if option.part === "sign-in" && option.checked && !resetTicked.has("financial") && signInGuidance.resetWarning}
                           <small id="reset-ledger-sign-in-warning" class="setting-hint warning-hint" role="status">{$t.settings.resetLedgerSignInWarning}</small>

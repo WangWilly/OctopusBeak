@@ -209,11 +209,14 @@ export type DamagedLedgerSummaryDto = Readonly<{
 
 /**
  * Why the damaged ledgers cannot be deleted on their own for now.
- * `restore-under-way`: a restore not yet finished names one.
- * `restore-unreadable`: a restore file cannot be read, so it may name one.
- * A Canonical Reset removes them and the restore's files together.
+ * - `restore-under-way`: a restore not yet finished names one.
+ * - `restore-unreadable`: a restore file that is no longer a request cannot
+ *   be read, so it may name one; deleting financial data removes them with
+ *   the restore's files.
+ * - `restore-request-unreadable`: the restore request itself cannot be read,
+ *   so the main process refuses every reset until a launch settles it.
  */
-export type DamagedLedgerHold = "restore-under-way" | "restore-unreadable";
+export type DamagedLedgerHold = "restore-under-way" | "restore-unreadable" | "restore-request-unreadable";
 
 /** How the last Cleanup Restore ended (ADR 0157); `takenAt` is the restored backup's time. No path reaches the renderer. */
 export type CleanupRestoreOutcomeDto =

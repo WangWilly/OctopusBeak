@@ -106,7 +106,7 @@ test("the damaged-ledger box shows only while one exists, after preview data, an
   assert.equal(en.resetLedgerDamagedLabel(3, "412"), "3 damaged ledger records (about 412 MB)");
   assert.equal(en.resetLedgerDamagedLabel(3, null), "3 damaged ledger records");
   assert.equal(zh.resetLedgerPartHints.damaged, "毀損的帳本備援紀錄，刪除後無法取回。聯繫客服嘗試修復毀損的資料。");
-  assert.equal(en.resetLedgerPartHints.damaged, "Backup records of damaged ledgers. They cannot be recovered once deleted. Contact support to try to repair the damaged data.");
+  assert.equal(en.resetLedgerPartHints.damaged, "Records of damaged ledgers set aside earlier. They cannot be recovered once deleted. Contact support to try to repair the damaged data.");
 });
 
 test("ticked on its own the damaged ledgers count as one item; financial data ticks and locks them, and unticking gives the choice back", () => {
@@ -129,7 +129,7 @@ test("ticked on its own the damaged ledgers count as one item; financial data ti
 test("damaged ledgers a restore keeps cannot be ticked on their own, and say why; financial data still locks them in", () => {
   const zh = settingsCopy["zh-TW"].settings;
   const en = settingsCopy.en.settings;
-  for (const hold of ["restore-under-way", "restore-unreadable"] as const) {
+  for (const hold of ["restore-under-way", "restore-unreadable", "restore-request-unreadable"] as const) {
     const held = { ...DAMAGED, hold };
     const ticked = tickLedgerResetPart(new Set(), "damaged", true);
     assert.deepEqual(box(ticked, "damaged", held), { part: "damaged", checked: false, locked: false, held: hold }, `${hold}: disabled and unticked`);
@@ -142,13 +142,26 @@ test("damaged ledgers a restore keeps cannot be ticked on their own, and say why
   }
   assert.equal(zh.resetLedgerDamagedHeld["restore-under-way"], "還原尚未完成，暫時無法刪除。");
   assert.equal(zh.resetLedgerDamagedHeld["restore-unreadable"], "有一份無法讀取的還原紀錄，為了安全不會單獨刪除。勾選「金融機構的財務資料」會一併清除。");
+  assert.equal(zh.resetLedgerDamagedHeld["restore-request-unreadable"], "有一份無法讀取的還原紀錄，為了安全不會單獨刪除。",
+    "every reset is refused then, so it does not offer the financial data");
+  assert.doesNotMatch(en.resetLedgerDamagedHeld["restore-request-unreadable"], /financial/u);
 });
 
-test("a failed damaged-ledger part is named like any other", () => {
+test("a failed damaged-ledger part says some may already be gone, never that nothing was deleted", () => {
   const zh = settingsCopy["zh-TW"].settings;
+  const en = settingsCopy.en.settings;
   assert.equal(
-    ledgerResetFailureText({ kind: "failed", done: ["preview"], failed: "damaged", notRun: ["manual"] }, zh),
-    zh.resetLedgerFailed("損壞的帳本紀錄", zh.resetLedgerList([zh.resetLedgerParts.preview]), zh.resetLedgerList([zh.resetLedgerParts.manual])),
+    ledgerResetFailureText({ kind: "failed", done: [], failed: "damaged", notRun: [] }, zh),
+    "損壞的帳本紀錄沒有全部刪除，其中一部分可能已經刪除。請再試一次。",
   );
+  assert.equal(
+    ledgerResetFailureText({ kind: "failed", done: ["preview"], failed: "damaged", notRun: ["manual", "sign-in"] }, zh),
+    "損壞的帳本紀錄沒有全部刪除，其中一部分可能已經刪除。已刪除：預覽資料（金融機構）。未刪除：人工填入的財務資料、金融機構的登入資料。請再試一次。",
+  );
+  assert.equal(
+    ledgerResetFailureText({ kind: "failed", done: [], failed: "damaged", notRun: ["manual"] }, en),
+    "Not every damaged ledger record was deleted; some of them may already be gone. Not deleted: Financial data you entered by hand. Try again.",
+  );
+  assert.equal(en.resetLedgerPartHints.damaged.includes("ackup"), false, "a damaged ledger is not called a backup");
   assert.equal(settingsCopy.en.settings.resetLedgerParts.damaged, "Damaged ledger records");
 });

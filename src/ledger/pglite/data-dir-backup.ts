@@ -209,28 +209,12 @@ export function isDamagedLedgerName(dataDir: string, name: string): boolean {
   return name.startsWith(prefix) && STAMP.test(name.slice(prefix.length));
 }
 
-/** A damaged ledger beside this one (ADR 0150), with the time in its name. */
-export type DamagedLedgerEntry = Readonly<{ path: string; setAsideAt: Date }>;
-
-/** A damaged ledger with its size, which Reset ledger sums. `path` stays on the host. */
-export type DamagedLedger = DamagedLedgerEntry & Readonly<{
-  /** null when the folder could not be measured; it can still be deleted. */
-  bytes: number | null;
-}>;
-
-/** The time in a damaged ledger's name, or null when `name` is not one. */
-function damagedLedgerSetAsideAt(dataDir: string, name: string): Date | null {
-  if (!isDamagedLedgerName(dataDir, name)) return null;
-  const stamp = STAMP.exec(name.slice(`${basename(resolve(dataDir))}${DAMAGED_INFIX}`.length))!;
-  const setAsideAt = new Date(`${stamp[1]}T${stamp[2]}:${stamp[3]}:${stamp[4]}Z`);
-  return Number.isNaN(setAsideAt.getTime()) ? null : setAsideAt;
-}
-
 /**
- * The damaged ledgers beside `dataDir`, newest first: folders named
- * `<ledger>.damaged-<UTC time>[-N]`, never a link, whatever it points to.
+ * The damaged ledgers beside `dataDir` (ADR 0150): every folder whose bare
+ * name `isDamagedLedgerName` accepts, as the Canonical Reset and the sweep
+ * name them. A link is no folder, whatever it points to.
  */
-export async function listDamagedLedgers(dataDir: string): Promise<DamagedLedgerEntry[]> {
+export async function listDamagedLedgers(dataDir: string): Promise<string[]> {
   dataDir = resolve(dataDir);
   let names: string[];
   try {
@@ -238,21 +222,24 @@ export async function listDamagedLedgers(dataDir: string): Promise<DamagedLedger
   } catch {
     return [];
   }
-  const ledgers: DamagedLedgerEntry[] = [];
-  for (const name of names) {
-    const setAsideAt = damagedLedgerSetAsideAt(dataDir, name);
-    if (!setAsideAt) continue;
+  const ledgers: string[] = [];
+  for (const name of names.filter((name) => isDamagedLedgerName(dataDir, name)).sort()) {
     const path = join(dirname(dataDir), name);
-    if (!(await lstat(path).then((entry) => entry.isDirectory(), () => false))) continue;
-    ledgers.push({ path, setAsideAt });
+    if (await lstat(path).then((entry) => entry.isDirectory(), () => false)) ledgers.push(path);
   }
-  return ledgers.sort((a, b) => b.setAsideAt.getTime() - a.setAsideAt.getTime() || b.path.localeCompare(a.path));
+  return ledgers;
 }
+
+/** A damaged ledger with its size, which Reset ledger sums. `path` stays on the host. */
+export type DamagedLedger = Readonly<{
+  path: string;
+  /** null when the folder could not be measured; it can still be deleted. */
+  bytes: number | null;
+}>;
 
 /** The damaged ledgers with their sizes. One that cannot be measured is listed without a size. */
 export async function readDamagedLedgers(dataDir: string): Promise<DamagedLedger[]> {
-  const ledgers = await listDamagedLedgers(dataDir);
-  return Promise.all(ledgers.map(async (ledger) => ({ ...ledger, bytes: await directoryBytes(ledger.path).catch(() => null) })));
+  return Promise.all((await listDamagedLedgers(dataDir)).map(async (path) => ({ path, bytes: await directoryBytes(path).catch(() => null) })));
 }
 
 /**

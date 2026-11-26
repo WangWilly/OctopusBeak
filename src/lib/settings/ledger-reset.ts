@@ -85,7 +85,8 @@ export async function runLedgerReset(
 /**
  * What the data section says after a reset that did not finish. The
  * Canonical Reset removes the Cleanup Backup before it empties the store, so
- * a failed one may already have deleted that backup: it never says nothing
+ * a failed one may already have deleted that backup, and a failed
+ * damaged-ledger part may have removed some of them: neither says nothing
  * was deleted.
  */
 export function ledgerResetFailureText(
@@ -96,5 +97,7 @@ export function ledgerResetFailureText(
     parts.length > 0 ? copy.resetLedgerList(parts.map((part) => copy.resetLedgerParts[part])) : null;
   if (outcome.failed === null) return copy.resetLedgerNotRun;
   if (outcome.failed === "financial") return copy.resetLedgerFinancialFailed(list(outcome.notRun));
+  // Each damaged ledger goes on its own: some may be gone, so it never says nothing was deleted.
+  if (outcome.failed === "damaged") return copy.resetLedgerDamagedFailed(list(outcome.done), list(outcome.notRun));
   return copy.resetLedgerFailed(copy.resetLedgerParts[outcome.failed], list(outcome.done), list(outcome.notRun));
 }

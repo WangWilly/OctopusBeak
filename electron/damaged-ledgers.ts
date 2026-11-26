@@ -21,13 +21,18 @@ export class DamagedLedgersHeld extends Error {
   }
 }
 
-/** The strongest hold over any of them: an unreadable restore file may name every one. */
+/** How strongly each hold keeps them: the strongest over any of them is the one the dialog says. */
+const STRENGTH: Readonly<Record<DamagedLedgerHold, number>> = {
+  "restore-under-way": 1,
+  "restore-unreadable": 2,
+  "restore-request-unreadable": 3,
+};
+
 async function holdOver(dataDir: string, paths: readonly string[], fs: LedgerRestoreFs): Promise<DamagedLedgerHold | null> {
   let hold: DamagedLedgerHold | null = null;
   for (const path of paths) {
     const next = await restoreHold(dataDir, basename(path), fs);
-    if (next === "restore-unreadable") return next;
-    hold ??= next;
+    if (next && (hold === null || STRENGTH[next] > STRENGTH[hold])) hold = next;
   }
   return hold;
 }
@@ -42,12 +47,30 @@ export async function damagedLedgerSummary(dataDir: string, fs: LedgerRestoreFs 
   return { count: ledgers.length, bytes, hold: await holdOver(dataDir, ledgers.map((ledger) => ledger.path), fs) };
 }
 
+/** Some damaged ledgers could not be removed; the others were. Only error codes, never a path. */
+export class DamagedLedgersNotAllDeleted extends Error {
+  override readonly name = "DamagedLedgersNotAllDeleted";
+  readonly codes: readonly string[];
+
+  constructor(codes: readonly string[]) {
+    super(`damaged-ledgers-not-all-deleted: ${codes.join(", ")}`);
+    this.codes = codes;
+  }
+}
+
+const errorCode = (error: unknown) => {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return typeof code === "string" && /^[A-Z0-9_]{1,32}$/u.test(code) ? code : "unknown";
+};
+
 /**
  * Reset ledger's damaged-ledger part on its own: removes every damaged
  * ledger, each renamed to `.partial` first, and nothing else. Refuses, with
  * nothing removed, while a restore file names one or cannot be read. A
- * ledger renamed aside whose removal then failed no longer lists, and the
- * next open removes it: it counts as removed, and `log` gets its code.
+ * ledger that cannot be removed does not stop the others: as many go as
+ * can, then the part fails, logged by code. A ledger renamed aside whose
+ * removal then failed no longer lists, and the next open removes it: it
+ * counts as removed, and `log` gets its code.
  */
 export async function deleteDamagedLedgers(
   dataDir: string,
@@ -55,10 +78,19 @@ export async function deleteDamagedLedgers(
   fs: LedgerRestoreFs = NODE_RESTORE_FS,
 ): Promise<void> {
   const ledgers = await listDamagedLedgers(dataDir);
-  const hold = await holdOver(dataDir, ledgers.map((ledger) => ledger.path), fs);
+  const hold = await holdOver(dataDir, ledgers, fs);
   if (hold) throw new DamagedLedgersHeld(hold);
+  const failed: string[] = [];
   for (const ledger of ledgers) {
-    const removal = await removeDamagedLedger(ledger.path);
+    let removal: Awaited<ReturnType<typeof removeDamagedLedger>>;
+    try {
+      removal = await removeDamagedLedger(ledger);
+    } catch (error) {
+      failed.push(errorCode(error));
+      log("damaged-ledger-delete-failed", errorCode(error));
+      continue;
+    }
     if (removal.kind === "left-for-sweep") log("damaged-ledger-delete-left-for-sweep", removal.code);
   }
+  if (failed.length > 0) throw new DamagedLedgersNotAllDeleted(failed);
 }
