@@ -10,8 +10,10 @@ import {
   NODE_RESTORE_FS,
   requestLedgerRestore,
   resumeLedgerRestore,
+  STUCK_OPENS,
   takeFailedRestoreBackup,
   takeLedgerRestoreOutcome,
+  type StuckRestoreChoice,
   type LedgerRestoreFs,
   type LedgerRestoreOrigin,
 } from "./ledger-restore.ts";
@@ -112,6 +114,7 @@ async function launch(ledger: Ledger, opens: (content: string) => boolean, fs: L
   const step = await resumeLedgerRestore(ledger.dataDir, { ...LAUNCH, fs });
   died();
   if (step.kind === "none") return opens(which(ledger.dataDir)) ? "normal" : "failed-open";
+  if (step.kind === "quit") return "startup-failed";
   assert.equal(existsSync(ledger.record), false, "a backup never opens with a clean-shutdown record: its open checks every index");
   assert.equal(which(ledger.dataDir), "backup", "only the backup opens as a restore");
   if (opens(which(ledger.dataDir))) {
@@ -649,4 +652,110 @@ test("temporary files a write cut short left are removed at launch", () => withL
   for (const file of ["restore-pending.tmp", "restore-outcome.tmp", "restore-opened.tmp"]) writeFileSync(`${ledger.dataDir}.${file}`, "{");
   assert.equal((await resumeLedgerRestore(ledger.dataDir, LAUNCH)).kind, "none");
   assert.deepEqual(siblings(ledger), [BACKUP_NAME, `${BACKUP_NAME}.versions.json`, "neighbour", "pglite", "pglite.clean-shutdown"].sort());
+}));
+
+/** Launch-step options that answer the stuck-restore question with `choice`, counting each time it is asked. */
+function asking(choice: StuckRestoreChoice) {
+  const asked: Date[] = [];
+  return {
+    asked,
+    deps: { ...LAUNCH, askStuck: async ({ takenAt }: { takenAt: Date }) => { asked.push(takenAt); return choice; } },
+  };
+}
+
+/** Launches that begin opening the backup and die with no word from the open. */
+async function silentLaunches(ledger: Ledger, count: number, fs: LedgerRestoreFs = NODE_RESTORE_FS) {
+  for (let index = 0; index < count; index += 1) {
+    const step = await resumeLedgerRestore(ledger.dataDir, { ...LAUNCH, fs });
+    assert.equal(step.kind, "opening");
+  }
+}
+
+test("a backup several launches began opening with no word asks the person, and only then", async () => {
+  assert.equal(STUCK_OPENS, 2);
+  await withLedger(async (ledger) => {
+    await request(ledger);
+    const { asked, deps } = asking("retry");
+    assert.equal((await resumeLedgerRestore(ledger.dataDir, deps)).kind, "opening", "the first launch only swaps");
+    assert.equal((await resumeLedgerRestore(ledger.dataDir, deps)).kind, "opening", "one silent launch is not enough");
+    assert.equal(asked.length, 0);
+    assert.equal((await resumeLedgerRestore(ledger.dataDir, deps)).kind, "opening", "try again opens the backup");
+    assert.deepEqual(asked, [new Date(TAKEN_AT)], "after two silent launches the person decides");
+    assert.equal(which(ledger.dataDir), "backup");
+    assert.equal(existsSync(ledger.record), false, "trying again still checks every index");
+  });
+  // A clean close of the restored store proves the open: no question.
+  await withLedger(async (ledger) => {
+    await request(ledger);
+    await silentLaunches(ledger, 2);
+    writeFileSync(ledger.record, "");
+    const { asked, deps } = asking("swap-back");
+    assert.equal((await resumeLedgerRestore(ledger.dataDir, deps)).kind, "none");
+    assert.equal(asked.length, 0);
+    assert.equal(await assertSettled(ledger, "closed cleanly"), "restored");
+  });
+  // A recorded failure swaps back on its own: no question.
+  await withLedger(async (ledger) => {
+    await request(ledger);
+    await silentLaunches(ledger, 2);
+    const step = await resumeLedgerRestore(ledger.dataDir, LAUNCH);
+    if (step.kind === "opening") await step.failed();
+    const { asked, deps } = asking("retry");
+    assert.equal((await resumeLedgerRestore(ledger.dataDir, deps)).kind, "none");
+    assert.equal(asked.length, 0);
+    assert.equal(await assertSettled(ledger, "failure seen"), "unchanged");
+  });
+  // An open that reached ready ends the counting.
+  await withLedger(async (ledger) => {
+    await request(ledger);
+    await silentLaunches(ledger, 1);
+    const step = await resumeLedgerRestore(ledger.dataDir, LAUNCH);
+    if (step.kind === "opening") await step.opened();
+    const { asked, deps } = asking("swap-back");
+    for (let index = 0; index < 3; index += 1) assert.equal((await resumeLedgerRestore(ledger.dataDir, deps)).kind, "none");
+    assert.equal(asked.length, 0);
+    assert.equal(await assertSettled(ledger, "opened"), "restored");
+  });
+});
+
+test("a count that could not be written never brings the question", () => withLedger(async (ledger) => {
+  await request(ledger);
+  await silentLaunches(ledger, 1);
+  // From here every write of the pending file fails: no launch counts.
+  const { fs, state } = switchable({ writeFlushed: "ENOSPC" });
+  state.broken = true;
+  const { asked } = asking("swap-back");
+  for (let index = 0; index < 4; index += 1) {
+    const step = await resumeLedgerRestore(ledger.dataDir, {
+      ...LAUNCH, fs, askStuck: async () => { asked.push(new Date()); return "swap-back"; },
+    });
+    assert.equal(step.kind, "opening");
+  }
+  assert.equal(asked.length, 0);
+  assert.equal(which(ledger.dataDir), "backup");
+}));
+
+test("switching back puts the ledger the person had back in this launch, and keeps the backup restorable", () => withLedger(async (ledger) => {
+  await request(ledger);
+  await silentLaunches(ledger, 2);
+  const { deps } = asking("swap-back");
+  assert.equal((await resumeLedgerRestore(ledger.dataDir, deps)).kind, "none", "no worker had started, so it runs here");
+  assert.equal(which(ledger.dataDir), "original");
+  assert.equal(existsSync(ledger.record), false, "the ledger it put back checks every index");
+  assert.equal((await readLedgerCleanupBackup(ledger.dataDir, CURRENT))?.restorable, true, "the backup can still be restored");
+  assert.equal(await takeFailedRestoreBackup(ledger.dataDir), ledger.backup, "the outcome names the backup that would not open");
+  assert.equal(await assertSettled(ledger, "switched back"), "unchanged");
+}));
+
+test("quitting at the question changes nothing, and the next launch asks again", () => withLedger(async (ledger) => {
+  await request(ledger);
+  await silentLaunches(ledger, 2);
+  const before = siblings(ledger);
+  const pending = readFileSync(ledgerRestorePendingPath(ledger.dataDir), "utf8");
+  const { asked, deps } = asking("quit");
+  assert.equal((await resumeLedgerRestore(ledger.dataDir, deps)).kind, "quit");
+  assert.deepEqual(siblings(ledger), before);
+  assert.equal(readFileSync(ledgerRestorePendingPath(ledger.dataDir), "utf8"), pending, "not counted as a launch that opened");
+  assert.equal((await resumeLedgerRestore(ledger.dataDir, deps)).kind, "quit");
+  assert.equal(asked.length, 2);
 }));

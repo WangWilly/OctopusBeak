@@ -48,7 +48,7 @@ import type { ErrorReportInput } from "../src/lib/automation/error-report-contra
 import { createBeforeQuitHandler, quitOnTerminationSignals } from "./automation-shutdown.ts";
 import { applyOctopusBeakAppIdentity } from "./app-identity.ts";
 import { openSafeStorageCredentialStore } from "./credential-codec.ts";
-import { recoverUnusableLedger } from "./ledger-recovery.ts";
+import { askAboutStuckRestore, recoverUnusableLedger } from "./ledger-recovery.ts";
 import { isLedgerUnusable } from "./ledger-unusable.ts";
 import { readLedgerCleanupBackup, removeLedgerBackup } from "../src/ledger/pglite/data-dir-backup.ts";
 import { LEDGER_BASELINE_VERSIONS } from "../src/ledger/pglite/baseline-versions.ts";
@@ -425,12 +425,33 @@ async function start() {
   migrateAutomationEnvFile({ envPath: path.join(userData, ".env"), settings: automationSettings, credentials });
   migrateStatementSelectionIds(automationSettings.path);
   const ledgerDataDir = path.join(userData, "data", "pglite");
+  const ledgerLocale = () => (app.getLocale().startsWith("zh") ? "zh-TW" as const : "en" as const);
+  /** A day as Settings writes it, in its time zone; the dialogs fall back to the system clock's day. */
+  const ledgerDateFormat = (): { formatDate?: (value: Date) => string } => {
+    try {
+      const timeZone = systemSettings(automationSettings.read()).systemTimezone;
+      return { formatDate: (value) => dateInTimeZone(value, timeZone).replaceAll("-", "/") };
+    } catch {
+      return {};
+    }
+  };
   // Before anything opens the folder: a restore asked for last session swaps it now, or one a crash cut short goes on.
   // A launch step that could not put the ledger back throws, and the App does not start on a missing ledger.
   const ledgerRestore = await resumeLedgerRestore(ledgerDataDir, {
     current: LEDGER_BASELINE_VERSIONS,
+    // Before the worker exists: a backup several launches could not finish opening is the person's call.
+    askStuck: ({ takenAt }) => askAboutStuckRestore({
+      locale: ledgerLocale(),
+      takenAt,
+      ask: async (options) => (await dialog.showMessageBox(options)).response,
+      ...ledgerDateFormat(),
+    }),
     log: (code, detail) => console.error(code, ...(detail === undefined ? [] : [detail])),
   });
+  if (ledgerRestore.kind === "quit") {
+    app.quit();
+    return;
+  }
   if (ledgerRestore.kind === "opening") ledgerRestoreOpening = ledgerRestore;
   const operationalRuntime = createPGliteOperationalRuntime({
     dataDir: ledgerDataDir,
@@ -524,13 +545,6 @@ async function start() {
       const backup = await readLedgerCleanupBackup(ledgerDataDir, LEDGER_BASELINE_VERSIONS).catch(() => null);
       // A backup a swap back just gave back did not open; it is not offered again.
       const failed = await takeFailedRestoreBackup(ledgerDataDir).catch(() => null);
-      const timeZone = (() => {
-        try {
-          return systemSettings(automationSettings.read()).systemTimezone;
-        } catch {
-          return undefined;
-        }
-      })();
       return recoverUnusableLedger(ledgerDataDir, {
         restore: backup?.restorable && backup.path !== failed
           ? {
@@ -545,7 +559,7 @@ async function start() {
             }),
           }
           : null,
-        ...(timeZone ? { formatDate: (value: Date) => dateInTimeZone(value, timeZone).replaceAll("-", "/") } : {}),
+        ...ledgerDateFormat(),
         locale: app.getLocale().startsWith("zh") ? "zh-TW" : "en",
         ask: async (options) => {
           const owner = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;

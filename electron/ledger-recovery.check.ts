@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { damagedLedgerPath, recoverUnusableLedger, type LedgerRecoveryDeps } from "./ledger-recovery.ts";
+import { askAboutStuckRestore, damagedLedgerPath, recoverUnusableLedger, type LedgerRecoveryDeps } from "./ledger-recovery.ts";
 import { requestLedgerRestore, resumeLedgerRestore } from "./ledger-restore.ts";
 import { readLedgerCleanupBackup } from "../src/ledger/pglite/data-dir-backup.ts";
 
@@ -167,3 +167,26 @@ test("a restore that cannot be recorded says so, changes nothing, and quits", ()
   assert.equal(calls[1], "exit 1");
   assert.ok(existsSync(join(dataDir, "PG_VERSION")));
 }));
+
+test("the stuck-restore question defaults to trying again, quits when closed, and says switching back loses nothing", async () => {
+  for (const [locale, buttons, nothingLost] of [
+    ["en", ["Try again", "Switch back to the original ledger", "Quit"], /switching back loses nothing/u],
+    ["zh-TW", ["再試一次", "換回原本的帳本", "結束"], /換回不會遺失任何資料/u],
+  ] as const) {
+    for (const [index, choice] of [[0, "retry"], [1, "swap-back"], [2, "quit"], [7, "quit"]] as const) {
+      const asked: Parameters<LedgerRecoveryDeps["ask"]>[0][] = [];
+      const result = await askAboutStuckRestore({
+        locale,
+        takenAt: NOW,
+        formatDate: () => "2026/11/01",
+        ask: async (options) => { asked.push(options); return index; },
+      });
+      assert.equal(result, choice, `${locale}: button ${index}`);
+      assert.deepEqual(asked[0]!.buttons, buttons);
+      assert.equal(asked[0]!.defaultId, 0);
+      assert.equal(asked[0]!.cancelId, 2);
+      assert.match(asked[0]!.detail, nothingLost);
+      assert.ok(asked[0]!.detail.includes("2026/11/01"));
+    }
+  }
+});

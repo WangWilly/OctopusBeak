@@ -30,7 +30,8 @@ import {
  *   the clean-shutdown record, is a second one. A failed open that the App
  *   saw writes `swap-back`. Only that recorded failure swaps back: an App
  *   that died with no signal either way opens the backup again, so a ledger
- *   in use is never swapped out.
+ *   in use is never swapped out on a guess; after `STUCK_OPENS` such
+ *   launches the person is asked before the worker starts.
  * - opened: the replaced ledger, the backup's versions file and the opened
  *   file are removed, each retried at later launches until it goes.
  * - `swap-back`: the folders are renamed back, the clean-shutdown record
@@ -60,7 +61,11 @@ type PendingRestore = Readonly<{
   /** Where the ledger goes, a bare name beside it: `.replaced-` from Settings, `.damaged-` from the dialog. */
   aside: string;
   state: RestoreState;
-  /** Launches that opened the backup, for diagnosis only: none of them is a reason to swap back. */
+  /**
+   * Launches that began opening the backup, counted before the worker starts;
+   * a count that could not be written does not count. Never a reason to swap
+   * back by itself: after `STUCK_OPENS`, the person is asked.
+   */
   opens: number;
   /** When the restore was asked for: only a fresh request is carried out. */
   requestedAt: string;
@@ -138,6 +143,8 @@ export class LedgerRestoreRefused extends Error {
   override readonly name = "LedgerRestoreRefused";
 }
 
+/** Launches that began opening the backup with no word from any of them, after which the person decides. */
+export const STUCK_OPENS = 2;
 /** The App restarts as soon as a restore is asked for; an older request is not carried out. */
 export const LEDGER_RESTORE_REQUEST_TTL_MS = 24 * 60 * 60 * 1000;
 /** Clock skew a request's time may show ahead of the launch's. */
@@ -179,7 +186,6 @@ function parsePending(dataDir: string, text: string): PendingRestore | null {
   if (typeof backup !== "string" || !ledgerBackupTakenAt(dataDir, backup)) return null;
   if (typeof aside !== "string" || !isAsideName(dataDir, from, aside)) return null;
   if (state !== "requested" && state !== "swapped" && state !== "swap-back") return null;
-  if (state === "swap-back" && from !== "settings") return null;
   if (typeof opens !== "number" || !Number.isSafeInteger(opens) || opens < 0) return null;
   if (typeof requestedAt !== "string" || Number.isNaN(Date.parse(requestedAt))) return null;
   return { from, backup, aside, state, opens, requestedAt, appVersion: typeof appVersion === "string" ? appVersion : "" };
@@ -311,6 +317,8 @@ export async function takeFailedRestoreBackup(dataDir: string, fs: LedgerRestore
 /** What the launch step left for the worker's open to decide. */
 export type LedgerRestoreLaunch =
   | Readonly<{ kind: "none" }>
+  /** The person chose to quit while a restored backup would not open: nothing starts. */
+  | Readonly<{ kind: "quit" }>
   | Readonly<{
     kind: "opening";
     /** True from Settings: a failed open goes back to the replaced ledger. */
@@ -328,10 +336,19 @@ export type LedgerRestoreLaunch =
 
 const NONE: LedgerRestoreLaunch = Object.freeze({ kind: "none" });
 
+/** What the person chose for a restored backup that has not finished opening after `STUCK_OPENS` launches. */
+export type StuckRestoreChoice = "retry" | "swap-back" | "quit";
+
 export type LedgerRestoreLaunchDeps = Readonly<{
   current: LedgerBackupVersions;
   now?: () => Date;
   fs?: LedgerRestoreFs;
+  /**
+   * Asks the person what to do with a restored backup that `STUCK_OPENS`
+   * launches began opening with no word from any of them. Without it, the
+   * backup opens again.
+   */
+  askStuck?: (backup: Readonly<{ takenAt: Date }>) => Promise<StuckRestoreChoice>;
   /** Codes only: a path or an error message stays out of the log. */
   log?: (code: string, detail?: string) => void;
 }>;
@@ -559,7 +576,21 @@ export async function resumeLedgerRestore(dataDir: string, deps: LedgerRestoreLa
         await abandon();
         return NONE;
       }
-      // No signal either way: the last launch may have run on the restored ledger, so it opens again rather than swap back.
+      // No signal either way: the last launches may have run on the restored ledger, so nothing swaps back on a guess.
+      // After several, the person decides; trying again is the default.
+      if (pending.opens >= STUCK_OPENS && deps.askStuck) {
+        const choice = await deps.askStuck({ takenAt: new Date(takenAt) }).catch((error: unknown) => {
+          log("ledger-restore-ask-failed", codeOf(error));
+          return "retry" as const;
+        });
+        log("ledger-restore-stuck", choice);
+        if (choice === "quit") return { kind: "quit" };
+        if (choice === "swap-back") {
+          // Recorded first, so a launch cut short finishes it; no worker exists yet, so it runs here.
+          await tryTo("ledger-restore-pending-write-failed", () => write({ ...pending, state: "swap-back" }));
+          return swapBack();
+        }
+      }
       return begin(pending);
     }
     case "requested": {
