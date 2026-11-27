@@ -161,7 +161,6 @@ const INVOKE_CHANNELS = {
     runHistory: "automation:runHistory",
     openExternalPrerequisite: "automation:openExternalPrerequisite",
     runtimeSnapshot: "automation:runtimeSnapshot",
-    fatalRuntimeSnapshot: "automation:fatalRuntimeSnapshot",
     takeNotificationTarget: "automation:takeNotificationTarget",
     previewStructureReport: "automation:previewStructureReport",
     openPreviewStructureReportIssue: "automation:openPreviewStructureReportIssue",

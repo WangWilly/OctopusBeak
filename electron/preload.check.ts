@@ -56,7 +56,6 @@ assert.deepEqual([...invokedBy.values()].sort(), [
   "automation:cancel",
   "automation:cancelDeviceRegistration",
   "automation:deviceRegistrationStatus",
-  "automation:fatalRuntimeSnapshot",
   "automation:forceTerminate",
   "automation:openExternalPrerequisite",
   "automation:openPreviewStructureReportIssue",

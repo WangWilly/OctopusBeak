@@ -45,7 +45,8 @@ import {
   sendErrorReport,
 } from "../src/lib/automation/server/error-report.ts";
 import type { ErrorReportInput } from "../src/lib/automation/error-report-contract.ts";
-import { createBeforeQuitHandler, quitOnTerminationSignals } from "./automation-shutdown.ts";
+import { quitOnTerminationSignals } from "./automation-shutdown.ts";
+import { createOrderedQuit, routeLedgerFailure } from "./fatal-quit.ts";
 import { applyOctopusBeakAppIdentity } from "./app-identity.ts";
 import { openSafeStorageCredentialStore } from "./credential-codec.ts";
 import { askAboutStuckRestore, recoverUnusableLedger } from "./ledger-recovery.ts";
@@ -92,7 +93,6 @@ import {
   STORAGE_MIGRATION_URL,
 } from "./app-protocol.ts";
 import { migrateRendererStorage } from "./renderer-storage-migration.ts";
-import { automationRuntimeFatalDetails } from "../src/lib/automation/runtime-invariants.ts";
 import {
   createPGliteOperationalRuntime,
   type PGliteOperationalRuntime,
@@ -133,6 +133,7 @@ const devRemoteDebuggingPort = Number.isInteger(requestedDevRemoteDebuggingPort)
   ? requestedDevRemoteDebuggingPort
   : 9222;
 
+const cdpFixture = process.env.OCTOPUSBEAK_CDP_FIXTURE === "171";
 const unknownActiveRuntimeFixture =
   process.env.OCTOPUSBEAK_CDP_FATAL_FIXTURE === "unknown-active";
 const packagedBrowserFixture = packagedBrowserFixtureEnabled(process.env);
@@ -151,32 +152,12 @@ let ipcRegistration: ReturnType<typeof registerOctopusBeakIpc> | null = null;
 let automationDesktopService: AutomationDesktopService<BrowserWindow | null> | null = null;
 let pgliteOperationalRuntime: PGliteOperationalRuntime | null = null;
 let automationRuntime: AutomationRuntime | null = null;
-let automationRuntimeFatalHandled = false;
 /** The ledger refused to open and the person is choosing what to do; nothing else ends the App meanwhile. */
 let ledgerRecoveryPending = false;
 /** A Cleanup Restore whose backup the worker is opening; cleared once the worker is ready or has failed (ADR 0157). */
 let ledgerRestoreOpening: Extract<LedgerRestoreLaunch, { kind: "opening" }> | null = null;
 /** The restored backup did not open, and the App is starting again to swap back; nothing else ends the App meanwhile. */
 let ledgerRestoreSwappingBack = false;
-
-function handleAutomationRuntimeFatal(details: {
-  code: string;
-  stage: string;
-  sessionId?: string;
-  revision?: number;
-  taskId?: string;
-  runId?: string | null;
-}) {
-  if (automationRuntimeFatalHandled || ledgerRecoveryPending || ledgerRestoreSwappingBack) return;
-  automationRuntimeFatalHandled = true;
-  console.error("automation-runtime-fatal", details);
-  automationRuntime?.abortAll();
-  // A fatal invariant must retain exit status 1 without waiting for normal
-  // before-quit cleanup or a CDP connection to finish closing.
-  app.removeListener("before-quit", handleBeforeQuit);
-  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.destroy();
-  app.exit(1);
-}
 
 applyOctopusBeakAppIdentity(app);
 // The PGlite store and credentials.json in userData have no cross-process
@@ -200,14 +181,19 @@ function errorReportContext() {
   return {
     appVersion: app.getVersion(),
     osVersion: usageOsVersion(process.getSystemVersion()),
-    locale: app.getLocale().startsWith("zh") ? ("zh-TW" as const) : ("en" as const),
+    locale: systemLocale(),
   };
+}
+
+/** The language of every text the main process shows: Traditional Chinese for a Chinese system, English otherwise. */
+function systemLocale(): "zh-TW" | "en" {
+  return app.getLocale().startsWith("zh") ? "zh-TW" : "en";
 }
 
 /** ADR 0078: unsent failure counts, kept only while usage statistics are on. */
 const USAGE_FAILURES_FILE = "usage-failures.json";
 const QUIT_CLEANUP_WAIT_MS = 2_000;
-const handleBeforeQuit = createBeforeQuitHandler({
+const orderedQuit = createOrderedQuit({
   cleanup: async () => {
     hostServices?.stop();
     try {
@@ -224,8 +210,33 @@ const handleBeforeQuit = createBeforeQuitHandler({
   },
   closeDatabaseDeadlineMs: QUIT_CLEANUP_WAIT_MS + PGLITE_WORKER_SHUTDOWN_TIMEOUT_MS + 1_000,
   quit: () => app.quit(),
+  exit: (code) => app.exit(code),
+  fatalIgnored: () => ledgerRecoveryPending || ledgerRestoreSwappingBack,
+  stopWork: () => {
+    hostServices?.stop();
+    // Shutdown also refuses new runs and stops one still opening, which the
+    // dialog's open time would otherwise let through. The quit awaits it again.
+    void automationRuntime?.shutdown().catch(() => undefined);
+  },
+  locale: systemLocale,
+  ask: async (options) => {
+    // A fixture run has no one to close the dialog; it quits as if someone had.
+    if (!app.isReady() || cdpFixture || packagedBrowserFixture) return;
+    // The dialog must be a sheet on a window. Without one, macOS runs it as
+    // an app-modal loop that blocks this process: no quit, signal or ledger
+    // close runs until someone dismisses it, and it may be on another desktop.
+    const owner = mainWindow && !mainWindow.isDestroyed()
+      ? mainWindow
+      : new BrowserWindow({ width: 480, height: 240, resizable: false, minimizable: false, maximizable: false, fullscreenable: false, title: "OctopusBeak" });
+    if (owner.isMinimized()) owner.restore();
+    owner.show();
+    // A fatal during a scheduled collection finds the App in the background, where the dialog could wait unseen.
+    app.focus({ steal: true });
+    await dialog.showMessageBox(owner, options);
+  },
+  log: (event, details) => console.error(event, ...(details === undefined ? [] : [details])),
 });
-app.on("before-quit", handleBeforeQuit);
+app.on("before-quit", orderedQuit.beforeQuit);
 quitOnTerminationSignals(process, () => app.quit());
 
 let appQuitting = false;
@@ -252,7 +263,7 @@ function notifyCollection(trigger: CollectionTrigger, results: CollectionResult[
   if (appQuitting) return;
   // A person watching the App already sees how their own sync ended.
   if (trigger === "manual" && BrowserWindow.getFocusedWindow()) return;
-  const notice = collectionNotification(results, trigger, app.getLocale().startsWith("zh") ? "zh-TW" : "en");
+  const notice = collectionNotification(results, trigger, systemLocale());
   if (!notice || !Notification.isSupported()) return;
   showNotification(notice, notice.target);
 }
@@ -261,7 +272,7 @@ function notifyCollection(trigger: CollectionTrigger, results: CollectionResult[
 function notifyUpdateReady(version: string) {
   if (appQuitting || !Notification.isSupported()) return;
   showNotification(
-    appUpdateNotification(version, app.getLocale().startsWith("zh") ? "zh-TW" : "en"),
+    appUpdateNotification(version, systemLocale()),
     { route: "settings", focus: "app-updates" },
   );
 }
@@ -304,7 +315,7 @@ function evaluateUntilGone<T>(window: BrowserWindow, script: string): Promise<T>
 }
 
 async function createWindow(rendererUrl: string, preloadPath: string) {
-  if (automationRuntimeFatalHandled) throw new Error("Automation runtime is unavailable.");
+  if (orderedQuit.fatalReported()) throw new Error("Automation runtime is unavailable.");
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.focus();
     return mainWindow;
@@ -348,10 +359,7 @@ async function createWindow(rendererUrl: string, preloadPath: string) {
       if (window.isDestroyed()) throw new Error("The window closed before the renderer loaded.");
       window.show();
       await window.loadURL(`${rendererUrl}#/overview`);
-      if (automationRuntimeFatalHandled) {
-        window.destroy();
-        throw new Error("Automation runtime is unavailable.");
-      }
+      // A fatal reported meanwhile keeps this window: its dialog is a sheet on it.
       return window;
     } catch (error) {
       if (!window.isDestroyed()) window.destroy();
@@ -367,7 +375,7 @@ async function createWindow(rendererUrl: string, preloadPath: string) {
 }
 
 function showStartupError(error: unknown) {
-  if (automationRuntimeFatalHandled) return;
+  if (orderedQuit.fatalReported()) return;
   dialog.showErrorBox(
     "OctopusBeak failed to start",
     error instanceof Error ? error.stack || error.message : String(error),
@@ -398,7 +406,6 @@ function assertDisposableVerificationFixtureRoot(userData: string) {
 async function start() {
   const userData = app.getPath("userData");
   const appRoot = projectRoot();
-  const cdpFixture = process.env.OCTOPUSBEAK_CDP_FIXTURE === "171";
   const cdpVerificationFixture = !app.isPackaged
     && cdpFixture
     && process.env.OCTOPUSBEAK_CDP_VERIFICATION_FIXTURE === "1";
@@ -426,7 +433,6 @@ async function start() {
   migrateAutomationEnvFile({ envPath: path.join(userData, ".env"), settings: automationSettings, credentials });
   migrateStatementSelectionIds(automationSettings.path);
   const ledgerDataDir = path.join(userData, "data", "pglite");
-  const ledgerLocale = () => (app.getLocale().startsWith("zh") ? "zh-TW" as const : "en" as const);
   /** A day as Settings writes it, in its time zone; the dialogs fall back to the system clock's day. */
   const ledgerDateFormat = (): { formatDate?: (value: Date) => string } => {
     try {
@@ -442,7 +448,7 @@ async function start() {
     current: LEDGER_BASELINE_VERSIONS,
     // Before the worker exists: a backup several launches could not finish opening is the person's call.
     askStuck: ({ takenAt, from }) => askAboutStuckRestore({
-      locale: ledgerLocale(),
+      locale: systemLocale(),
       takenAt,
       from,
       ask: async (options) => (await dialog.showMessageBox(options)).response,
@@ -536,7 +542,7 @@ async function start() {
   };
   /** Asks the person what to do with a ledger that refused to open; only the first refusal asks. */
   const recoverLedger = (error: unknown) => {
-    if (ledgerRecoveryPending || automationRuntimeFatalHandled || ledgerRestoreSwappingBack) return;
+    if (ledgerRecoveryPending || orderedQuit.fatalReported() || ledgerRestoreSwappingBack) return;
     ledgerRecoveryPending = true;
     console.error("pglite-ledger-unusable", error instanceof Error ? error.message : String(error));
     // Schedules would only fail against the refused ledger while the person decides.
@@ -562,7 +568,7 @@ async function start() {
           }
           : null,
         ...ledgerDateFormat(),
-        locale: app.getLocale().startsWith("zh") ? "zh-TW" : "en",
+        locale: systemLocale(),
         ask: async (options) => {
           const owner = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
           if (owner?.isMinimized()) owner.restore();
@@ -582,20 +588,15 @@ async function start() {
       },
     );
   };
-  // A worker restarted mid-session after a crash checks the ledger again and may refuse it too.
-  operationalRuntime.worker.onError((error) => {
-    if (failLedgerRestore(error)) return;
-    if (isLedgerUnusable(error)) recoverLedger(error);
+  const ledgerFailure = (stage: string) => routeLedgerFailure(stage, {
+    restoreFailed: failLedgerRestore,
+    unusable: recoverLedger,
+    fatal: orderedQuit.reportFatal,
   });
-  void automationRuntimeReady.catch((error) => {
-    // Registered before any other reader of this promise, so the flag is set before they report it as fatal.
-    if (failLedgerRestore(error)) return;
-    if (isLedgerUnusable(error)) {
-      recoverLedger(error);
-      return;
-    }
-    handleAutomationRuntimeFatal(automationRuntimeFatalDetails("startup-reconcile", error));
-  });
+  // The supervisor gave up on a worker that never opened or kept crashing; a restarted one checks the ledger again and may refuse it too.
+  operationalRuntime.worker.onError(ledgerFailure("ledger-worker"));
+  // Registered before any other reader of this promise, so the flag is set before they report it as fatal.
+  void automationRuntimeReady.catch(ledgerFailure("startup-reconcile"));
   const exchangeRates = createExchangeRateScheduler({
     now: () => new Date(),
     setTimer: (callback, ms) => setTimeout(callback, ms),
@@ -665,7 +666,7 @@ async function start() {
     openExternal: (url) => shell.openExternal(url),
     appVersion: () => app.getVersion(),
     publishRuntimeChanged: (snapshot) => broadcast("automation:runtime-changed", snapshot),
-    onAutomationRuntimeFatal: handleAutomationRuntimeFatal,
+    onAutomationRuntimeFatal: orderedQuit.reportFatal,
     onAutomationRuntimeReady: () => automationRuntimeReady,
   });
   automationDesktopService = automation;
@@ -678,7 +679,7 @@ async function start() {
     writeSettings: (patch) => automationSettings.write({ ...automationSettings.read(), ...patch }),
     appVersion: () => app.getVersion(),
     systemVersion: () => process.getSystemVersion(),
-    locale: () => app.getLocale().startsWith("zh") ? "zh-TW" : "en",
+    locale: systemLocale,
     firstLaunch: () => statSync(userData).birthtime,
     readFailures: () => {
       try {
@@ -863,7 +864,7 @@ async function start() {
   }
   currentRendererUrl = rendererUrl;
   currentPreloadPath = path.join(__dirname, "preload.cjs");
-  if (automationRuntimeFatalHandled) return;
+  if (orderedQuit.fatalReported()) return;
   await createWindow(currentRendererUrl, currentPreloadPath);
 }
 
@@ -871,7 +872,7 @@ protocol.registerSchemesAsPrivileged([APP_SCHEME_PRIVILEGES]);
 if (ownsUserData) app.whenReady().then(start).catch(showStartupError);
 
 app.on("second-instance", () => {
-  if (appQuitting || automationRuntimeFatalHandled || !currentRendererUrl || !currentPreloadPath) return;
+  if (appQuitting || orderedQuit.fatalReported() || !currentRendererUrl || !currentPreloadPath) return;
   void createWindow(currentRendererUrl, currentPreloadPath)
     .then((window) => {
       if (window.isMinimized()) window.restore();
@@ -882,7 +883,7 @@ app.on("second-instance", () => {
 });
 
 app.on("activate", () => {
-  if (automationRuntimeFatalHandled) return;
+  if (orderedQuit.fatalReported()) return;
   if (BrowserWindow.getAllWindows().length === 0 && currentRendererUrl && currentPreloadPath) {
     void createWindow(currentRendererUrl, currentPreloadPath).catch(showStartupError);
   }

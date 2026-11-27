@@ -18,7 +18,7 @@ ADR 0147 made a ledger whose corrupt index cannot be rebuilt, or whose indexes c
 - Before the person chooses, the dialog names the backup path and what a rebuild loses: anything entered or edited in the App, such as manual assets, tags, spending categories and pairings, and history older than what each source still provides. These stay only in the backup.
 - The dialog follows the system language: Traditional Chinese or English.
 
-Other refusals to open, such as a schema that does not match its manifest, still end the App as before. Rebuilding would hide an App defect behind lost data.
+Other refusals to open, such as a schema that does not match its manifest, still end the App as before. Rebuilding would hide an App defect behind lost data. Since [ADR 0161](./0161-a-fatal-report-explains-then-quits-in-order.md), the App explains such an end in a dialog and then quits in order.
 
 ## Considered options
 

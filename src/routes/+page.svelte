@@ -5,6 +5,7 @@
   import AutomationDashboard from "$lib/automation/AutomationDashboard.svelte";
   import UsageStatisticsPrompt from "$lib/settings/UsageStatisticsPrompt.svelte";
   import { createAutomationPageState } from "$lib/automation/automation-page-state.ts";
+  import { createAutomationRuntimeRecovery } from "$lib/automation/runtime-recovery.ts";
   import type { AutomationActionStart, AutomationStopRequested } from "$lib/automation/automation-actions.ts";
   import {
     type AutomationActionToken,
@@ -127,8 +128,11 @@
       cancel: (taskId, expectedRunId) => window.octopusBeak.automation.cancel(taskId, expectedRunId),
       forceTerminate: (taskId, expectedRunId) => window.octopusBeak.automation.forceTerminate(taskId, expectedRunId),
       runtimeSnapshot: () => window.octopusBeak.automation.runtimeSnapshot(),
-      fatalRuntimeSnapshot: () => window.octopusBeak.automation.fatalRuntimeSnapshot(),
     },
+    recovery: createAutomationRuntimeRecovery({
+      storage: () => window.sessionStorage,
+      reload: () => window.location.reload(),
+    }),
     requestReload: (reason) => {
       if (reason === "poll" && route !== "automation") return;
       return loadRoute("automation", {
@@ -750,6 +754,13 @@
   <p role="status" data-financial-live-error>
     {$t.common.financialLiveUnavailable}
   </p>
+{/if}
+
+{#if $automationState.runtimeUnavailable}
+  <RouteLoadNotice
+    state={{ status: "error", data: true, message: $t.common.automationRuntimeUnavailable }}
+    retry={() => automationState.retryRuntime()}
+  />
 {/if}
 
 {#if firstRunWelcomeState?.status === "active" || completingFirstRunWelcome}

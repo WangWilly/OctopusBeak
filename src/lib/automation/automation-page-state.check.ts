@@ -3,6 +3,7 @@ import test from "node:test";
 import type { AutomationRuntimeSnapshot, AutomationRuntimeTaskSnapshot } from "../desktop/api.ts";
 import type { AutomationActionPort } from "./automation-actions.ts";
 import { createAutomationPageState, type AutomationReloadReason } from "./automation-page-state.ts";
+import { createAutomationRuntimeRecovery, RUNTIME_RELOADED_KEY } from "./runtime-recovery.ts";
 import type { AutomationPageModel, AutomationTaskRow } from "./types.ts";
 
 function task(overrides: Partial<AutomationTaskRow> = {}): AutomationTaskRow {
@@ -85,9 +86,13 @@ function harness(t: import("node:test").TestContext) {
     async runtimeSnapshot() {
       return snapshot(1, []);
     },
-    async fatalRuntimeSnapshot() {},
   };
-  const state = createAutomationPageState({ api, requestReload: (reason) => { calls.reloads.push(reason); }, pollIntervalMs: 2_000 });
+  const state = createAutomationPageState({
+    api,
+    requestReload: (reason) => { calls.reloads.push(reason); },
+    recovery: { failed: () => "reloading", accepted() {}, retry() {} },
+    pollIntervalMs: 2_000,
+  });
   let latest!: Parameters<Parameters<typeof state.subscribe>[0]>[0];
   const unsubscribe = state.subscribe((value) => { latest = value; });
   t.after(() => {
@@ -174,10 +179,33 @@ test("Stop all reaches a run that the runtime has not shown yet", async (t) => {
   assert.equal(state.run("a"), null, "a pending stop still refuses a new run");
 });
 
+/** A tab's session storage, kept across the page states a test loads in it. */
+function tab(options: { storageThrows?: boolean } = {}) {
+  const items = new Map<string, string>();
+  const window = {
+    reloads: 0,
+    items,
+    storage: () => {
+      if (options.storageThrows) throw new Error("storage is disabled");
+      return {
+        getItem: (key: string) => items.get(key) ?? null,
+        setItem: (key: string, value: string) => { items.set(key, value); },
+        removeItem: (key: string) => { items.delete(key); },
+      };
+    },
+    reload: () => { window.reloads += 1; },
+  };
+  return window;
+}
+
 /** A page state whose runtime reads answer from a script, with push and resync sources the test fires. */
-function connected(t: import("node:test").TestContext, reads: Array<AutomationRuntimeSnapshot | Error | Promise<AutomationRuntimeSnapshot>>) {
+function connected(
+  t: import("node:test").TestContext,
+  reads: Array<AutomationRuntimeSnapshot | Error | Promise<AutomationRuntimeSnapshot>>,
+  window = tab(),
+) {
   t.mock.method(console, "error", () => {});
-  const calls = { reads: 0, fatal: 0 };
+  const calls = { reads: 0 };
   const api: AutomationActionPort = {
     run: async (taskId) => ({ started: taskId }),
     runMany: async () => ({ started: [], results: {} }),
@@ -190,11 +218,12 @@ function connected(t: import("node:test").TestContext, reads: Array<AutomationRu
       if (next instanceof Error) throw next;
       return next;
     },
-    async fatalRuntimeSnapshot() {
-      calls.fatal += 1;
-    },
   };
-  const state = createAutomationPageState({ api, requestReload: () => {} });
+  const state = createAutomationPageState({
+    api,
+    requestReload: () => {},
+    recovery: createAutomationRuntimeRecovery({ storage: window.storage, reload: window.reload }),
+  });
   let latest!: Parameters<Parameters<typeof state.subscribe>[0]>[0];
   const unsubscribe = state.subscribe((value) => { latest = value; });
   const push = new Set<(snapshot: AutomationRuntimeSnapshot) => void>();
@@ -218,6 +247,7 @@ function connected(t: import("node:test").TestContext, reads: Array<AutomationRu
     events,
     calls,
     revision: () => latest.runtime?.revision ?? null,
+    unavailable: () => latest.runtimeUnavailable,
     pushSnapshot: (value: AutomationRuntimeSnapshot) => { for (const listener of [...push]) listener(value); },
     fireResync: () => { for (const listener of [...resync]) listener(); },
     listeners: () => push.size + resync.size,
@@ -246,14 +276,68 @@ test("each resync reads the runtime again", async (t) => {
   assert.equal(page.revision(), 3);
 });
 
-test("a failed first read or resync read reports the runtime fatal once each", async (t) => {
-  const page = connected(t, [new Error("bridge closed"), new Error("bridge closed")]);
+test("a failed read reloads the window once, then shows the error state instead of reloading again", async (t) => {
+  const window = tab();
+  const first = connected(t, [new Error("bridge closed"), new Error("bridge closed")], window);
+  first.state.connect(first.events);
+  await flush();
+  first.fireResync();
+  await flush();
+  assert.equal(window.reloads, 1, "a resync failing before the reload lands does not reload twice");
+  assert.equal(first.unavailable(), false);
+
+  const reloaded = connected(t, [new Error("bridge closed")], window);
+  reloaded.state.connect(reloaded.events);
+  await flush();
+  assert.equal(window.reloads, 1, "the reloaded page does not reload by itself");
+  assert.equal(reloaded.unavailable(), true);
+
+  reloaded.state.retryRuntime();
+  assert.equal(window.reloads, 2, "the person's retry reloads");
+
+  const recovered = connected(t, [snapshot(1, []), new Error("bridge closed")], window);
+  recovered.state.connect(recovered.events);
+  await flush();
+  assert.equal(recovered.unavailable(), false);
+  assert.equal(window.items.has(RUNTIME_RELOADED_KEY), false, "an accepted snapshot forgets the reload");
+  recovered.fireResync();
+  await flush();
+  assert.equal(window.reloads, 3, "a later failure may reload once again");
+});
+
+test("a snapshot the page cannot accept reloads like a failed read", async (t) => {
+  const window = tab();
+  const page = connected(t, [snapshot(1, [])], window);
+  let thrown = false;
+  page.state.subscribe((value) => {
+    if (value.runtime && !thrown) {
+      thrown = true;
+      throw new Error("view failed");
+    }
+  });
   page.state.connect(page.events);
   await flush();
-  assert.equal(page.calls.fatal, 1);
-  page.fireResync();
+  assert.equal(window.reloads, 1);
+});
+
+test("without session storage the page shows the error state rather than risk a reload loop", async (t) => {
+  const window = tab({ storageThrows: true });
+  const page = connected(t, [new Error("bridge closed")], window);
+  page.state.connect(page.events);
   await flush();
-  assert.equal(page.calls.fatal, 2);
+  assert.equal(window.reloads, 0);
+  assert.equal(page.unavailable(), true);
+});
+
+test("an accepted snapshot clears the error state", async (t) => {
+  const window = tab();
+  window.items.set(RUNTIME_RELOADED_KEY, "1");
+  const page = connected(t, [new Error("bridge closed")], window);
+  page.state.connect(page.events);
+  await flush();
+  assert.equal(page.unavailable(), true);
+  page.pushSnapshot(snapshot(1, []));
+  assert.equal(page.unavailable(), false);
 });
 
 test("after dispose, neither a push nor a resync reaches the state", async (t) => {
