@@ -137,7 +137,8 @@ try {
 
   assert.deepEqual(runConfiguration(
     { LIBRETTO_CLOUD_FUBON_ENABLED: true },
-    { [fubonPasswordKey]: "pw" },
+    { [fubonPasswordKey]: "pw", [maxSecretKey]: "max-secret" },
+    [fubonPasswordKey],
   ), {
     settings: { LIBRETTO_CLOUD_FUBON_ENABLED: "true" },
     credentials: { [fubonPasswordKey]: "pw" },
@@ -151,7 +152,7 @@ try {
     { ...tdccSecrets, [fubonPasswordKey]: "pw" },
     "TDCC secrets survive a credentials rewrite",
   );
-  const { credentials: workflowCredentials } = runConfiguration({}, tdccSecrets);
+  const { credentials: workflowCredentials } = runConfiguration({}, tdccSecrets, TDCC_HOST_KEYS);
   for (const key of TDCC_HOST_KEYS) {
     assert.equal(workflowCredentials[key], undefined, `${key} stays out of a run's configuration`);
   }

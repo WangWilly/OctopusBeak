@@ -256,7 +256,7 @@ test("a covered product is left out of a source's selection, and a verified run 
 
 test("a Preview source's device identity is created with its sign-in details, reaches its run, and goes with Sign-in Erasure", async () => {
   const { automationSaveCredentials } = await import("../automation/server/automation-desktop-service.ts");
-  const { runConfiguration } = await import("../automation/server/config-files.ts");
+  const { taskRunConfiguration } = await import("../automation/server/task-run-plan.ts");
   const { credentialStoreForCheck, settingsStoreForCheck } = await import("../automation/server/task-run-check-support.ts");
   const { eraseSignInDetails } = await import("../automation/server/sign-in-erasure.ts");
   const { NEWNEWBANK_KEY } = await import("./newnewbank-source.ts");
@@ -268,7 +268,7 @@ test("a Preview source's device identity is created with its sign-in details, re
   automationSaveCredentials(credentials, settings, { [NEWNEWBANK_KEY.password]: "changed", [NEWNEWBANK_KEY.deviceId]: "0".repeat(64) });
   assert.equal(credentials.read()[NEWNEWBANK_KEY.deviceId], created, "a later save keeps it, and the renderer cannot set it");
   const input = appWorkflowRegistration("preview-newnewbank-deposit")?.inputFromConfiguration(
-    runConfiguration({ ...settings.read(), PREVIEW_FEATURES_ENABLED: true }, credentials.read())) as { credentials: Record<string, string> };
+    taskRunConfiguration("preview-newnewbank-deposit", { ...settings.read(), PREVIEW_FEATURES_ENABLED: true }, credentials.read())) as { credentials: Record<string, string> };
   assert.equal(input.credentials[NEWNEWBANK_KEY.deviceId], created);
   eraseSignInDetails({ credentials, userDataDirectory: workDirectory });
   assert.equal(credentials.read()[NEWNEWBANK_KEY.deviceId], undefined);

@@ -553,7 +553,7 @@ async function main(args = process.argv.slice(2)) {
       if (!workflowId || !SAFE_WORKFLOW_ID.test(workflowId)) fail("usage");
       const registration = appWorkflowRegistration(workflowId);
       definition = registration?.definition ?? null;
-      input = registration?.inputFromConfiguration(runConfigurationFromEnvironment(process.env));
+      input = registration?.inputFromConfiguration(runConfigurationFromEnvironment(process.env, registration.credentialKeys));
       startUrl = safeUrl(startUrl ?? workflowStartUrlForWorkflow(workflowId));
       browserProfile ??= workflowBrowserProfileForWorkflow(workflowId);
     } else {

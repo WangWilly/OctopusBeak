@@ -22,7 +22,8 @@ import {
 } from "./collection-scope.ts";
 import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
 import { createAutomationRuntime } from "./automation-runtime.ts";
-import { runConfiguration, type RunConfiguration } from "./config-files.ts";
+import type { RunConfiguration } from "./config-files.ts";
+import { taskRunConfiguration } from "./task-run-plan.ts";
 import { CHECK_PGLITE_RPC, credentialStoreForCheck, inProcessCheckHost, runForCheck, runnerHostForCheck, settingsStoreForCheck, startForCheck } from "./task-run-check-support.ts";
 import { taskById } from "./tasks.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
@@ -196,7 +197,7 @@ class CommittingFakeWorker extends EventEmitter implements AppWorkflowWorkerHand
       {
         isCommitAdmissible: ({ taskRunId }) => collectionScopeAdmission(
           taskRunId === this.run.taskRunId ? this.run : null,
-          () => runConfiguration(settingsStoreForCheck().read(), credentialStoreForCheck().read()),
+          (taskId) => taskRunConfiguration(taskId, settingsStoreForCheck().read(), credentialStoreForCheck().read()),
         ),
       },
     );

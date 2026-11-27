@@ -172,7 +172,9 @@ export function planForCheck(
     credentials: credentialStoreForCheck(),
     settings: settingsStoreForCheck(),
     userDataDirectory: process.cwd(),
-    ...environment ? { launchConfiguration: runConfigurationFromEnvironment(environment) } : {},
+    ...environment
+      ? { launchConfiguration: runConfigurationFromEnvironment(environment, appWorkflowRegistration(task.workflowId)?.credentialKeys ?? []) }
+      : {},
     ...dependencies,
   });
 }
@@ -184,7 +186,7 @@ export function inputForCheck(
 ): unknown {
   const registration = appWorkflowRegistration(workflowId);
   if (!registration) throw new Error(`Unknown workflow: ${workflowId}`);
-  return registration.inputFromConfiguration(runConfigurationFromEnvironment(environment));
+  return registration.inputFromConfiguration(runConfigurationFromEnvironment(environment, registration.credentialKeys));
 }
 
 /**

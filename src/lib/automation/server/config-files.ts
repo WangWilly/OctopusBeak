@@ -473,9 +473,10 @@ export function migrateStatementSelectionIds(settingsPath: string): AutomationSe
 }
 
 /**
- * What a run launches with: the stored settings and credentials, and nothing
- * from the process environment, so a variable set in the launching shell
- * never stands in for a setting or credential the App does not hold (ADR 0163).
+ * What a run launches with: the stored settings and the stored credentials
+ * its workflow declares, and nothing from the process environment, so a
+ * variable set in the launching shell never stands in for a setting or
+ * credential the App does not hold (ADR 0163).
  */
 export type RunConfiguration = Readonly<{
   settings: Readonly<Record<string, string>>;
@@ -485,22 +486,24 @@ export type RunConfiguration = Readonly<{
 export function runConfiguration(
   settings: AutomationSettingsFile,
   credentials: AutomationCredentialsFile,
+  credentialKeys: readonly string[],
 ): RunConfiguration {
   return Object.freeze({
     settings: Object.freeze(settingsToEnv(settings)),
-    credentials: Object.freeze(Object.fromEntries(
-      Object.entries(credentials).filter(([key]) => !HOST_ONLY_SECRET_KEYS.has(key)),
-    )),
+    credentials: Object.freeze(Object.fromEntries(credentialKeys.flatMap((key) =>
+      HOST_ONLY_SECRET_KEYS.has(key) || credentials[key] === undefined ? [] : [[key, credentials[key]]]))),
   });
 }
 
 /**
  * A configuration from one flat `KEY=value` map, for the developer script
  * that reads the shell on purpose and for checks that state one: each
- * settings key becomes a setting and every other entry a credential.
+ * settings key becomes a setting and every other entry a credential, kept
+ * only when `credentialKeys` names it.
  */
 export function runConfigurationFromEnvironment(
   environment: Readonly<Record<string, string | undefined>>,
+  credentialKeys: readonly string[],
 ): RunConfiguration {
   const settings: AutomationSettingsFile = {};
   const credentials: AutomationCredentialsFile = {};
@@ -509,5 +512,5 @@ export function runConfigurationFromEnvironment(
     if (automationSettingKeys.has(key)) settings[key] = value;
     else credentials[key] = value;
   }
-  return runConfiguration(settings, credentials);
+  return runConfiguration(settings, credentials, credentialKeys);
 }

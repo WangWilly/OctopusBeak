@@ -3,6 +3,7 @@ import { requiredWorkflowCapabilities, type WorkflowDefinition } from "../workfl
 import type { CollectionProductTypeId } from "../product-collection.ts";
 import { PREVIEW_SOURCES } from "../../preview-sources/registry.ts";
 import { attachedStatementType, type AttachedPreviewGroupId } from "../../preview-sources/attached-products.ts";
+import { previewSourceKeys } from "../../preview-sources/source-id.ts";
 import {
   previewWorkflowDefinition,
   previewWorkflowInput,
@@ -17,6 +18,7 @@ import {
   packagedBrowserFixtureStartUrl,
 } from "./packaged-browser-fixture.ts";
 import { statementSelectionGroup, VERIFIED_SOURCES } from "./sources/index.ts";
+import { automationCredentialKeyIsSecret } from "./tasks.ts";
 import { credentialInputKey, runVerifiedEntry } from "./verified-entry.ts";
 import { browser, NONBROWSER, type AppWorkflowRuntime, type VerifiedSource } from "./sources/verified-source.ts";
 
@@ -30,6 +32,8 @@ export function workflowNeedsPgliteRpc(definition: WorkflowDefinition): boolean 
 export type AppWorkflowRegistration = Readonly<{
   definition: WorkflowDefinition;
   runtime: AppWorkflowRuntime;
+  /** The stored credentials a run's configuration holds: the ones its input reads, and no other. */
+  credentialKeys: readonly string[];
   inputFromConfiguration(configuration: RunConfiguration): unknown;
 }>;
 
@@ -52,6 +56,20 @@ function selectedStatementTypeIds(
     },
     "strict",
   ).selectedIds.filter((id) => !attached.some((type) => type.id === id));
+}
+
+/**
+ * The secrets a verified workflow's input reads: its secret sign-in fields
+ * when the input takes them, as `credentials` or through `extra`, and the
+ * card identity secret when it declares one.
+ */
+function verifiedCredentialKeys({ credentialFields, workflow: { input } }: VerifiedSource): readonly string[] {
+  return [
+    ...input.credentials || input.extra
+      ? credentialFields.map(({ key }) => key).filter(automationCredentialKeyIsSecret)
+      : [],
+    ...input.managedIdentitySecret ? [CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY] : [],
+  ];
 }
 
 function verifiedWorkflowInput(source: VerifiedSource, configuration: RunConfiguration) {
@@ -105,6 +123,7 @@ function verifiedWorkflowRegistration(source: VerifiedSource): AppWorkflowRegist
       },
     },
     runtime,
+    credentialKeys: verifiedCredentialKeys(source),
     inputFromConfiguration: (configuration) => verifiedWorkflowInput(source, configuration),
   };
 }
@@ -114,6 +133,7 @@ const appWorkflowCatalog: readonly AppWorkflowRegistration[] = [
   {
     definition: createExchangeRateWorkflow(),
     runtime: NONBROWSER,
+    credentialKeys: [],
     inputFromConfiguration() { return null; },
   },
   ...VERIFIED_SOURCES.map(verifiedWorkflowRegistration),
@@ -127,12 +147,14 @@ export function appWorkflowCatalogForEnvironment(
     ? PACKAGED_BROWSER_FIXTURE_TASKS.map(({ workflowId }) => ({
       definition: packagedBrowserFixtureDefinition(workflowId),
       runtime: browser(packagedBrowserFixtureStartUrl(environment)),
+      credentialKeys: [],
       inputFromConfiguration() { return null; },
     }))
     : [];
   const previewRegistrations: readonly AppWorkflowRegistration[] = PREVIEW_SOURCES.map((source) => ({
     definition: previewWorkflowDefinition(source) as WorkflowDefinition,
     runtime: browser(source.startUrl),
+    credentialKeys: previewSourceKeys(source),
     inputFromConfiguration: (configuration) => previewWorkflowInput(source, configuration),
   }));
   return [...appWorkflowCatalog, ...previewRegistrations, ...packagedBrowserFixtureRegistrations];

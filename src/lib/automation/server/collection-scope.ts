@@ -57,15 +57,16 @@ export function launchedCollectionScope(
 
 /**
  * Write admission for the PGlite child RPC: the run's current execution
- * checks its launched Collection scope version. Only a current execution
- * writes, so anything else is `run-not-current` (ADR 0148).
+ * checks its launched Collection scope version against the configuration
+ * its task would launch with now. Only a current execution writes, so
+ * anything else is `run-not-current` (ADR 0148).
  */
 export function collectionScopeAdmission(
-  run: Pick<ActiveAutomationTaskRun, "currentExecution"> | null,
-  currentConfiguration: () => RunConfiguration,
+  run: Pick<ActiveAutomationTaskRun, "taskId" | "currentExecution"> | null,
+  currentConfiguration: (taskId: string) => RunConfiguration,
 ): WorkflowWriteAdmission {
   const scope = run?.currentExecution()?.collectionScope();
-  if (!scope) return "run-not-current";
-  return scope.current(currentConfiguration) ? "admitted" : "scope-changed";
+  if (!run || !scope) return "run-not-current";
+  return scope.current(() => currentConfiguration(run.taskId)) ? "admitted" : "scope-changed";
 }
 

@@ -3,12 +3,13 @@ import type { WorkflowDefinition } from "../workflow-executor.ts";
 import { appWorkflowRegistration, type AppWorkflowRuntime } from "./app-workflow-registry.ts";
 import {
   runConfiguration,
+  type AutomationCredentialsFile,
   type AutomationCredentialStore,
   type AutomationSettingsFile,
   type AutomationSettingsStore,
   type RunConfiguration,
 } from "./config-files.ts";
-import type { AutomationTask } from "./tasks.ts";
+import { taskById, type AutomationTask } from "./tasks.ts";
 import { sourceVerificationFacts, type SourceVerificationFacts } from "./verification-routing.ts";
 
 /**
@@ -71,7 +72,7 @@ export function resolveTaskRunPlan(
   let settings: AutomationSettingsFile | undefined;
   const launchSettings = () => (settings ??= dependencies.settings.read());
   const launchConfiguration = dependencies.launchConfiguration
-    ?? runConfiguration(launchSettings(), credentials.read());
+    ?? runConfiguration(launchSettings(), credentials.read(), registration.credentialKeys);
   return {
     task,
     workflowId,
@@ -87,4 +88,17 @@ export function resolveTaskRunPlan(
     credentials,
     userDataDirectory,
   };
+}
+
+/**
+ * The configuration `taskId`'s run launches with for these stored settings
+ * and credentials, holding only the credentials its workflow declares.
+ */
+export function taskRunConfiguration(
+  taskId: string,
+  settings: AutomationSettingsFile,
+  credentials: AutomationCredentialsFile,
+): RunConfiguration {
+  const registration = appWorkflowRegistration(taskById(taskId)?.workflowId);
+  return runConfiguration(settings, credentials, registration?.credentialKeys ?? []);
 }
