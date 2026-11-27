@@ -104,9 +104,9 @@ async function recordWorkflowFailure(
     safeError?: unknown;
   }>,
 ): Promise<void> {
-  const { workflowId, launchEnv } = context.plan;
+  const { workflowId } = context.plan;
   const record = { workflowId, taskRunId: context.run.taskRunId, ...input };
-  const options = { repoRoot: workflowFailureDiagnosticRepoRoot(launchEnv) };
+  const options = { repoRoot: workflowFailureDiagnosticRepoRoot() };
   // Kept in memory for an Error report the person may choose to send (ADR 0081). Like the file
   // writer, building it must never change the failure outcome.
   try {
@@ -114,7 +114,7 @@ async function recordWorkflowFailure(
   } catch {
     rememberFailureDiagnostic(context.run.taskId, null);
   }
-  await appendWorkflowFailureDiagnostic(launchEnv[WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV], record, options);
+  await appendWorkflowFailureDiagnostic(process.env[WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV], record, options);
 }
 
 type BrowserRuntimeIdentityRecorder = Readonly<{

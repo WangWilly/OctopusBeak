@@ -38,26 +38,15 @@ test("a shell variable does not count as a saved credential", () => {
   });
 });
 
-test("a workflow's environment takes stored values only; the shell keeps the rest", () => {
-  const env = automationConfigEnv({
-    baseEnv: {
-      PATH: "/usr/bin",
-      [FUBON_PASSWORD]: "from-shell",
-      [FUBON_ENABLED]: "true",
-      [PREVIEW_FEATURES]: "true",
-    },
-    settings: {},
-    credentials: {},
+test("a workflow's environment takes stored values only", () => {
+  withShellEnv({ [FUBON_PASSWORD]: "from-shell", [FUBON_ENABLED]: "true", [PREVIEW_FEATURES]: "true" }, () => {
+    const env = automationConfigEnv({ settings: {}, credentials: {} });
+    assert.deepEqual(env, {}, "nothing from the launching shell is passed on");
+    const stored = automationConfigEnv({
+      settings: { [FUBON_ENABLED]: true },
+      credentials: { [FUBON_PASSWORD]: "stored" },
+    });
+    assert.equal(stored[FUBON_PASSWORD], "stored");
+    assert.equal(stored[FUBON_ENABLED], "true");
   });
-  assert.equal(env.PATH, "/usr/bin", "process plumbing still reaches the workflow");
-  assert.equal(env[FUBON_PASSWORD], undefined, "a credential the store does not hold is not passed on");
-  assert.equal(env[FUBON_ENABLED], undefined);
-  assert.equal(env[PREVIEW_FEATURES], undefined, "a setting the store does not hold is not passed on");
-  const stored = automationConfigEnv({
-    baseEnv: { [FUBON_PASSWORD]: "from-shell" },
-    settings: { [FUBON_ENABLED]: true },
-    credentials: { [FUBON_PASSWORD]: "stored" },
-  });
-  assert.equal(stored[FUBON_PASSWORD], "stored");
-  assert.equal(stored[FUBON_ENABLED], "true");
 });

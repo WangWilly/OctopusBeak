@@ -48,7 +48,7 @@ export type TaskRunPlanDependencies = Readonly<{
   credentials: AutomationCredentialStore;
   settings: AutomationSettingsStore;
   userDataDirectory: string;
-  /** Defaults to `process.env` with every settings and credential key taken from the stores only. */
+  /** Defaults to the settings and credentials the stores hold. */
   launchEnv?: NodeJS.ProcessEnv;
   /** Defaults to the App settings file. */
   launchVerificationSettings?: AutomationSettingsFile;
@@ -70,7 +70,6 @@ export function resolveTaskRunPlan(
   let settings: AutomationSettingsFile | undefined;
   const launchSettings = () => (settings ??= dependencies.settings.read());
   const launchEnv = dependencies.launchEnv ?? automationConfigEnv({
-    baseEnv: process.env,
     settings: launchSettings(),
     credentials: credentials.read(),
   });

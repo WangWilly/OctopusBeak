@@ -85,7 +85,6 @@ export function createPGliteOperationalRuntime(
     isCommitAdmissible: ({ taskRunId }) => collectionScopeAdmission(
       options.activeRun(taskRunId),
       () => automationConfigEnv({
-        baseEnv: process.env,
         settings: options.settings.read(),
         credentials: options.credentials.read(),
       }),

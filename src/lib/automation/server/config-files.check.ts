@@ -136,12 +136,9 @@ try {
   assert.equal(readFileSync(envLocalPath, "utf8"), `${fubonPasswordKey}=dev-only\n`);
 
   assert.deepEqual(automationConfigEnv({
-    baseEnv: { KEEP_ME: "yes", NODE_ENV: "production" },
     settings: { LIBRETTO_CLOUD_FUBON_ENABLED: true },
     credentials: { [fubonPasswordKey]: "pw" },
   }), {
-    KEEP_ME: "yes",
-    NODE_ENV: "development",
     LIBRETTO_CLOUD_FUBON_ENABLED: "true",
     [fubonPasswordKey]: "pw",
   });
@@ -154,7 +151,7 @@ try {
     { ...tdccSecrets, [fubonPasswordKey]: "pw" },
     "TDCC secrets survive a credentials rewrite",
   );
-  const workflowEnv = automationConfigEnv({ baseEnv: {}, settings: {}, credentials: tdccSecrets });
+  const workflowEnv = automationConfigEnv({ settings: {}, credentials: tdccSecrets });
   for (const key of TDCC_HOST_KEYS) {
     assert.equal(workflowEnv[key], undefined, `${key} stays out of child workflow environments`);
   }

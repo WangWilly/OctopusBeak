@@ -194,7 +194,7 @@ class CommittingFakeWorker extends EventEmitter implements AppWorkflowWorkerHand
       {
         isCommitAdmissible: ({ taskRunId }) => collectionScopeAdmission(
           taskRunId === this.run.taskRunId ? this.run : null,
-          () => automationConfigEnv({ baseEnv: process.env, settings: settingsStoreForCheck().read(), credentials: credentialStoreForCheck().read() }),
+          () => automationConfigEnv({ settings: settingsStoreForCheck().read(), credentials: credentialStoreForCheck().read() }),
         ),
       },
     );

@@ -473,24 +473,18 @@ export function migrateStatementSelectionIds(settingsPath: string): AutomationSe
 }
 
 /**
- * A workflow's environment: the process's own variables (PATH and the like)
- * with every key settings.json or credentials.json owns taken from those
- * stores alone, so a variable set in the launching shell never stands in for
- * a setting or credential the App does not hold.
+ * A workflow's environment: every key settings.json or credentials.json owns,
+ * taken from those stores alone, so a variable set in the launching shell
+ * never stands in for a setting or credential the App does not hold.
  */
 export function automationConfigEnv({
-  baseEnv,
   settings,
   credentials,
 }: {
-  baseEnv: NodeJS.ProcessEnv;
   settings: AutomationSettingsFile;
   credentials: AutomationCredentialsFile;
 }) {
-  const env: NodeJS.ProcessEnv = { ...baseEnv };
-  for (const key of [...automationSettingKeys, ...automationSecretKeys]) delete env[key];
-  Object.assign(env, settingsToEnv(settings), credentials);
+  const env: NodeJS.ProcessEnv = { ...settingsToEnv(settings), ...credentials };
   for (const key of HOST_ONLY_SECRET_KEYS) delete env[key];
-  if (env.NODE_ENV === "production") env.NODE_ENV = "development";
   return env;
 }
