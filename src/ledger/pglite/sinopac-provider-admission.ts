@@ -8,6 +8,7 @@ import type {
 } from "../canonical/canonical-financial-deposit-admission.ts";
 import { assignCanonicalFinancialDepositOccurrenceGroups } from "../canonical/canonical-financial-deposit-admission.ts";
 import { DepositAdmissionRefused, type DepositVerdict } from "../canonical/deposit-verdict.ts";
+import { deepFreeze } from "../canonical/deep-freeze.ts";
 
 export const SINOPAC_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V1_ROUTE =
   "sinopac/domestic-deposit/human-attested-v1" as const;
@@ -270,18 +271,6 @@ function diagnostic(
   code: SinopacStatementCaptureDiagnostic,
 ): void {
   if (!diagnostics.includes(code)) diagnostics.push(code);
-}
-
-function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
-  if (value === null || typeof value !== "object") return value;
-  if (seen.has(value)) return value;
-  seen.add(value);
-  const object = value as Record<PropertyKey, unknown>;
-  for (const key of Reflect.ownKeys(object)) {
-    const child = object[key];
-    if (child !== null && typeof child === "object") deepFreeze(child, seen);
-  }
-  return Object.freeze(value);
 }
 
 export function admitSinopacStatementCaptureEvidence(

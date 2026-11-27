@@ -14,6 +14,7 @@ import {
   isAdmittedSinopacStatementCaptureEvidence,
 } from "./sinopac-provider-admission.ts";
 import { DepositAdmissionRefused, type DepositVerdict } from "../canonical/deposit-verdict.ts";
+import { deepFreeze } from "../canonical/deep-freeze.ts";
 
 const SINOPAC_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY =
   "sinopac/domestic-deposit/human-attested-v1";
@@ -243,17 +244,6 @@ function identityEpochKey(): string {
     "sha256:ec011375014d525e074d9928cb78ed72355048652a655548904ff9ae3c4d90a1",
   ].join("\u0000");
   return `sha256:${Buffer.from(value).toString("base64url")}`;
-}
-
-function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
-  if (value === null || typeof value !== "object") return value;
-  if (seen.has(value)) return value;
-  seen.add(value);
-  for (const key of Reflect.ownKeys(value as object)) {
-    const child = (value as Record<PropertyKey, unknown>)[key];
-    if (child !== null && typeof child === "object") deepFreeze(child, seen);
-  }
-  return Object.freeze(value);
 }
 
 /**

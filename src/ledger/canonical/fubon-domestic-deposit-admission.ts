@@ -20,6 +20,7 @@ import {
   isFubonHumanAttestedV1Manifest,
   type FubonHumanAttestedV1Manifest,
 } from "./fubon-human-attestation-contract.ts";
+import { deepFreeze } from "./deep-freeze.ts";
 
 // Keep the contract token duplicated as a literal so canonical checks can run
 // without loading Playwright-only workflow dependencies in Node's test runner.
@@ -459,18 +460,6 @@ function diagnostic(
   code: FubonDomesticDepositCaptureDiagnostic,
 ): void {
   if (!diagnostics.includes(code)) diagnostics.push(code);
-}
-
-function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
-  if (value === null || typeof value !== "object") return value;
-  if (seen.has(value)) return value;
-  seen.add(value);
-  const object = value as Record<PropertyKey, unknown>;
-  for (const key of Reflect.ownKeys(object)) {
-    const child = object[key];
-    if (child !== null && typeof child === "object") deepFreeze(child, seen);
-  }
-  return Object.freeze(value);
 }
 
 function validExactDecimal(value: unknown): boolean {

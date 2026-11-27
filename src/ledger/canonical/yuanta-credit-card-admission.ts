@@ -25,6 +25,7 @@ import {
   findOccurrenceGroupCaptureAmbiguity,
   type CanonicalOccurrenceGroup,
 } from "./occurrence-groups.ts";
+import { deepFreeze } from "./deep-freeze.ts";
 
 export type YuantaCreditCardExactAmount = {
   coefficient: string;
@@ -704,16 +705,6 @@ function validateRelations(
       evidence: { ...relation.evidence },
     };
   });
-}
-
-function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
-  if (value === null || typeof value !== "object" || seen.has(value)) return value;
-  seen.add(value);
-  for (const key of Reflect.ownKeys(value as object)) {
-    const child = (value as Record<PropertyKey, unknown>)[key];
-    if (child !== null && typeof child === "object") deepFreeze(child, seen);
-  }
-  return Object.freeze(value);
 }
 
 export function admitYuantaCreditCardCapture(
