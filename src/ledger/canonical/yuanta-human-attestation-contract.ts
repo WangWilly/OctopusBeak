@@ -1,16 +1,7 @@
 // Pure Yuanta human-attestation contracts and in-memory authority state.
-export type YuantaOpaqueToken = string;
+import { deepFreeze } from "./deep-freeze.ts";
 
-const deepFreeze = <T>(value: T, seen = new WeakSet<object>()): T => {
-  if (value === null || typeof value !== "object") return value;
-  if (seen.has(value)) return value;
-  seen.add(value);
-  for (const key of Reflect.ownKeys(value as object)) {
-    const child = (value as Record<PropertyKey, unknown>)[key];
-    if (child !== null && typeof child === "object") deepFreeze(child, seen);
-  }
-  return Object.freeze(value);
-};
+export type YuantaOpaqueToken = string;
 
 export const YUANTA_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V2_ROUTE =
   "yuanta/domestic-deposit/human-attested-v2" as const;

@@ -23,6 +23,7 @@ import {
   type CurrentBalanceCaptureMatching,
   type CurrentStateSnapshotDeclaration,
 } from "./current-state-snapshot-capture.ts";
+import { isRecord } from "./json-record.ts";
 
 export const SINOPAC_CURRENT_DEPOSIT_BALANCE_PAGE_URL =
   "https://mma.sinopac.com/mma/bank/bankbal/mma_bankbal.aspx?1" as const;
@@ -100,10 +101,6 @@ type SinopacCurrentDepositBalanceRow = Readonly<{
 }>;
 
 type JsonRecord = Record<string, unknown>;
-
-function isRecord(value: unknown): value is JsonRecord {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
 
 function field(row: JsonRecord, name: string, rowIndex: number): unknown {
   if (!Object.prototype.hasOwnProperty.call(row, name)) {

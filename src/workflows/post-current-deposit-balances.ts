@@ -22,6 +22,7 @@ import {
   type VerifiedProviderResponse,
 } from "./provider-response.ts";
 import { trimSourceLexeme } from "../lib/automation/source-text.ts";
+import { isRecord } from "./json-record.ts";
 
 /**
  * iPost's asset overview is a normal authenticated page.  Its click handler
@@ -98,10 +99,6 @@ export type ExistingPostCurrentDepositFinancialCapture = Readonly<{
     currency: string | null;
   }>;
 }>;
-
-function isRecord(value: unknown): value is JsonRecord {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
 
 function requiredString(value: unknown, label: string): string {
   if (typeof value !== "string")

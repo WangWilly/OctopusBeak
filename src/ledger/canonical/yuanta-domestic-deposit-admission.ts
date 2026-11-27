@@ -22,6 +22,7 @@ import {
   type YuantaHumanAttestedV2Manifest,
 } from "./yuanta-human-attestation-contract.ts";
 import { deriveYuantaDomesticDepositAccountKey } from "./yuanta-deposit-account-key.ts";
+import { deepFreeze } from "./deep-freeze.ts";
 
 export { deriveYuantaDomesticDepositAccountKey } from "./yuanta-deposit-account-key.ts";
 
@@ -240,18 +241,6 @@ function diagnostic(
   code: YuantaDomesticDepositCaptureDiagnostic,
 ): void {
   if (!diagnostics.includes(code)) diagnostics.push(code);
-}
-
-function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
-  if (value === null || typeof value !== "object") return value;
-  if (seen.has(value)) return value;
-  seen.add(value);
-  const object = value as Record<PropertyKey, unknown>;
-  for (const key of Reflect.ownKeys(object)) {
-    const child = object[key];
-    if (child !== null && typeof child === "object") deepFreeze(child, seen);
-  }
-  return Object.freeze(value);
 }
 
 /** Convert parser output into an immutable, structurally checked capture. */

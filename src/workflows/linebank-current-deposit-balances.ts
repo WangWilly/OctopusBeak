@@ -24,6 +24,7 @@ import {
   CURRENT_DEPOSIT_BALANCE_STAGING,
   type CurrentStateSnapshotDeclaration,
 } from "./current-state-snapshot-capture.ts";
+import { isRecord } from "./json-record.ts";
 
 /**
  * LINE Bank's authenticated account selector calls this endpoint before the
@@ -115,10 +116,6 @@ type LineBankPayablesAccount = JsonRecord & {
   wdrwAvblAmt?: unknown;
 };
 type JsonParseContext = { source: string };
-
-function isRecord(value: unknown): value is JsonRecord {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
 
 function requiredString(value: unknown, label: string): string {
   if (typeof value !== "string")

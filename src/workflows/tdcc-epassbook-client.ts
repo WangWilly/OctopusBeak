@@ -1,5 +1,6 @@
 import { createCipheriv, createHash, randomBytes } from "node:crypto";
 import { FailureCodeError, type TypedWorkflowErrorCode } from "../lib/automation/workflow-failures.ts";
+import { isRecord } from "./json-record.ts";
 
 // Reproduces the TDCC e-Passbook Android App's request envelope, ported from
 // the TedLin1993/all-set-tw reference client. See ADR 0041.
@@ -214,10 +215,6 @@ type TdccEnvelope = Readonly<{
   message: string | undefined;
   body: Record<string, unknown>;
 }>;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function optionalString(value: unknown) {
   return typeof value === "string" && value.length > 0 ? value : undefined;

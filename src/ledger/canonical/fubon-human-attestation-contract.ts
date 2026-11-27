@@ -1,3 +1,5 @@
+import { deepFreeze } from "./deep-freeze.ts";
+
 /**
  * The user-confirmed boundary for the first Fubon financial projection.
  *
@@ -5,17 +7,6 @@
  * the PGlite adapter and the legacy durable SQLite event writer share one
  * attestation singleton without loading SQLite in the enabled path.
  */
-const deepFreeze = <T>(value: T, seen = new WeakSet<object>()): T => {
-  if (value === null || typeof value !== "object") return value;
-  if (seen.has(value)) return value;
-  seen.add(value);
-  for (const key of Reflect.ownKeys(value as object)) {
-    const child = (value as Record<PropertyKey, unknown>)[key];
-    if (child !== null && typeof child === "object") deepFreeze(child, seen);
-  }
-  return Object.freeze(value);
-};
-
 export const FUBON_HUMAN_ATTESTED_V1_MANIFEST = deepFreeze({
   attestationId: "fubon-domestic-deposit-human-attested-v1",
   evidenceVersion: "human-attested-v1",

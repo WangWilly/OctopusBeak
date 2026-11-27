@@ -1,15 +1,6 @@
-export type HncbOpaqueToken = `sha256:${string}`;
+import { deepFreeze } from "./deep-freeze.ts";
 
-function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
-  if (value === null || typeof value !== "object") return value;
-  if (seen.has(value)) return value;
-  seen.add(value);
-  for (const key of Reflect.ownKeys(value as object)) {
-    const child = (value as Record<PropertyKey, unknown>)[key];
-    if (child !== null && typeof child === "object") deepFreeze(child, seen);
-  }
-  return Object.freeze(value);
-}
+export type HncbOpaqueToken = `sha256:${string}`;
 
 export const HNCB_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V1_ROUTE =
   "hncb/domestic-deposit/human-attested-v1" as const;

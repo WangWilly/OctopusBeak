@@ -35,6 +35,7 @@ import type { ProviderResponseDeclaration } from "./provider-response.ts";
 import { type ProviderRequest, type ProviderResponseReader } from "./provider-response-reader.ts";
 import type { VerificationStage } from "../lib/automation/verification-stage.ts";
 import { collapseSourceWhitespace } from "../lib/automation/source-text.ts";
+import { isRecord } from "./json-record.ts";
 
 const HOME_URL = "https://ipost.post.gov.tw/pst/home.html";
 const INDEX_URL = "https://ipost.post.gov.tw/pst/index.html";
@@ -417,11 +418,6 @@ function requireCompletePostStatementRows(
     return value as PostRawStatementRow;
   });
 }
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
 
 /** Parse an accepted statement reply; the reader has already checked its transport and decoded it. */
 export function parsePostStatementResponse(acquired: PostStatementReply): PostQueriedStatement {

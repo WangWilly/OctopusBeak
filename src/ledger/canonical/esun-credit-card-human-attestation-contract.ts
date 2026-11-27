@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { CreditCardIdentityEpochs } from "./credit-card-identity-epochs.ts";
+import { deepFreeze } from "./deep-freeze.ts";
 
 /**
  * E.SUN's credit-card page exposes a portfolio view and masked card keys, but
@@ -8,16 +9,6 @@ import type { CreditCardIdentityEpochs } from "./credit-card-identity-epochs.ts"
  * is deliberately not a provider guarantee and contains no account value,
  * card number, or response payload.
  */
-const deepFreeze = <T>(value: T, seen = new WeakSet<object>()): T => {
-  if (value === null || typeof value !== "object" || seen.has(value)) return value;
-  seen.add(value);
-  for (const key of Reflect.ownKeys(value as object)) {
-    const child = (value as Record<PropertyKey, unknown>)[key];
-    if (child !== null && typeof child === "object") deepFreeze(child, seen);
-  }
-  return Object.freeze(value);
-};
-
 /** The structured Query Bucket encoding started a new identity epoch (ADR 0062). */
 export const ESUN_CREDIT_CARD_IDENTITY_EPOCHS = Object.freeze({
   spineLabel: "esun-credit-epoch-v1",
