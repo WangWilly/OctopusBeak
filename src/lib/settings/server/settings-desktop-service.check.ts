@@ -225,6 +225,28 @@ test("the main process refuses a ledger reset while a cleanup runs, and a cleanu
   assert.deepEqual(runs, [{ backup: false, keepBackup: false }], "a cleanup starts once the reset ends");
 });
 
+test("a cleanup that was asked for but has not reached the worker yet already refuses a reset, a restore and a backup delete", async () => {
+  let finishRun!: () => void;
+  const { service, calls } = harness({}, {
+    ledgerCleanup: {
+      estimate: async () => { throw new Error("unused"); },
+      run: () => new Promise((resolve) => { finishRun = () => resolve({ status: "already-running" }); }),
+      // The worker has not started the cleanup, so it still reports none.
+      status: async () => ({ running: false, last: null }),
+      stop: async () => true,
+    },
+  });
+  const cleanup = service.cleanUpLedger({ backup: false, keepBackup: false });
+  await assert.rejects(() => service.resetLedger(["financial"]), /while a cleanup runs/u);
+  await assert.rejects(() => service.restoreCleanupBackup(), /while a cleanup runs/u);
+  await assert.rejects(() => service.deleteCleanupBackup(), /while a cleanup runs/u);
+  assert.deepEqual(calls, [], "nothing was stopped or deleted");
+  await new Promise((resolve) => setImmediate(resolve));
+  finishRun();
+  await cleanup;
+  assert.deepEqual(await service.resetLedger(["preview"]), { done: ["preview"], failed: null, notRun: [] }, "a reset starts once the cleanup returns");
+});
+
 const removed = (rows: number) => ({
   canonical_credit_card_transaction_details: rows,
   canonical_credit_card_transaction_lifecycle: 0,
