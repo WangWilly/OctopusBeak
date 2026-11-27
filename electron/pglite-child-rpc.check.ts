@@ -232,6 +232,46 @@ test("the child socket refuses every operation not marked for workflows", async 
   }
 });
 
+test("the child socket refuses a source admission once the run's scope changed, because it stores the capture", async () => {
+  const reached: string[] = [];
+  const provider = {
+    operational: {},
+    financial: { request: async (operation: string) => { reached.push(operation); return null; } },
+  } as unknown as PGliteChildProvider;
+  const server = createPGliteChildRpcServer({ provider, isCommitAdmissible: () => "scope-changed" });
+  const child = createPGliteChildRpcClient({
+    endpoint: server.endpoint,
+    token: server.token,
+    diagnosticContext: { workflowId: "yuanta-all-statements", taskRunId: "run-with-old-scope" },
+  });
+  try {
+    await server.ready;
+    await child.ready;
+    await assert.rejects(
+      child.request("financial.source.admit", [{
+        captureId: "capture",
+        integrationNamespace: "synthetic",
+        sourceConnectionKey: "synthetic-connection",
+        identityEpoch: "synthetic-epoch",
+        stream: "synthetic-stream",
+        recordKind: "synthetic-record",
+        routeKey: "test",
+        contractVersion: "synthetic-v1",
+        subjectDigest: "synthetic-subject",
+        observedAt: "2026-09-22T00:00:00.000Z",
+        scope: {},
+        pages: [],
+        records: [],
+      }]),
+      (error: unknown) => error instanceof PGliteFinancialError && error.code === "operation-failed" && error.category === "refused",
+    );
+    assert.deepEqual(reached, [], "a refused admission never reaches the store");
+  } finally {
+    child.close();
+    await server.close();
+  }
+});
+
 test("the child socket refuses a run-scoped operational write from a run that is not current", async () => {
   const reached: string[] = [];
   const record = (name: string) => async () => {
@@ -310,6 +350,7 @@ test("the workflow surface is exactly what workflows call", () => {
       "financial.einvoice.commit",
       "financial.investment.commit",
       "financial.loan.commit",
+      "financial.source.admit",
       "financial.source.commit",
     ],
     "every canonical write of new evidence is gated on the run's scope",

@@ -71,7 +71,7 @@ The workflow operations are the ones `childRpcCapabilities` and the PGlite workf
 ## Consequences
 
 - A workflow thread whose run ended, or was superseded, cannot write canonical data, relations, preview data, MaiCoin rows or exchange rates, even if it still holds the socket. It can still mark its own MaiCoin sync-run row as finished.
-- `financial.source.admit` stays ungated. It validates evidence and writes nothing canonical.
+- `financial.source.admit` stays ungated. It validates evidence and writes nothing canonical. Amended by [ADR 0159](./0159-a-source-admission-is-gated-like-a-commit.md): the operation stores the capture and its records, so it is gated like a commit.
 - A refused preview or MaiCoin write fails its product or run as an ordinary operational failure. It is not reported as `collection-scope-changed`, because only the canonical commit path carries a refusal to the run's outcome.
 - The connection is not bound to one execution. The gate relies on the supervisor ending an execution's worker before the next execution of the same run begins. Binding the execution id to the connection is left as a follow-up.
 - A new workflow operation must be marked on its contract, or the child socket refuses it. A check asserts the exact workflow surface and that every PGlite workflow command is on it.
