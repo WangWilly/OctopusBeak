@@ -757,10 +757,10 @@
 {/if}
 
 {#if $automationState.runtimeUnavailable}
-  <p role="alert" data-automation-runtime-unavailable>
-    {$t.common.automationRuntimeUnavailable}
-    <button type="button" on:click={() => automationState.retryRuntime()}>{$t.common.retry}</button>
-  </p>
+  <RouteLoadNotice
+    state={{ status: "error", data: true, message: $t.common.automationRuntimeUnavailable }}
+    retry={() => automationState.retryRuntime()}
+  />
 {/if}
 
 {#if firstRunWelcomeState?.status === "active" || completingFirstRunWelcome}

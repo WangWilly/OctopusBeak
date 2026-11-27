@@ -17,6 +17,7 @@ A fourth gap sat beside them. When the PGlite worker supervisor gave up mid-sess
 These failures still end the App, as ADR 0150 requires. They now explain first and end through the ordinary quit.
 
 - **One fatal path.** A fatal report stops the schedules for good, refuses new collections and stops the running ones, so nothing starts while the dialog is open. It brings the App to the front. Then it shows one native dialog in Traditional Chinese or English, by the system language. The dialog says that OctopusBeak must close because of an internal problem and that collected data was not changed by it. It names the fatal stage and code for a report, and has one button, which quits. It never shows an error message, a path or a stack.
+- **The dialog is a sheet on a window.** It attaches to the main window, or to a small plain window when none is open, and a window still loading when the fatal is reported is kept for it. Without a window, macOS runs the dialog as an app-modal loop that blocks the main process: in a running App a quit signal did nothing, the ledger never closed, and the process stayed until someone dismissed a dialog that could be on another desktop. With a sheet the process keeps running, so a quit while the dialog is open still closes the ledger and exits with status 1.
 - **The ordinary quit, with status 1.** After the dialog closes, the App runs the same bounded quit as any other: cleanup, then the ledger close, each within its existing wait. The exit that ends a fatal quit has status 1. If the dialog cannot be shown, the quit runs anyway.
 - **Handled once.** A second fatal report while the first is handled changes nothing. So does a report while ledger recovery is asking, while a restore is swapping back, or after a quit has begun.
 - **A supervisor give-up is fatal.** One route handles both a startup failure and a give-up: a restored backup that did not open goes back ([ADR 0157](./0157-a-cleanup-backup-is-restored-by-swapping-folders-at-launch.md)), an unusable ledger asks the person (ADR 0150), and anything else takes the fatal path at the stage `ledger-worker`.
@@ -25,6 +26,7 @@ These failures still end the App, as ADR 0150 requires. They now explain first a
 ## Considered options
 
 - **Keep the renderer-triggered exit.** A view that is out of step with the host would fail closed ([PRODUCT.md](../../PRODUCT.md), principle 4). Rejected. A renderer exception ended a collection in flight. The host already reports its own snapshot failures, so the renderer's report acted alone only when the renderer was the broken side, and a reload repairs that side. The host admits every start ([ADR 0128](./0128-a-task-run-starts-through-one-admission-with-no-await-before-its-claim.md)), so a stale page cannot start a second run.
+- **A dialog with no window.** Rejected for the reason above. The ledger recovery dialog of ADR 0150 still falls back to one when no window is open.
 - **Keep the direct `app.exit(1)` and add the dialog before it.** Rejected. It explains, but still skips the ledger close and orphans running collections.
 
 ## Consequences

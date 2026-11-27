@@ -42,6 +42,12 @@
     color: var(--danger);
   }
 
+  /* A long message must wrap, not squeeze the retry label onto two lines. */
+  .route-load-notice :global(.button) {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
   .notice-spinner {
     width: 14px;
     height: 14px;

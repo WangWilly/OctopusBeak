@@ -222,10 +222,17 @@ const orderedQuit = createOrderedQuit({
   ask: async (options) => {
     // A fixture run has no one to close the dialog; it quits as if someone had.
     if (!app.isReady() || cdpFixture || packagedBrowserFixture) return;
-    // Not a sheet on the window: a window still loading is destroyed once a fatal is reported.
+    // The dialog must be a sheet on a window. Without one, macOS runs it as
+    // an app-modal loop that blocks this process: no quit, signal or ledger
+    // close runs until someone dismisses it, and it may be on another desktop.
+    const owner = mainWindow && !mainWindow.isDestroyed()
+      ? mainWindow
+      : new BrowserWindow({ width: 480, height: 240, resizable: false, minimizable: false, maximizable: false, fullscreenable: false, title: "OctopusBeak" });
+    if (owner.isMinimized()) owner.restore();
+    owner.show();
     // A fatal during a scheduled collection finds the App in the background, where the dialog could wait unseen.
     app.focus({ steal: true });
-    await dialog.showMessageBox(options);
+    await dialog.showMessageBox(owner, options);
   },
   log: (event, details) => console.error(event, ...(details === undefined ? [] : [details])),
 });
@@ -352,10 +359,7 @@ async function createWindow(rendererUrl: string, preloadPath: string) {
       if (window.isDestroyed()) throw new Error("The window closed before the renderer loaded.");
       window.show();
       await window.loadURL(`${rendererUrl}#/overview`);
-      if (orderedQuit.fatalReported()) {
-        window.destroy();
-        throw new Error("Automation runtime is unavailable.");
-      }
+      // A fatal reported meanwhile keeps this window: its dialog is a sheet on it.
       return window;
     } catch (error) {
       if (!window.isDestroyed()) window.destroy();
