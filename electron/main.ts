@@ -113,7 +113,7 @@ import {
   createCathaySecretStore,
 } from "../src/lib/automation/server/cathay-registration-service.ts";
 import { createTdccSecretStore } from "../src/lib/automation/server/tdcc-secret-store.ts";
-import { withAppWorkflowHostPage } from "../src/lib/automation/server/app-browser-host.ts";
+import { appHostsPageFor, withAppWorkflowHostPage } from "../src/lib/automation/server/app-browser-host.ts";
 import { DEVICE_REGISTRATION_TASK_IDS } from "../src/lib/automation/server/source-device-lock.ts";
 // @ts-expect-error runtime.cjs is bundled by Vite; keeping it CJS avoids changing the packaged entry.
 import runtime from "./runtime.cjs";
@@ -222,17 +222,7 @@ const orderedQuit = createOrderedQuit({
   ask: async (options) => {
     // A fixture run has no one to close the dialog; it quits as if someone had.
     if (!app.isReady() || cdpFixture || packagedBrowserFixture) return;
-    // The dialog must be a sheet on a window. Without one, macOS runs it as
-    // an app-modal loop that blocks this process: no quit, signal or ledger
-    // close runs until someone dismisses it, and it may be on another desktop.
-    const owner = mainWindow && !mainWindow.isDestroyed()
-      ? mainWindow
-      : new BrowserWindow({ width: 480, height: 240, resizable: false, minimizable: false, maximizable: false, fullscreenable: false, title: "OctopusBeak" });
-    if (owner.isMinimized()) owner.restore();
-    owner.show();
-    // A fatal during a scheduled collection finds the App in the background, where the dialog could wait unseen.
-    app.focus({ steal: true });
-    await dialog.showMessageBox(owner, options);
+    await dialog.showMessageBox(dialogOwner(), options);
   },
   log: (event, details) => console.error(event, ...(details === undefined ? [] : [details])),
 });
@@ -312,6 +302,24 @@ function evaluateUntilGone<T>(window: BrowserWindow, script: string): Promise<T>
       if (!webContents.isDestroyed()) webContents.removeListener("render-process-gone", gone);
     });
   });
+}
+
+/**
+ * The window a dialog shown while the App runs is a sheet on: the main
+ * window, or a small plain one when none is open. Without a window, macOS
+ * runs a dialog as an app-modal loop that blocks this process: no quit,
+ * signal or ledger close runs until someone dismisses it, and it may be on
+ * another desktop (ADR 0161). The App comes to the front, because a failure
+ * during a scheduled collection finds it in the background.
+ */
+function dialogOwner(): BrowserWindow {
+  const owner = mainWindow && !mainWindow.isDestroyed()
+    ? mainWindow
+    : new BrowserWindow({ width: 480, height: 240, resizable: false, minimizable: false, maximizable: false, fullscreenable: false, title: "OctopusBeak" });
+  if (owner.isMinimized()) owner.restore();
+  owner.show();
+  app.focus({ steal: true });
+  return owner;
 }
 
 async function createWindow(rendererUrl: string, preloadPath: string) {
@@ -417,7 +425,7 @@ async function start() {
   ensureDataRoot(userData, DEFAULT_AUTOMATION_SETTINGS);
   const stopBrowserStateCleanup = startBrowserStateCleanup({
     directory: path.join(userData, "data", "automation", "browser-state"),
-    isActive: (name) => automationRuntime?.activeTaskIds().includes(name) ?? false,
+    isActive: (name) => appHostsPageFor(name) || (automationRuntime?.activeTaskIds().includes(name) ?? false),
     onError: () => console.error("browser-state-cleanup-failed"),
   });
   Object.assign(process.env, buildDesktopEnv({
@@ -570,10 +578,7 @@ async function start() {
         ...ledgerDateFormat(),
         locale: systemLocale(),
         ask: async (options) => {
-          const owner = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
-          if (owner?.isMinimized()) owner.restore();
-          owner?.show();
-          return (await (owner ? dialog.showMessageBox(owner, options) : dialog.showMessageBox(options))).response;
+          return (await dialog.showMessageBox(dialogOwner(), options)).response;
         },
         showError: (title, message) => dialog.showErrorBox(title, message),
         relaunch: () => app.relaunch(),

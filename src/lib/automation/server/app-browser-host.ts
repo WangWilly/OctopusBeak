@@ -346,6 +346,32 @@ export async function withAppWorkflowHostPage<T>(
   use: (hosted: AppWorkflowHostedPage) => Promise<T>,
 ): Promise<T> {
   assertSafePathSegment(input.taskId);
+  hostedTaskPages.set(input.taskId, (hostedTaskPages.get(input.taskId) ?? 0) + 1);
+  try {
+    return await hostPage(input, use);
+  } finally {
+    const remaining = (hostedTaskPages.get(input.taskId) ?? 1) - 1;
+    if (remaining > 0) hostedTaskPages.set(input.taskId, remaining);
+    else hostedTaskPages.delete(input.taskId);
+  }
+}
+
+const hostedTaskPages = new Map<string, number>();
+
+/**
+ * Whether the App hosts a page for this task right now. The host owns the
+ * task's browser folders, so it is the one that knows they are in use: a
+ * device registration hosts a page without claiming a task run, and the
+ * folder cleanup must leave its profile alone.
+ */
+export function appHostsPageFor(taskId: string): boolean {
+  return hostedTaskPages.has(taskId);
+}
+
+async function hostPage<T>(
+  input: AppWorkflowBrowserHostInput,
+  use: (hosted: AppWorkflowHostedPage) => Promise<T>,
+): Promise<T> {
   assertSafePathSegment(input.taskRunId);
   const browserStateDirectory = join(
     input.userDataDirectory,

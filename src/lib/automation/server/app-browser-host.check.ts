@@ -17,6 +17,7 @@ import {
   createBrowserRuntime,
 } from "./browser-runtime.ts";
 import {
+  appHostsPageFor,
   cookiesForAppWorkflowBrowserProfile,
   withAppWorkflowBrowserPage,
   withAppWorkflowHostPage,
@@ -147,6 +148,32 @@ test("App runtime identity is available before browser launch fails", async () =
     assert.deepEqual(identities, [
       { profileId: "default", profileRevision: 1, chromiumVersion: "151.0.7922.34" },
     ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("the App reports a task's page as hosted from before its folders exist until they are gone", async () => {
+  const root = await mkdtemp(join(tmpdir(), "app-browser-hosted-"));
+  const taskId = "hosted-page-task";
+  const seen: boolean[] = [];
+  try {
+    assert.equal(appHostsPageFor(taskId), false);
+    await assert.rejects(withAppWorkflowHostPage({
+      taskId,
+      taskRunId: "device-registration-check",
+      signal: new AbortController().signal,
+      userDataDirectory: root,
+      credentialCodec: null,
+      browserRuntime: createBrowserRuntime({ getChromiumVersion: async () => "151.0.7922.34", platform: "darwin" }),
+      launchPersistentContext: async () => {
+        seen.push(appHostsPageFor(taskId));
+        throw new Error("no browser in this check");
+      },
+    }, async () => undefined));
+    assert.deepEqual(seen, [true], "the page counts as hosted while its profile folder is being used, without any task run");
+    assert.equal(appHostsPageFor(taskId), false, "a page that failed to open is no longer hosted");
+    assert.equal(appHostsPageFor("another-task"), false);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
