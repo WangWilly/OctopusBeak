@@ -1,3 +1,4 @@
+import { taipeiDate } from "../../lib/time/timezone.ts";
 import type { AccountRowDto, PreviewCreditDto } from "../../lib/shared-ledger/types.ts";
 import {
   amountLine,
@@ -89,7 +90,7 @@ export function previewCreditAccountRow(
     amountLines: balance ? [amountLine(balance.currency, exactFromDecimal(balance.amount))] : [],
     transactionCount: purchases.length,
     assetPositionCount: 0,
-    lastUpdated: balance ? balance.observedAt.at.slice(0, 10) : null,
+    lastUpdated: balance ? taipeiDate(balance.observedAt.at) : null,
     valueAvailability: balance ? "available" : "unavailable",
     preview: {
       sourceId: view.sourceId,

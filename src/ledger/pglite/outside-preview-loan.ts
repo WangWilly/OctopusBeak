@@ -1,3 +1,4 @@
+import { taipeiDate } from "../../lib/time/timezone.ts";
 import type { AccountRowDto } from "../../lib/shared-ledger/types.ts";
 import {
   amountLine,
@@ -41,7 +42,7 @@ export function previewLoanAccountRow(view: PreviewLoanAccountView): AccountRowD
     amountLines: balance ? [amountLine(balance.currency, exactFromDecimal(balance.amount))] : [],
     transactionCount: 0,
     assetPositionCount: 0,
-    lastUpdated: balance ? balance.observedAt.at.slice(0, 10) : null,
+    lastUpdated: balance ? taipeiDate(balance.observedAt.at) : null,
     valueAvailability: balance ? "available" : "unavailable",
     preview: {
       sourceId: view.sourceId,
@@ -60,7 +61,7 @@ export function previewLoanSeries(histories: readonly PreviewLoanBalanceHistory[
     label: history.displayLabel,
     side: "liability",
     marker: "preview",
-    closedOn: history.closedAt === null ? null : history.closedAt.slice(0, 10),
+    closedOn: history.closedAt === null ? null : taipeiDate(history.closedAt),
     points: pointsByDate(history.observations),
   }));
 }

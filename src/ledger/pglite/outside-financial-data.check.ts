@@ -145,6 +145,23 @@ test("the series prefers current balances and keeps each date's newest observati
   assert.deepEqual([series!.side, series!.closedOn], ["asset", null]);
 });
 
+test("a balance point and a closure fall on the Taipei day of their instant", () => {
+  const [series] = previewBalanceSeries([{
+    previewAccountId: "a",
+    displayLabel: "Preview savings",
+    closedAt: "2026-10-05T17:00:00Z",
+    observations: [
+      { kind: "current", amount: "1", currency: "TWD", observedAt: { at: "2026-10-03T15:59:59Z", source: "reported" } },
+      { kind: "current", amount: "2", currency: "TWD", observedAt: { at: "2026-10-03T16:00:00Z", source: "reported" } },
+    ],
+  }]);
+  assert.deepEqual(series!.points, [
+    { date: "2026-10-03", currency: "TWD", exact: { coefficient: "1", scale: 0 } },
+    { date: "2026-10-04", currency: "TWD", exact: { coefficient: "2", scale: 0 } },
+  ], "16:00 UTC starts the next Taipei day, so the two observations are two days' points");
+  assert.equal(series!.closedOn, "2026-10-06");
+});
+
 test("a preview account row keeps the source amount exact and is namespaced away from canonical ids", () => {
   assert.deepEqual(exactFromDecimal("-0.50"), { coefficient: "-50", scale: 2 });
   const row = previewAccountRow({
@@ -163,7 +180,7 @@ test("a preview account row keeps the source amount exact and is namespaced away
   assert.equal(row.canonicalAccountId, undefined);
   assert.deepEqual([row.group, row.kind], ["asset", "foreign"]);
   assert.deepEqual(row.amountLines, [{ currency: "USD", value: 1234.5, exact: { coefficient: "123450", scale: 2 } }]);
-  assert.equal(row.lastUpdated, "2026-10-14");
+  assert.equal(row.lastUpdated, "2026-10-15", "23:00 UTC on the 14th is the 15th in Taipei");
   assert.deepEqual(row.preview?.balanceTime, { at: "2026-10-14T23:00:00Z", source: "collection-time" });
 });
 
