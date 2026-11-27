@@ -54,11 +54,10 @@ try {
     LIBRETTO_CLOUD_FUBON_ENABLED: false,
     MAX_SUB_ACCOUNT: "main",
   });
-  // A file from before credentials were encrypted, which the App still reads and then migrates.
-  writeFileSync(credentialsPath, JSON.stringify({
+  writeAutomationCredentialsFile(credentialsPath, {
     [fubonPasswordKey]: "secret",
     [maxSecretKey]: "max-secret",
-  }));
+  }, fakeCodec);
 
   assert.deepEqual(readAutomationSettingsFile(settingsPath), {
     SYSTEM_TIMEZONE: "Asia/Taipei",
@@ -66,7 +65,7 @@ try {
     LIBRETTO_CLOUD_FUBON_ENABLED: false,
     MAX_SUB_ACCOUNT: "main",
   });
-  assert.deepEqual(readAutomationCredentialsFile(credentialsPath, null), {
+  assert.deepEqual(readAutomationCredentialsFile(credentialsPath, fakeCodec), {
     [fubonPasswordKey]: "secret",
     [maxSecretKey]: "max-secret",
   });
