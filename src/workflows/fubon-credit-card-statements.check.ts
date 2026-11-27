@@ -198,7 +198,7 @@ assert.throws(
 // served by route interception (ADR 0066): the 信用卡 header menu reveals the
 // three task links, each task renders in txnFrame, the period tabs switch the
 // statement behind the bank mask, and every page is read in order.
-type PeriodMode = "available" | "no-record" | "temporarily-unavailable";
+type PeriodMode = "available" | "foreign" | "no-record" | "temporarily-unavailable";
 
 const SITE_ORIGIN = new URL(FUBON_EBANK_ENTRY_URL).origin;
 const CURRENT_CREDIT_PATH = "/B2C/cccqu/cccqu002/CCCQU002_Home.faces";
@@ -223,6 +223,16 @@ const htmlRow = (cells: readonly string[]) => `<tr>${cells.map((cell) => `<td>${
 const statementBody = (period: number, mode: PeriodMode) => {
   if (mode === "temporarily-unavailable") return `<p>目前帳單產製中，暫時無法查詢</p>`;
   if (mode === "no-record") return `<p>查無資料</p>`;
+  if (mode === "foreign")
+    return `<table>${htmlRow(["帳單年月", "信用額度"])}${htmlRow([`115/0${8 - period}`, "100,000元"])}</table>
+    <table>
+      ${htmlRow(["消費日期", "消費說明", "入帳日期", "外幣折算日/幣別", "外幣金額/消費地", "臺幣金額"])}
+      ${htmlRow(["正卡末4碼1234"])}
+      ${htmlRow([`115/0${7 - period}/12`, "海外訂閱", `115/0${7 - period}/14`, `115/0${7 - period}/14/USD`, "12.34/USA", "395"])}
+      ${htmlRow([`115/0${7 - period}/15`, "海外商店", `115/0${7 - period}/16`, "TWD", "JPN", "480"])}
+    </table>
+    <input type="hidden" name="dataGrid:currentPage" value="1">
+    <input type="hidden" name="dataGrid:currentPageSize" value="2147483647">`;
   return `<table>${htmlRow(["帳單年月", "信用額度"])}${htmlRow([`115/0${8 - period}`, "100,000元"])}</table>
     <table>
       ${htmlRow(["消費日期", "消費說明", "入帳日期", "外幣折算日/幣別", "外幣金額", "臺幣金額"])}
@@ -377,6 +387,18 @@ test("Fubon credit card reads every task through the 信用卡 menu and consumes
     { currentPage: undefined, currentPageSize: undefined, sourceDeclaredRowCount: undefined },
   ]);
   assert.deepEqual(read.activities, ["query", "query", "query", "query"]);
+});
+
+test("a billed foreign purchase reads its currency and amount apart from the conversion date and merchant country", async () => {
+  const read = await readCardThroughShell({ modes: { 1: "foreign" }, periodOffsets: [1] });
+  assert.deepEqual(
+    read.snapshot.statementRows.map((row) => [row.description, row.foreign_currency, row.foreign_amount, row.twd_amount]),
+    [
+      ["海外訂閱", "USD", "12.34", "395"],
+      ["海外商店", "TWD", "JPN", "480"],
+    ],
+    "the 外幣折算日/幣別 cell yields only its currency and the 外幣金額/消費地 cell only its amount",
+  );
 });
 
 test("a current-credit page with replacement characters fails the card read", async () => {

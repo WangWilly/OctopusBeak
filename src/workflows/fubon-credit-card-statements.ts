@@ -1166,8 +1166,8 @@ async function readStatementRows(
       consume_date: cells[0] ?? "",
       description: cells[1] ?? "",
       posting_date: cells[2] ?? "",
-      foreign_currency: cells[3] ?? "",
-      foreign_amount: cells[4] ?? "",
+      foreign_currency: billedForeignCurrencyCell(cells[3] ?? ""),
+      foreign_amount: billedForeignAmountCell(cells[4] ?? ""),
       twd_amount: cells[5] ?? "",
       installment_action: "",
       payment_status: "",
@@ -1187,6 +1187,16 @@ async function readStatementRows(
   }
 
   return { rows: details, summaries };
+}
+
+/** 外幣折算日/幣別 reads `115/01/02/USD`; the booked currency alone reads `TWD`. */
+function billedForeignCurrencyCell(cell: string): string {
+  return /^\d{2,3}\/\d{1,2}\/\d{1,2}\/(.+)$/u.exec(cell)?.[1] ?? cell;
+}
+
+/** 外幣金額/消費地 reads `12.34/USA`; a TWD-booked purchase abroad shows the country alone. */
+function billedForeignAmountCell(cell: string): string {
+  return /^(.+)\/[A-Z]{3}$/u.exec(cell)?.[1] ?? cell;
 }
 
 async function readUnbilledRows(
