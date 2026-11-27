@@ -82,8 +82,22 @@ function safeIdentity(value: unknown, fallback: string): string {
     : fallback;
 }
 
+/** The codes of a request whose peer went away before it answered. */
+const LOST_TRANSPORT_CODES: ReadonlySet<unknown> = new Set(["worker-closed", "closed", "connection-failed"]);
+
+/**
+ * A request that lost its transport, or that the worker failed outside the
+ * item's own rules, may have committed. A cancellation requested meanwhile
+ * does not make that outcome known (ADR 0056), so it stays fatal.
+ */
+function outcomeLost(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const value = error as { code?: unknown; category?: unknown };
+  return LOST_TRANSPORT_CODES.has(value.code) || (value.code === "operation-failed" && value.category === "fatal");
+}
+
 function classify(error: unknown, signal?: AbortSignal): ClassifiedFailure {
-  if (signal?.aborted) return { kind: "cancelled", code: "cancelled" };
+  if (signal?.aborted && !outcomeLost(error)) return { kind: "cancelled", code: "cancelled" };
   if (error && typeof error === "object") {
     const value = error as { code?: unknown; category?: unknown; reason?: unknown };
     if (value.code === "cancelled") return { kind: "cancelled", code: "cancelled" };

@@ -117,6 +117,42 @@ test("PGlite run keeps a durable result when cancellation wins after the commit"
     [{ captureId: "capture-ok", commitSequence: 5 }]);
 });
 
+test("PGlite run does not call a commit cancelled when its transport was lost under the cancellation", async () => {
+  for (const lost of [
+    { code: "closed" },
+    { code: "connection-failed" },
+    { code: "worker-closed" },
+    { code: "operation-failed", category: "fatal" },
+  ]) {
+    const controller = new AbortController();
+    const result = await executePGliteWorkflowRun({
+      client: client(async () => {
+        controller.abort();
+        throw Object.assign(new Error("transport lost"), lost);
+      }),
+      items: [item("first"), item("second")],
+      signal: controller.signal,
+    });
+    assert.equal(result.status, "failed", `${JSON.stringify(lost)} leaves the commit outcome unknown`);
+    assert.equal(result.items[0]?.status === "failed" && result.items[0].failureKind, "fatal");
+    assert.equal(result.diagnostics.some((diagnostic) => diagnostic.stage === "run"), true);
+  }
+});
+
+test("PGlite run reports a cancellation when the worker answers the cancelled request", async () => {
+  const controller = new AbortController();
+  const result = await executePGliteWorkflowRun({
+    client: client(async () => {
+      controller.abort();
+      throw Object.assign(new Error("rolled back"), { code: "cancelled" });
+    }),
+    items: [item("first"), item("second")],
+    signal: controller.signal,
+  });
+  assert.equal(result.status, "cancelled");
+  assert.equal(result.items.length, 0);
+});
+
 test("PGlite run stops after an invalid success receipt without retrying the durable item", async () => {
   let calls = 0;
   const result = await executePGliteWorkflowRun({

@@ -254,7 +254,8 @@ export const PGLITE_FINANCIAL_CONTRACTS = Object.freeze({
   )),
   "financial.source.admit": operation<[request: PGliteCanonicalSourceAdmissionRequest], PGliteCanonicalSourceAdmissionReceipt>(
     (args) => args.length === 1 && sourceEvidenceShape(args[0]),
-    { lane: "background", workflow: "call" },
+    // It stores the capture and its records, so it is gated like a commit (ADR 0159).
+    { lane: "background", workflow: "commit" },
   ),
   "financial.source.commit": operation<[request: PGliteCanonicalFinancialCommitRequest], PGliteCanonicalFinancialCommitResult>(
     (args) => args.length === 1 && sourceCommitShape(args[0]),
