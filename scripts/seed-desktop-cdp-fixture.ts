@@ -22,7 +22,7 @@ import {
   commitYuantaTrade,
 } from "../src/ledger/pglite/direct-source-precedence-fixture.ts";
 import {
-  writeAutomationCredentialsFile,
+  atomicWriteFile,
   writeAutomationSettingsFile,
 } from "../src/lib/automation/server/config-files.ts";
 import {
@@ -178,10 +178,10 @@ export async function seedDesktopCdpFixture(
     ...(options.previewData ? { PREVIEW_FEATURES_ENABLED: true } : {}),
   };
   writeAutomationSettingsFile(join(root, "settings.json"), fixtureSettings);
-  writeAutomationCredentialsFile(
+  // Clear text on purpose: the fixture has no Keychain key, and the App migrates this legacy shape at startup.
+  atomicWriteFile(
     join(root, "credentials.json"),
-    options.tdccOutcome ? { ...desktopCdpFixtureCredentials, ...tdccFixtureCredentials } : desktopCdpFixtureCredentials,
-    null,
+    `${JSON.stringify(options.tdccOutcome ? { ...desktopCdpFixtureCredentials, ...tdccFixtureCredentials } : desktopCdpFixtureCredentials, null, 2)}\n`,
   );
   const dataDir = join(root, "data", "pglite");
   mkdirSync(join(root, "data"), { recursive: true });

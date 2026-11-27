@@ -54,10 +54,11 @@ try {
     LIBRETTO_CLOUD_FUBON_ENABLED: false,
     MAX_SUB_ACCOUNT: "main",
   });
-  writeAutomationCredentialsFile(credentialsPath, {
+  // A file from before credentials were encrypted, which the App still reads and then migrates.
+  writeFileSync(credentialsPath, JSON.stringify({
     [fubonPasswordKey]: "secret",
     [maxSecretKey]: "max-secret",
-  }, null);
+  }));
 
   assert.deepEqual(readAutomationSettingsFile(settingsPath), {
     SYSTEM_TIMEZONE: "Asia/Taipei",
@@ -148,9 +149,9 @@ try {
 
   const tdccSecrets = Object.fromEntries(TDCC_HOST_KEYS.map((key) => [key, `${key}-value`]));
   const tdccCredentialsPath = join(dir, "tdcc-credentials.json");
-  writeAutomationCredentialsFile(tdccCredentialsPath, { ...tdccSecrets, [fubonPasswordKey]: "pw" }, null);
+  writeAutomationCredentialsFile(tdccCredentialsPath, { ...tdccSecrets, [fubonPasswordKey]: "pw" }, fakeCodec);
   assert.deepEqual(
-    readAutomationCredentialsFile(tdccCredentialsPath, null),
+    readAutomationCredentialsFile(tdccCredentialsPath, fakeCodec),
     { ...tdccSecrets, [fubonPasswordKey]: "pw" },
     "TDCC secrets survive a credentials rewrite",
   );
@@ -170,8 +171,9 @@ try {
   const legacyCredentials = readAutomationCredentialsFile(legacyGmailPath, null);
   assert.deepEqual(legacyCredentials, { [fubonPasswordKey]: "pw" }, "stored Gmail grants are no longer read");
   assert.deepEqual(readAutomationSettingsFile(legacyGmailSettingsPath), {});
-  writeAutomationCredentialsFile(legacyGmailPath, legacyCredentials, null);
-  assert.equal(readFileSync(legacyGmailPath, "utf8").includes("legacy-refresh-token"), false, "the next credential write drops the Gmail grant");
+  writeAutomationCredentialsFile(legacyGmailPath, legacyCredentials, fakeCodec);
+  assert.deepEqual(readAutomationCredentialsFile(legacyGmailPath, fakeCodec), { [fubonPasswordKey]: "pw" }, "the next credential write drops the Gmail grant");
+  assert.equal(readFileSync(legacyGmailPath, "utf8").includes(fubonPasswordKey), false, "a credential write is never clear text");
 
   assert.equal(AUTOMATION_SETTINGS_FILE, "settings.json");
   assert.equal(AUTOMATION_CREDENTIALS_FILE, "credentials.json");
@@ -254,14 +256,6 @@ try {
 
   assert.throws(
     () => readAutomationCredentialsFile(encryptedCredentialsPath, null),
-    /Credential encryption is not configured/,
-  );
-  assert.throws(
-    () =>
-      ensureAutomationManagedSecrets({
-        credentialsPath: join(dir, "unencrypted-managed-secret.json"),
-        codec: null,
-      }),
     /Credential encryption is not configured/,
   );
 
