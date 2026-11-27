@@ -513,27 +513,40 @@ async function statementTwdValuations(
   capturedAt: string,
 ): Promise<Map<string, InvestmentTwdValuation>> {
   const todayStartMs = Math.floor(Date.parse(capturedAt) / DAY_MS) * DAY_MS;
-  const closes = new Map<string, Promise<DailyClose>>();
-  const close = (market: string, dayStartMs: number): Promise<DailyClose> => {
-    const key = `${market}:${dayStartMs}`;
-    if (!closes.has(key)) closes.set(key, dailyClose(client, market, dayStartMs));
-    return closes.get(key)!;
+  const priced = statement.flatMap((batch) =>
+    batch.rowType === "reward" || batch.rowType === "deposit"
+      ? batch.rows.map((row) => ({ batch, rowType: batch.rowType as "reward" | "deposit", row }))
+      : []);
+  // One request per market covers every day it is needed for, where one per
+  // day made a thousand requests of a long reward history, each one a way
+  // for the whole sync to fail. So the days are gathered first.
+  const neededDays = new Map<string, Set<number>>();
+  for (const { rowType, row } of priced)
+    await statementTwdValuation(rowType, row, markets, todayStartMs, async (market, dayStartMs) => {
+      const days = neededDays.get(market) ?? new Set<number>();
+      neededDays.set(market, days.add(dayStartMs));
+      return NO_PRICE;
+    });
+  const closes = new Map<string, ReadonlyMap<number, InvestmentExactAmount>>();
+  for (const [market, days] of neededDays) {
+    client.throwIfAborted();
+    closes.set(market, await dailyCloses(client, market, days));
+  }
+  const close = async (market: string, dayStartMs: number): Promise<DailyClose> => {
+    const found = closes.get(market)?.get(dayStartMs);
+    return found ? { kind: "close", close: found } : NO_PRICE;
   };
   const valuations = new Map<string, InvestmentTwdValuation>();
-  for (const batch of statement) {
-    if (batch.rowType !== "reward" && batch.rowType !== "deposit") continue;
-    for (const row of batch.rows) {
-      client.throwIfAborted();
-      const valuation = await statementTwdValuation(batch.rowType, row, markets, todayStartMs, close);
-      if (valuation)
-        valuations.set(maicoinStatementRecordKey({
-          endpoint: batch.endpoint,
-          walletType: batch.walletType,
-          rowType: batch.rowType,
-          externalId: statementExternalId(batch.rowType, row),
-          leg: "transaction",
-        }), valuation);
-    }
+  for (const { batch, rowType, row } of priced) {
+    const valuation = await statementTwdValuation(rowType, row, markets, todayStartMs, close);
+    if (valuation)
+      valuations.set(maicoinStatementRecordKey({
+        endpoint: batch.endpoint,
+        walletType: batch.walletType,
+        rowType,
+        externalId: statementExternalId(rowType, row),
+        leg: "transaction",
+      }), valuation);
   }
   return valuations;
 }
@@ -589,24 +602,47 @@ function exactStatementAmount(value: unknown): InvestmentExactAmount | null {
   }
 }
 
-/** MAX k-line rows are `[startSeconds, open, high, low, close, volume]`. */
-async function dailyClose(client: MaxClient, market: string, dayStartMs: number): Promise<DailyClose> {
-  const dayStart = dayStartMs / 1000;
-  const rows = await client.publicGet<unknown>("/api/v3/k", {
-    market,
-    period: 1440,
-    limit: 2,
-    timestamp: dayStart,
-  });
-  if (!Array.isArray(rows)) throw new Error(`MAX k-line response for ${market} is not an array.`);
-  for (const row of rows) {
-    if (!Array.isArray(row) || row.length < 5) throw new Error(`MAX k-line response for ${market} has a malformed candle.`);
-    const start = Number(row[0]);
-    if (!Number.isSafeInteger(start)) throw new Error(`MAX k-line response for ${market} has a malformed candle time.`);
-    if (start < dayStart || start >= dayStart + 86_400) continue;
-    return { kind: "close", close: candleClose(row[4], market) };
+/** How many daily candles one request asks for. MAX allows 10000. */
+const MAICOIN_DAILY_CANDLE_LIMIT = 1000;
+
+/**
+ * The close of each of `days` (UTC day starts, in milliseconds) that MAX has a
+ * candle for. MAX answers with the candles at and after `timestamp`, oldest
+ * first, as `[startSeconds, open, high, low, close, volume]`. A day with no
+ * candle is absent from the result; another day's candle never stands in.
+ */
+async function dailyCloses(
+  client: MaxClient,
+  market: string,
+  days: ReadonlySet<number>,
+): Promise<Map<number, InvestmentExactAmount>> {
+  const closes = new Map<number, InvestmentExactAmount>();
+  const lastDayMs = Math.max(...days);
+  let cursorMs = Math.min(...days);
+  while (cursorMs <= lastDayMs) {
+    client.throwIfAborted();
+    const limit = Math.min(MAICOIN_DAILY_CANDLE_LIMIT, (lastDayMs - cursorMs) / DAY_MS + 1);
+    const rows = await client.publicGet<unknown>("/api/v3/k", {
+      market,
+      period: 1440,
+      limit,
+      timestamp: cursorMs / 1000,
+    });
+    if (!Array.isArray(rows)) throw new Error(`MAX k-line response for ${market} is not an array.`);
+    let latestDayMs = -Infinity;
+    for (const row of rows) {
+      if (!Array.isArray(row) || row.length < 5) throw new Error(`MAX k-line response for ${market} has a malformed candle.`);
+      const start = Number(row[0]);
+      if (!Number.isSafeInteger(start)) throw new Error(`MAX k-line response for ${market} has a malformed candle time.`);
+      const dayMs = Math.floor(start / 86_400) * DAY_MS;
+      latestDayMs = Math.max(latestDayMs, dayMs);
+      if (days.has(dayMs) && !closes.has(dayMs)) closes.set(dayMs, candleClose(row[4], market));
+    }
+    // A short page is the end of MAX's candles, and one that does not move forward would never end.
+    if (rows.length < limit || latestDayMs < cursorMs) break;
+    cursorMs = latestDayMs + DAY_MS;
   }
-  return NO_PRICE;
+  return closes;
 }
 
 function candleClose(value: unknown, market: string): InvestmentExactAmount {
