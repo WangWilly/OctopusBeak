@@ -214,13 +214,17 @@ const orderedQuit = createOrderedQuit({
   fatalIgnored: () => ledgerRecoveryPending || ledgerRestoreSwappingBack,
   stopWork: () => {
     hostServices?.stop();
-    automationRuntime?.abortAll();
+    // Shutdown also refuses new runs and stops one still opening, which the
+    // dialog's open time would otherwise let through. The quit awaits it again.
+    void automationRuntime?.shutdown().catch(() => undefined);
   },
   locale: systemLocale,
   ask: async (options) => {
     // A fixture run has no one to close the dialog; it quits as if someone had.
     if (!app.isReady() || cdpFixture || packagedBrowserFixture) return;
     // Not a sheet on the window: a window still loading is destroyed once a fatal is reported.
+    // A fatal during a scheduled collection finds the App in the background, where the dialog could wait unseen.
+    app.focus({ steal: true });
     await dialog.showMessageBox(options);
   },
   log: (event, details) => console.error(event, ...(details === undefined ? [] : [details])),

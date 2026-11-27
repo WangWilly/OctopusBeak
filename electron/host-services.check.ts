@@ -160,6 +160,17 @@ test("pausing the schedules pauses both, and the returned resume resumes both", 
   ], "a fixture launch's schedules are paused and resumed too; each schedule keeps its own idle state");
 });
 
+test("a resume that arrives after a stop arms nothing", async () => {
+  const { services, log } = harness();
+  services.startWhenReady(Promise.resolve());
+  await settle();
+  const resume = services.pauseSchedules();
+  services.stop();
+  log.length = 0;
+  resume();
+  assert.deepEqual(log, [], "a reset that ends after the App stopped its services must not restart the schedules");
+});
+
 test("waking the Mac wakes both schedules", () => {
   const { services, log } = harness();
   services.wake();

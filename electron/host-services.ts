@@ -91,6 +91,8 @@ export function createHostServices(deps: HostServiceDependencies): HostServices 
     pauseSchedules() {
       const resumes = [deps.exchangeRates.pause(), deps.collection.pause()];
       return () => {
+        // A stop is final: a reset or restore that ends after it must not arm the schedules again.
+        if (stopped) return;
         for (const resume of resumes) resume();
       };
     },

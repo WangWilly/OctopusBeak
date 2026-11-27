@@ -14,9 +14,9 @@ const COPY: Readonly<Record<"zh-TW" | "en", Readonly<{
   quit: string;
 }>>> = {
   "zh-TW": {
-    message: "OctopusBeak 發生內部問題，必須結束",
+    message: "OctopusBeak 發生內部問題，必須關閉",
     detail: ({ stage, code }) => [
-      "已收集的資料沒有因為這個問題而變更。",
+      "已收集的資料不受這個問題影響。",
       "如果再次發生，請回報以下內容：",
       `階段：${stage}\n代碼：${code}`,
     ].join("\n\n"),
