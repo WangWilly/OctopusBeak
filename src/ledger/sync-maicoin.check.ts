@@ -539,7 +539,11 @@ const pricedRewards = [
 ];
 
 /** A MAX API whose `/api/v3/k` answers with `candles(market, dayStart)`; a Response is returned as is. */
-function pricingFetch(candles: (market: string, dayStart: number) => readonly Candle[] | Response, kRequests: string[] = []) {
+function pricingFetch(
+  candles: (market: string, dayStart: number, limit: number) => readonly Candle[] | Response,
+  kRequests: string[] = [],
+  rewards: readonly Record<string, unknown>[] = pricedRewards,
+) {
   const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { Date: PRICING_DATE } });
   return (async (input: string | URL | Request) => {
     const url = new URL(input instanceof Request ? input.url : input.toString());
@@ -551,13 +555,13 @@ function pricingFetch(candles: (market: string, dayStart: number) => readonly Ca
       { id: "usdttwd", base_unit: "usdt", quote_unit: "twd", status: "active" },
     ]);
     if (url.pathname === "/api/v3/fund_transactions/deposits") return json(pricedDeposits);
-    if (url.pathname === "/api/v3/rewards") return json(pricedRewards);
+    if (url.pathname === "/api/v3/rewards") return json(rewards);
     if (url.pathname.endsWith("/trades") || url.pathname.startsWith("/api/v3/fund_transactions/") || url.pathname === "/api/v3/converts") return json([]);
     if (url.pathname === "/api/v3/k") {
       const market = url.searchParams.get("market")!;
       const dayStart = Number(url.searchParams.get("timestamp"));
       kRequests.push(`${market}@${new Date(dayStart * 1000).toISOString().slice(0, 10)}`);
-      const answer = candles(market, dayStart);
+      const answer = candles(market, dayStart, Number(url.searchParams.get("limit")));
       return answer instanceof Response ? answer : json(answer);
     }
     throw new Error(`Unexpected MAX endpoint: ${url.pathname}`);
@@ -604,6 +608,49 @@ test("MAX prices a reward and a non-TWD deposit exactly from a finished UTC day'
     [statementKey("/api/v3/rewards", "reward", "uuid:r-twd"), { route: "twd", value: { coefficient: "5", scale: 0, currency: "TWD" } }],
   ]), "a TWD deposit needs no value, and today's reward waits for its day to close");
   assert.deepEqual(kRequests.sort(), ["btctwd@2026-09-20", "ethusdt@2026-09-21", "usdttwd@2026-09-21"], "today's row is never looked up");
+});
+
+test("MAX asks each market once for every day it needs, and a day MAX has no candle for stays unvalued", async () => {
+  const day = (date: string) => Date.parse(`${date}T05:00:00Z`);
+  const rewards = ["2026-09-01", "2026-09-03", "2026-09-08", "2026-09-10"].map((date) =>
+    ({ uuid: `r-${date}`, currency: "eth", amount: "1", type: "airdrop", note: "x", created_at: day(date) }));
+  const ethUsdt: Readonly<Record<string, number>> = { "2026-09-01": 2000, "2026-09-03": 2100, "2026-09-10": 2200 };
+  const kRequests: string[] = [];
+  const originalFetch = globalThis.fetch;
+  let source;
+  try {
+    globalThis.fetch = pricingFetch((market, dayStart, limit) => {
+      kRequests.push(`limit=${limit}`);
+      const candles: Candle[] = [];
+      for (let index = 0; index < limit; index += 1) {
+        const start = dayStart + index * 86_400;
+        const date = new Date(start * 1000).toISOString().slice(0, 10);
+        const close = market === "usdttwd" ? 32 : ethUsdt[date];
+        if (close !== undefined) candles.push([start, "1", "1", "1", close, "1"]);
+      }
+      return candles;
+    }, kRequests, rewards);
+    source = await collectMaicoinSource(credentials, { walletTypes: ["spot"], now: () => PRICING_NOW });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  const valueOf = (date: string) => source.statementValuations.get(statementKey("/api/v3/rewards", "reward", `uuid:r-${date}`))?.value;
+  assert.deepEqual(
+    ["2026-09-01", "2026-09-03", "2026-09-08", "2026-09-10"].map(valueOf),
+    [
+      { coefficient: "64000", scale: 0, currency: "TWD" },
+      { coefficient: "67200", scale: 0, currency: "TWD" },
+      undefined,
+      { coefficient: "70400", scale: 0, currency: "TWD" },
+    ],
+    "each day takes its own close, and the day without a candle takes none",
+  );
+  assert.deepEqual(
+    kRequests.filter((entry) => !entry.startsWith("limit=") && !entry.startsWith("btctwd")).sort(),
+    ["ethusdt@2026-09-01", "usdttwd@2026-09-01"],
+    "one request per market, from its first needed day",
+  );
+  assert.ok(kRequests.includes("limit=10"), "the request spans the first to the last needed day");
 });
 
 test("MAX leaves a row unvalued when MAX has no candle for its exact day, never borrowing another day's", async () => {
