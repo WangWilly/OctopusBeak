@@ -3,6 +3,7 @@ import test from "node:test";
 import { createTestPGlite } from "./baseline-test-template.ts";
 import { commitPGliteCanonicalDepositCapture } from "./deposit.ts";
 import { readOverviewPage, type FinancialPageScope } from "./financial-pages.ts";
+import { createPGliteCanonicalOverviewQuery } from "./overview.ts";
 import { PGliteStore } from "./transaction.ts";
 import {
   FUBON_DOMESTIC_DEPOSIT_ABSENCE_AUTHORITY,
@@ -93,4 +94,14 @@ test("a Taipei observedAt is updated on its own date", async () => {
   await withFubonCaptures(["2026-01-31T23:59:59+08:00"], async (store) => {
     assert.equal((await fubonRow(store)).lastUpdated, "2026-01-31");
   });
+});
+
+test("a Taipei observedAt after an older stored UTC one is the account's latest, even under eight hours apart", async () => {
+  for (const newer of ["2026-02-01T02:00:00+08:00", "2026-02-01T09:29:59+08:00", "2026-02-03T00:00:00+08:00"]) {
+    await withFubonCaptures(["2026-01-31T17:30:00.000Z", newer], async (store) => {
+      const current = await createPGliteCanonicalOverviewQuery(store).current();
+      assert.deepEqual(current.projection.accounts.map((account) => account.observedAt), [newer]);
+      assert.equal(current.projection.importedAt, newer, newer);
+    });
+  }
 });
