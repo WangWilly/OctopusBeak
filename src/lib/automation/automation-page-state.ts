@@ -10,6 +10,7 @@ import {
   type AutomationActionToken,
   type AutomationRuntimeAcceptResult,
 } from "./runtime-controller.ts";
+import type { AutomationRuntimeRecovery } from "./runtime-recovery.ts";
 import { mergeAutomationRuntime } from "./runtime-sync.ts";
 import { isActiveAutomationRuntimeStatus } from "./task-row.ts";
 import type { AutomationPageModel, AutomationTaskStatus } from "./types.ts";
@@ -31,6 +32,8 @@ export type AutomationPageStateValue = Readonly<{
   live: AutomationPageModel | null;
   /** A task runs or an action waits for the runtime, so the blocks are refreshed on a timer. */
   active: boolean;
+  /** No runtime snapshot could be read or accepted even after a reload; the page offers a retry. */
+  runtimeUnavailable: boolean;
 }>;
 
 type StopTask = Readonly<{ id: string; status: AutomationTaskStatus }>;
@@ -54,12 +57,14 @@ export type AutomationRuntimeEvents = Readonly<{
 export function createAutomationPageState(input: Readonly<{
   api: AutomationActionPort;
   requestReload(reason: AutomationReloadReason): void | Promise<void>;
+  recovery: AutomationRuntimeRecovery;
   pollIntervalMs?: number;
 }>) {
   const pollIntervalMs = input.pollIntervalMs ?? 2_000;
   const controller = createAutomationRuntimeController();
   const subscribers = new Set<(value: AutomationPageStateValue) => void>();
   let model: AutomationPageModel | null = null;
+  let runtimeUnavailable = false;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   const connections = new Set<() => void>();
   let value = compute();
@@ -78,6 +83,7 @@ export function createAutomationPageState(input: Readonly<{
       model,
       live,
       active: running || pendingActions.length > 0,
+      runtimeUnavailable,
     };
   }
 
@@ -95,12 +101,30 @@ export function createAutomationPageState(input: Readonly<{
 
   function acceptSnapshot(snapshot: AutomationRuntimeSnapshot): AutomationRuntimeAcceptResult {
     const result = controller.acceptSnapshot(snapshot);
+    input.recovery.accepted();
+    if (runtimeUnavailable) {
+      runtimeUnavailable = false;
+      publish();
+    }
     if (result.accepted && (result.hadGap || result.sessionChanged)) input.requestReload("session-resync");
     return result;
   }
 
+  /**
+   * The one answer to a runtime snapshot the renderer could not read or
+   * accept: reload the window once, then show the error state. The host
+   * reports its own failures, so this never ends the App.
+   */
+  function runtimeUnreadable(failure: string, error: unknown) {
+    console.error(failure, error);
+    if (input.recovery.failed() === "unavailable" && !runtimeUnavailable) {
+      runtimeUnavailable = true;
+      publish();
+    }
+  }
+
   const unsubscribeController = controller.subscribe(publish);
-  const actions = createAutomationActions({ controller, api: input.api, onSnapshot: acceptSnapshot });
+  const actions = createAutomationActions({ controller, api: input.api, onSnapshot: acceptSnapshot, onUnreadable: runtimeUnreadable });
 
   return {
     /** Svelte store contract: the current value now, then every change. */
@@ -120,8 +144,9 @@ export function createAutomationPageState(input: Readonly<{
     acceptSnapshot,
     /**
      * Keep the runtime current: read a snapshot now, accept every pushed one,
-     * and read again on each resync. A failed read reports the runtime fatal
-     * through the host. Returns the disconnect; `dispose` disconnects too.
+     * and read again on each resync. A read that fails, or a snapshot that
+     * cannot be accepted, reloads the window once. Returns the disconnect;
+     * `dispose` disconnects too.
      */
     connect(events: AutomationRuntimeEvents): () => void {
       let open = true;
@@ -129,11 +154,7 @@ export function createAutomationPageState(input: Readonly<{
         if (open) acceptSnapshot(snapshot);
       };
       const read = (failure: string) => {
-        // A failure while accepting the snapshot is fatal too, as a failed read is.
-        void input.api.runtimeSnapshot().then(accept).catch((error: unknown) => {
-          console.error(failure, error);
-          void input.api.fatalRuntimeSnapshot();
-        });
+        void input.api.runtimeSnapshot().then(accept).catch((error: unknown) => runtimeUnreadable(failure, error));
       };
       const unsubscribePush = events.runtimeChanged(accept);
       const unsubscribeResync = events.resync(() => read("automation-runtime-resync-failed"));
@@ -158,6 +179,10 @@ export function createAutomationPageState(input: Readonly<{
     },
     async reload() {
       await input.requestReload("manual");
+    },
+    /** From the error state: reloads the window, which may fail again into the same state. */
+    retryRuntime() {
+      input.recovery.retry();
     },
     dispose() {
       for (const disconnect of [...connections]) disconnect();

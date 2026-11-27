@@ -8,7 +8,7 @@ import type { AutomationTaskStatus } from "./types.ts";
 
 export type AutomationActionPort = Pick<
   OctopusBeakApi["automation"],
-  "run" | "runMany" | "cancel" | "forceTerminate" | "runtimeSnapshot" | "fatalRuntimeSnapshot"
+  "run" | "runMany" | "cancel" | "forceTerminate" | "runtimeSnapshot"
 >;
 
 /** An action that began: its tasks are pending until `settled` or the runtime shows them. */
@@ -38,13 +38,15 @@ function message(error: unknown) {
  * controller's pending actions. A task already pending is refused (null), a
  * failed request releases its task, and each response's runtime goes to
  * `onSnapshot`, which must pass it through the controller's revision gate.
+ * A runtime that cannot be read or accepted goes to `onUnreadable`.
  */
 export function createAutomationActions(input: Readonly<{
   controller: ReturnType<typeof createAutomationRuntimeController>;
   api: AutomationActionPort;
   onSnapshot(snapshot: AutomationRuntimeSnapshot): void;
+  onUnreadable(failure: string, error: unknown): void;
 }>) {
-  const { controller, api, onSnapshot } = input;
+  const { controller, api, onSnapshot, onUnreadable } = input;
   /** Each timer remembers the runtime it was set against. */
   const preparingTimeouts = new Map<string, Readonly<{
     timeout: ReturnType<typeof setTimeout>;
@@ -74,10 +76,7 @@ export function createAutomationActions(input: Readonly<{
       preparingTimeouts.delete(taskId);
       void api.runtimeSnapshot()
         .then(onSnapshot)
-        .catch((error) => {
-          console.error("automation-runtime-preparing-timeout", error);
-          void api.fatalRuntimeSnapshot();
-        });
+        .catch((error: unknown) => onUnreadable("automation-runtime-preparing-timeout", error));
     }, PREPARING_TIMEOUT_MS) });
   }
 

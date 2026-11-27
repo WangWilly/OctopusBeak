@@ -24,6 +24,7 @@ const en = {
     all: "All",
     retry: "Retry",
     financialLiveUnavailable: "Live financial data is temporarily unavailable; showing the latest available data.",
+    automationRuntimeUnavailable: "Sync status cannot be shown right now. A sync in progress keeps running.",
   },
   chart: {
     trendAria: (label: string, currency: string) =>
@@ -62,6 +63,7 @@ const zh: typeof en = {
     all: "全部",
     retry: "重試",
     financialLiveUnavailable: "即時財務資料暫時無法更新，正在顯示最近可用資料。",
+    automationRuntimeUnavailable: "目前無法顯示同步狀態，進行中的同步會繼續執行。",
   },
   chart: {
     trendAria: (label, currency) => `${label} 趨勢 ${currency}`,

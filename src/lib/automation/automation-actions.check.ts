@@ -19,10 +19,10 @@ function runtime(revision: number, tasks: ReadonlyArray<Pick<AutomationRuntimeTa
   };
 }
 
-type Calls = { run: string[]; runMany: string[][]; cancel: string[]; forceTerminate: string[]; snapshots: number; fatal: number };
+type Calls = { run: string[]; runMany: string[][]; cancel: string[]; forceTerminate: string[]; snapshots: number; unreadable: string[] };
 
 function harness(overrides: Partial<AutomationActionPort> = {}) {
-  const calls: Calls = { run: [], runMany: [], cancel: [], forceTerminate: [], snapshots: 0, fatal: 0 };
+  const calls: Calls = { run: [], runMany: [], cancel: [], forceTerminate: [], snapshots: 0, unreadable: [] };
   const api: AutomationActionPort = {
     async run(taskId) {
       calls.run.push(taskId);
@@ -44,14 +44,16 @@ function harness(overrides: Partial<AutomationActionPort> = {}) {
       calls.snapshots += 1;
       return runtime(9, []);
     },
-    async fatalRuntimeSnapshot() {
-      calls.fatal += 1;
-    },
     ...overrides,
   };
   const controller = createAutomationRuntimeController();
   const applied: AutomationRuntimeSnapshot[] = [];
-  const actions = createAutomationActions({ controller, api, onSnapshot: (snapshot) => applied.push(snapshot) });
+  const actions = createAutomationActions({
+    controller,
+    api,
+    onSnapshot: (snapshot) => applied.push(snapshot),
+    onUnreadable: (failure) => calls.unreadable.push(failure),
+  });
   return { calls, controller, actions, applied };
 }
 
@@ -100,23 +102,17 @@ test("a run still preparing after the timeout reads the authoritative runtime", 
   actions.dispose();
 });
 
-test("an unreadable runtime after the timeout asks for the fatal snapshot", async (t) => {
+test("an unreadable runtime after the timeout goes to the one unreadable-runtime handler", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const { calls, actions } = harness({
     async runtimeSnapshot() {
       throw new Error("ipc closed");
     },
   });
-  const originalError = console.error;
-  console.error = () => {};
-  try {
-    await actions.run("a")!.settled;
-    t.mock.timers.tick(5_000);
-    await new Promise((resolve) => setImmediate(resolve));
-  } finally {
-    console.error = originalError;
-  }
-  assert.equal(calls.fatal, 1);
+  await actions.run("a")!.settled;
+  t.mock.timers.tick(5_000);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls.unreadable, ["automation-runtime-preparing-timeout"]);
   actions.dispose();
 });
 
