@@ -2,6 +2,7 @@ import { institutionNames } from "../../lib/institutions/institutions.ts";
 import type { Origin } from "../../lib/shared-ledger/provenance.ts";
 import type { CurrencyAmountDto } from "../../lib/shared-ledger/types.ts";
 import { exactToNumber, type ExactAmount } from "../../lib/shared-money/exact-money.ts";
+import { taipeiDate } from "../../lib/time/timezone.ts";
 
 /** The building blocks every Outside financial data row and balance series shares. */
 
@@ -37,7 +38,7 @@ export function pointsByDate(observations: readonly Readonly<{ amount: string; c
   const sorted = [...observations].sort((left, right) => Date.parse(left.observedAt.at) - Date.parse(right.observedAt.at));
   const byDate = new Map<string, BalancePoint>();
   for (const observation of sorted) {
-    const date = observation.observedAt.at.slice(0, 10);
+    const date = taipeiDate(observation.observedAt.at);
     byDate.set(date, { date, currency: observation.currency, exact: exactFromDecimal(observation.amount) });
   }
   return [...byDate.values()].sort((left, right) => left.date.localeCompare(right.date));
