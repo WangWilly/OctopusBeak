@@ -2,10 +2,11 @@ import type { PGliteWorkflowRpc } from "../../pglite-rpc/pglite-child-rpc-client
 import type { WorkflowDefinition } from "../workflow-executor.ts";
 import { appWorkflowRegistration, type AppWorkflowRuntime } from "./app-workflow-registry.ts";
 import {
-  automationConfigEnv,
+  runConfiguration,
   type AutomationCredentialStore,
   type AutomationSettingsFile,
   type AutomationSettingsStore,
+  type RunConfiguration,
 } from "./config-files.ts";
 import type { AutomationTask } from "./tasks.ts";
 import { sourceVerificationFacts, type SourceVerificationFacts } from "./verification-routing.ts";
@@ -22,17 +23,17 @@ export type TaskRunPlan = Readonly<{
     definition: WorkflowDefinition;
     runtime: AppWorkflowRuntime;
     /**
-     * Builds the workflow input from `launchEnv`. Execution calls it inside
+     * Builds the workflow input from `launchConfiguration`. Execution calls it inside
      * its failure handling, so an input that cannot be built (a Statement
      * Selection cleared while the run queued) is classified and recorded
      * like any other execution failure.
      */
-    inputFromEnvironment(environment: NodeJS.ProcessEnv): unknown;
+    inputFromConfiguration(configuration: RunConfiguration): unknown;
   }>;
   /** Null for a task without a Verified source: exchange rates, preview sources, fixtures. */
   verification: SourceVerificationFacts | null;
-  /** Process configuration as the run launched with it. */
-  launchEnv: NodeJS.ProcessEnv;
+  /** The settings and credentials as the run launched with them. */
+  launchConfiguration: RunConfiguration;
   /** Settings verification routing reads, as the run launched with them. */
   launchVerificationSettings: AutomationSettingsFile;
   /** The authenticated PGlite endpoint every workflow commits or reads through. */
@@ -49,7 +50,7 @@ export type TaskRunPlanDependencies = Readonly<{
   settings: AutomationSettingsStore;
   userDataDirectory: string;
   /** Defaults to the settings and credentials the stores hold. */
-  launchEnv?: NodeJS.ProcessEnv;
+  launchConfiguration?: RunConfiguration;
   /** Defaults to the App settings file. */
   launchVerificationSettings?: AutomationSettingsFile;
 }>;
@@ -69,20 +70,18 @@ export function resolveTaskRunPlan(
   }
   let settings: AutomationSettingsFile | undefined;
   const launchSettings = () => (settings ??= dependencies.settings.read());
-  const launchEnv = dependencies.launchEnv ?? automationConfigEnv({
-    settings: launchSettings(),
-    credentials: credentials.read(),
-  });
+  const launchConfiguration = dependencies.launchConfiguration
+    ?? runConfiguration(launchSettings(), credentials.read());
   return {
     task,
     workflowId,
     registration: {
       definition: registration.definition,
       runtime: registration.runtime,
-      inputFromEnvironment: registration.inputFromEnvironment,
+      inputFromConfiguration: registration.inputFromConfiguration,
     },
     verification: sourceVerificationFacts(task.id),
-    launchEnv,
+    launchConfiguration,
     launchVerificationSettings: dependencies.launchVerificationSettings ?? { ...launchSettings() },
     pgliteRpc,
     credentials,

@@ -10,7 +10,6 @@ import {
   FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY,
   TDCC_HOST_KEYS,
   atomicWriteFile,
-  automationConfigEnv,
   createAutomationCredentialStore,
   createAutomationSettingsStore,
   credentialStatusFromValues,
@@ -20,6 +19,7 @@ import {
   migrateStatementSelectionIds,
   readAutomationCredentialsFile,
   readAutomationSettingsFile,
+  runConfiguration,
   settingsToEnv,
   splitAutomationUpdates,
   writeAutomationCredentialsFile,
@@ -135,12 +135,12 @@ try {
   assert.equal(readFileSync(envPath, "utf8"), "# keep\nUNKNOWN=value\n");
   assert.equal(readFileSync(envLocalPath, "utf8"), `${fubonPasswordKey}=dev-only\n`);
 
-  assert.deepEqual(automationConfigEnv({
-    settings: { LIBRETTO_CLOUD_FUBON_ENABLED: true },
+  assert.deepEqual(runConfiguration(
+    { LIBRETTO_CLOUD_FUBON_ENABLED: true },
+    { [fubonPasswordKey]: "pw" },
+  ), {
+    settings: { LIBRETTO_CLOUD_FUBON_ENABLED: "true" },
     credentials: { [fubonPasswordKey]: "pw" },
-  }), {
-    LIBRETTO_CLOUD_FUBON_ENABLED: "true",
-    [fubonPasswordKey]: "pw",
   });
 
   const tdccSecrets = Object.fromEntries(TDCC_HOST_KEYS.map((key) => [key, `${key}-value`]));
@@ -151,9 +151,9 @@ try {
     { ...tdccSecrets, [fubonPasswordKey]: "pw" },
     "TDCC secrets survive a credentials rewrite",
   );
-  const workflowEnv = automationConfigEnv({ settings: {}, credentials: tdccSecrets });
+  const { credentials: workflowCredentials } = runConfiguration({}, tdccSecrets);
   for (const key of TDCC_HOST_KEYS) {
-    assert.equal(workflowEnv[key], undefined, `${key} stays out of child workflow environments`);
+    assert.equal(workflowCredentials[key], undefined, `${key} stays out of a run's configuration`);
   }
 
   const legacyGmailPath = join(dir, "legacy-gmail-credentials.json");

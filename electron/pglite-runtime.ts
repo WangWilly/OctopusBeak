@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { Worker } from "node:worker_threads";
 import { collectionScopeAdmission } from "../src/lib/automation/server/collection-scope.ts";
 import {
-  automationConfigEnv,
+  runConfiguration,
   type AutomationCredentialStore,
   type AutomationSettingsStore,
 } from "../src/lib/automation/server/config-files.ts";
@@ -84,10 +84,7 @@ export function createPGliteOperationalRuntime(
     },
     isCommitAdmissible: ({ taskRunId }) => collectionScopeAdmission(
       options.activeRun(taskRunId),
-      () => automationConfigEnv({
-        settings: options.settings.read(),
-        credentials: options.credentials.read(),
-      }),
+      () => runConfiguration(options.settings.read(), options.credentials.read()),
     ),
   });
   const providerWithWorkflow: PGliteOperationalProvider = Object.freeze({

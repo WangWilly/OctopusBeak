@@ -13,6 +13,7 @@ import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../../../ledger/canonic
 import { taskById } from "./tasks.ts";
 import {
   inProcessCheckHost,
+  inputForCheck,
   runForCheck,
   runtimeForCheck,
 } from "./task-run-check-support.ts";
@@ -20,7 +21,7 @@ import { fixedCapabilities } from "./app-workflow-worker-runtime.ts";
 import {
   completeAppWorkflowHumanAssistance,
 } from "./app-workflow-human-assistance.ts";
-import { appWorkflowRegistration, workflowStartUrlForWorkflow } from "./app-workflow-registry.ts";
+import { workflowStartUrlForWorkflow } from "./app-workflow-registry.ts";
 import { StatementSelectionError } from "../statement-selection.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 import { fakeProviderReply } from "../../../workflows/provider-response-reader.fixtures.ts";
@@ -49,7 +50,7 @@ test("Chunghwa Post task is catalogued as an App-owned typed workflow", () => {
   assert.equal(Object.hasOwn(task, "script"), false);
   assert.equal(Object.hasOwn(task, "command"), false);
   assert.equal(workflowStartUrlForWorkflow(task.workflowId), HOME_URL);
-  assert.deepEqual(appWorkflowRegistration(task.workflowId)?.inputFromEnvironment(syntheticEnvironment()), {
+  assert.deepEqual(inputForCheck(task.workflowId, syntheticEnvironment()), {
     credentials: {
       post_user_id: "test-user-id",
       post_account: "test-account",
@@ -58,7 +59,7 @@ test("Chunghwa Post task is catalogued as an App-owned typed workflow", () => {
     statementTypes: ["deposit"],
   });
   assert.throws(
-    () => appWorkflowRegistration(task.workflowId)?.inputFromEnvironment({ ...syntheticEnvironment(), LIBRETTO_CLOUD_POST_STATEMENT_TYPES: "" }),
+    () => inputForCheck(task.workflowId, { ...syntheticEnvironment(), LIBRETTO_CLOUD_POST_STATEMENT_TYPES: "" }),
     (error: unknown) => error instanceof StatementSelectionError && error.reason === "missing-selection",
   );
 });

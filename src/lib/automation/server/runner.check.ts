@@ -107,7 +107,7 @@ const exchangeRates = () => {
 
 test("typed workflow runtime uses the authenticated PGlite capability", () => {
   const provider = providerStub({});
-  assert.deepEqual(resolveTaskRunPlan(exchangeRates(), { pgliteRpc: provider.pgliteWorkflow, ...runnerHostForCheck(), launchEnv: {}, launchVerificationSettings: {} }).pgliteRpc, {
+  assert.deepEqual(resolveTaskRunPlan(exchangeRates(), { pgliteRpc: provider.pgliteWorkflow, ...runnerHostForCheck(), launchConfiguration: { settings: {}, credentials: {} }, launchVerificationSettings: {} }).pgliteRpc, {
     endpoint: "http://127.0.0.1:43121/rpc",
     token: "test-token",
   });
@@ -115,14 +115,14 @@ test("typed workflow runtime uses the authenticated PGlite capability", () => {
 
 test("typed workflow runtime fails closed when its PGlite capability is absent", () => {
   assert.throws(
-    () => resolveTaskRunPlan(exchangeRates(), { pgliteRpc: undefined, ...runnerHostForCheck(), launchEnv: {}, launchVerificationSettings: {} }),
+    () => resolveTaskRunPlan(exchangeRates(), { pgliteRpc: undefined, ...runnerHostForCheck(), launchConfiguration: { settings: {}, credentials: {} }, launchVerificationSettings: {} }),
     /PGlite workflow transport is unavailable/u,
   );
   assert.throws(
     () => resolveTaskRunPlan(exchangeRates(), {
       pgliteRpc: { endpoint: "http://127.0.0.1:43121/rpc", token: " " },
       ...runnerHostForCheck(),
-      launchEnv: {},
+      launchConfiguration: { settings: {}, credentials: {} },
       launchVerificationSettings: {},
     }),
     /PGlite workflow transport is unavailable/u,
@@ -139,7 +139,8 @@ test("the runner hands the PGlite capability to the execution as a typed value, 
   await (await opened(freshRunner(provider, { runExecution }).claim("exchange-rates"))).finished;
   assert.deepEqual(plan?.pgliteRpc, provider.pgliteWorkflow);
   assert.equal(
-    Object.keys(plan?.launchEnv ?? {}).some((key) => key.startsWith("OCTOPUSBEAK_PGLITE_")),
+    [...Object.keys(plan?.launchConfiguration.settings ?? {}), ...Object.keys(plan?.launchConfiguration.credentials ?? {})]
+      .some((key) => key.startsWith("OCTOPUSBEAK_PGLITE_")),
     false,
   );
 });

@@ -24,7 +24,7 @@ registerHooks({
   },
 });
 
-const [{ taskById }, { inProcessCheckHost, runForCheck, runtimeForCheck }, {
+const [{ taskById }, { inProcessCheckHost, inputForCheck, runForCheck, runtimeForCheck }, {
   appWorkflowRegistration,
   workflowStartUrlForWorkflow,
 }, { YUANTA_ENTRY_URL }] = await Promise.all([
@@ -53,7 +53,7 @@ test("Yuanta task dispatch uses the App-owned typed workflow and maps sign-in de
   assert.equal(appWorkflowRegistration(task.workflowId)?.definition?.id, "yuanta-all-statements");
   assert.equal(appWorkflowRegistration(task.workflowId)?.definition?.requiresFinancialCommit, true);
   assert.equal(workflowStartUrlForWorkflow(task.workflowId), YUANTA_ENTRY_URL);
-  assert.deepEqual(appWorkflowRegistration(task.workflowId)?.inputFromEnvironment(syntheticEnvironment()), {
+  assert.deepEqual(inputForCheck(task.workflowId, syntheticEnvironment()), {
     managedIdentitySecret: "synthetic-yuanta-managed-secret",
     credentials: {
       yuanta_user_id: "synthetic-user-id",
@@ -63,7 +63,7 @@ test("Yuanta task dispatch uses the App-owned typed workflow and maps sign-in de
     statementTypes: ["deposit", "fund"],
   });
   assert.throws(
-    () => appWorkflowRegistration(task.workflowId)?.inputFromEnvironment({
+    () => inputForCheck(task.workflowId, {
       ...syntheticEnvironment(),
       LIBRETTO_CLOUD_YUANTA_STATEMENT_TYPES: "fund,unknown",
     }),

@@ -604,7 +604,7 @@ test("E-Invoice uses the supervised Chromium worker and keeps runtime identity u
         round.page?.onRuntimeIdentity?.(runtimeIdentity);
         return await inner.hostRound(round, supervise);
       },
-    })(planForCheck(task, { launchEnv }), active, firstRoundForCheck());
+    })(planForCheck(task, { environment: launchEnv }), active, firstRoundForCheck());
 
     assert.equal(outcome.failure, null);
     assert.ok(workerStart, "E-Invoice creates the supervised worker");
@@ -829,7 +829,7 @@ test("two executions of one run each log only their own events, and only the ret
     const taskRunId = await createRun(provider, task);
     const executions: WorkflowExecution[] = [];
     const run = observingExecutions(await openTaskRunForCheck(provider.automation, taskRunId), executions);
-    const plan = planForCheck(task, { launchEnv: ctbcLaunchEnv });
+    const plan = planForCheck(task, { environment: ctbcLaunchEnv });
     const execution = createTaskRunExecution(inProcessCheckHost({ scriptedWorker: (start) =>
       new TaskExecutionFakeWorker(start, "validation-failure", () => true) }));
     const execute = (attempt: number) => execution(plan, run, {

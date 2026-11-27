@@ -35,6 +35,7 @@ import {
   AUTOMATION_SETTINGS_FILE,
   createAutomationCredentialStore,
   createAutomationSettingsStore,
+  runConfigurationFromEnvironment,
   splitAutomationUpdates,
   type AutomationCredentialCodec,
   type AutomationCredentialStore,
@@ -42,6 +43,7 @@ import {
   type AutomationSettingsStore,
 } from "./config-files.ts";
 import { sourceVerificationFacts } from "./verification-routing.ts";
+import { appWorkflowRegistration } from "./app-workflow-registry.ts";
 import type { TypedWorkflowOutcome } from "./typed-workflow-outcome.ts";
 
 /** A well-formed PGlite endpoint a check's plan carries; its worker never dials it. */
@@ -160,15 +162,29 @@ export function settingsStoreForCheck(
  */
 export function planForCheck(
   task: AutomationTask,
-  dependencies: Partial<TaskRunPlanDependencies> = {},
+  { environment, ...dependencies }: Partial<TaskRunPlanDependencies> & Readonly<{
+    /** The launch configuration as one flat map, in place of the stores. */
+    environment?: Readonly<Record<string, string | undefined>>;
+  }> = {},
 ): TaskRunPlan {
   return resolveTaskRunPlan(task, {
     pgliteRpc: CHECK_PGLITE_RPC,
     credentials: credentialStoreForCheck(),
     settings: settingsStoreForCheck(),
     userDataDirectory: process.cwd(),
+    ...environment ? { launchConfiguration: runConfigurationFromEnvironment(environment) } : {},
     ...dependencies,
   });
+}
+
+/** The input a workflow's run receives for the settings and credentials one flat map names. */
+export function inputForCheck(
+  workflowId: string | undefined,
+  environment: Readonly<Record<string, string | undefined>>,
+): unknown {
+  const registration = appWorkflowRegistration(workflowId);
+  if (!registration) throw new Error(`Unknown workflow: ${workflowId}`);
+  return registration.inputFromConfiguration(runConfigurationFromEnvironment(environment));
 }
 
 /**

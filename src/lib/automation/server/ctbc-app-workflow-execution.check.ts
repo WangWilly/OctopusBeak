@@ -10,9 +10,9 @@ import {
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import type { WorkflowBrowserPort, WorkflowFinancialCommitPort } from "../workflow-executor.ts";
 import { taskById } from "./tasks.ts";
-import { inProcessCheckHost, runForCheck, runtimeForCheck } from "./task-run-check-support.ts";
+import { inProcessCheckHost, inputForCheck, runForCheck, runtimeForCheck } from "./task-run-check-support.ts";
 import { fixedCapabilities } from "./app-workflow-worker-runtime.ts";
-import { workflowBrowserProfileForWorkflow, appWorkflowRegistration, workflowStartUrlForWorkflow } from "./app-workflow-registry.ts";
+import { workflowBrowserProfileForWorkflow, workflowStartUrlForWorkflow } from "./app-workflow-registry.ts";
 import { StatementSelectionError } from "../statement-selection.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 import { fakeProviderReply } from "../../../workflows/provider-response-reader.fixtures.ts";
@@ -155,7 +155,7 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
   assert.equal(Object.hasOwn(task, "command"), false);
   assert.equal(workflowStartUrlForWorkflow(task.workflowId), LOGIN_URL);
   assert.equal(workflowBrowserProfileForWorkflow(task.workflowId), "ctbc-login");
-  assert.deepEqual(appWorkflowRegistration(task.workflowId)?.inputFromEnvironment(syntheticEnvironment()), {
+  assert.deepEqual(inputForCheck(task.workflowId, syntheticEnvironment()), {
     credentials: {
       ctbc_user_id: "synthetic-user-id",
       ctbc_account: "synthetic-account",
@@ -164,7 +164,7 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
     statementTypes: ["deposit"],
   });
   assert.throws(
-    () => appWorkflowRegistration(task.workflowId)?.inputFromEnvironment({ ...syntheticEnvironment(), LIBRETTO_CLOUD_CTBC_STATEMENT_TYPES: "" }),
+    () => inputForCheck(task.workflowId, { ...syntheticEnvironment(), LIBRETTO_CLOUD_CTBC_STATEMENT_TYPES: "" }),
     (error: unknown) => error instanceof StatementSelectionError && error.reason === "missing-selection",
   );
 

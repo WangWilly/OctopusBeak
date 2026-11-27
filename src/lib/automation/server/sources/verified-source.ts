@@ -22,7 +22,7 @@ import type { VerifiedWorkflowEntry } from "../verified-entry.ts";
 import type { AppWorkflowBrowserProfile } from "../app-browser-host.ts";
 import type { RejectionEvidence } from "../../sign-in-prompt.ts";
 import type { AppWorkflowHumanAssistanceRequest } from "../app-workflow-human-assistance.ts";
-import type { AutomationSettingsFile } from "../config-files.ts";
+import type { AutomationSettingsFile, RunConfiguration } from "../config-files.ts";
 import type { routeWaitingRunVerification, VerificationRoutingOutcome } from "../verification-routing.ts";
 import type { PageForRun } from "../automation-viewer.ts";
 import type { AutomationTask } from "../tasks.ts";
@@ -88,7 +88,7 @@ export type VerifiedWorkflow = Readonly<
       credentials?: true;
       managedIdentitySecret?: true;
       statementTypes?: true;
-      extra?: (environment: NodeJS.ProcessEnv) => Readonly<Record<string, unknown>>;
+      extra?: (configuration: RunConfiguration) => Readonly<Record<string, unknown>>;
     }>;
     /**
      * Imported only when a run starts, so the main process never loads workflow

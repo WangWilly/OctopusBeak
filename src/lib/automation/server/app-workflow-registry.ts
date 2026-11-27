@@ -8,7 +8,7 @@ import {
   previewWorkflowInput,
   selectedAttachedPreviewProducts,
 } from "../../preview-sources/workflow.ts";
-import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "./config-files.ts";
+import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY, type RunConfiguration } from "./config-files.ts";
 import { selectStatementTypes } from "../statement-selection.ts";
 import {
   PACKAGED_BROWSER_FIXTURE_TASKS,
@@ -30,7 +30,7 @@ export function workflowNeedsPgliteRpc(definition: WorkflowDefinition): boolean 
 export type AppWorkflowRegistration = Readonly<{
   definition: WorkflowDefinition;
   runtime: AppWorkflowRuntime;
-  inputFromEnvironment(environment: NodeJS.ProcessEnv): unknown;
+  inputFromConfiguration(configuration: RunConfiguration): unknown;
 }>;
 
 /**
@@ -38,9 +38,9 @@ export type AppWorkflowRegistration = Readonly<{
  * the selection key, so they are tolerated here and read separately by
  * `selectedAttachedPreviewProducts`.
  */
-function statementTypeIdsFromEnvironment(
+function selectedStatementTypeIds(
   source: VerifiedSource,
-  environment: NodeJS.ProcessEnv,
+  settings: RunConfiguration["settings"],
 ) {
   const group = statementSelectionGroup(source)!;
   const attached = source.workflow.attachedPreviewProducts?.products.map(attachedStatementType) ?? [];
@@ -48,32 +48,32 @@ function statementTypeIdsFromEnvironment(
     { ...group, statementTypes: [...group.statementTypes, ...attached] },
     {
       [group.enabledKey]: true,
-      [group.statementSelectionKey]: environment[group.statementSelectionKey],
+      [group.statementSelectionKey]: settings[group.statementSelectionKey],
     },
     "strict",
   ).selectedIds.filter((id) => !attached.some((type) => type.id === id));
 }
 
-
-function verifiedWorkflowInput(source: VerifiedSource, environment: NodeJS.ProcessEnv) {
+function verifiedWorkflowInput(source: VerifiedSource, configuration: RunConfiguration) {
   const { input, attachedPreviewProducts } = source.workflow;
+  const { settings, credentials } = configuration;
   return {
     ...(input.managedIdentitySecret
-      ? { managedIdentitySecret: environment[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY] ?? "" }
+      ? { managedIdentitySecret: credentials[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY] ?? "" }
       : {}),
     ...(input.credentials
       ? {
         credentials: Object.fromEntries(source.credentialFields.map(({ key }) => [
           credentialInputKey(key),
-          environment[key] ?? "",
+          credentials[key] ?? "",
         ])),
       }
       : {}),
-    ...(input.statementTypes ? { statementTypes: statementTypeIdsFromEnvironment(source, environment) } : {}),
+    ...(input.statementTypes ? { statementTypes: selectedStatementTypeIds(source, settings) } : {}),
     ...(attachedPreviewProducts
-      ? { attachedPreviewProducts: selectedAttachedPreviewProducts(source.id as AttachedPreviewGroupId, environment) }
+      ? { attachedPreviewProducts: selectedAttachedPreviewProducts(source.id as AttachedPreviewGroupId, settings) }
       : {}),
-    ...input.extra?.(environment),
+    ...input.extra?.(configuration),
   };
 }
 
@@ -105,7 +105,7 @@ function verifiedWorkflowRegistration(source: VerifiedSource): AppWorkflowRegist
       },
     },
     runtime,
-    inputFromEnvironment: (environment) => verifiedWorkflowInput(source, environment),
+    inputFromConfiguration: (configuration) => verifiedWorkflowInput(source, configuration),
   };
 }
 
@@ -114,7 +114,7 @@ const appWorkflowCatalog: readonly AppWorkflowRegistration[] = [
   {
     definition: createExchangeRateWorkflow(),
     runtime: NONBROWSER,
-    inputFromEnvironment() { return null; },
+    inputFromConfiguration() { return null; },
   },
   ...VERIFIED_SOURCES.map(verifiedWorkflowRegistration),
 ];
@@ -127,13 +127,13 @@ export function appWorkflowCatalogForEnvironment(
     ? PACKAGED_BROWSER_FIXTURE_TASKS.map(({ workflowId }) => ({
       definition: packagedBrowserFixtureDefinition(workflowId),
       runtime: browser(packagedBrowserFixtureStartUrl(environment)),
-      inputFromEnvironment() { return null; },
+      inputFromConfiguration() { return null; },
     }))
     : [];
   const previewRegistrations: readonly AppWorkflowRegistration[] = PREVIEW_SOURCES.map((source) => ({
     definition: previewWorkflowDefinition(source) as WorkflowDefinition,
     runtime: browser(source.startUrl),
-    inputFromEnvironment: (environment) => previewWorkflowInput(source, environment),
+    inputFromConfiguration: (configuration) => previewWorkflowInput(source, configuration),
   }));
   return [...appWorkflowCatalog, ...previewRegistrations, ...packagedBrowserFixtureRegistrations];
 }

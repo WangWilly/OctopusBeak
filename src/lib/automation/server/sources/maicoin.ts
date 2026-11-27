@@ -1,11 +1,12 @@
+import type { RunConfiguration } from "../config-files.ts";
 import { field, link, localized, NONBROWSER, type VerifiedSource, verifiedWorkflow } from "./verified-source.ts";
 
-function maicoinInput(environment: NodeJS.ProcessEnv) {
+function maicoinInput({ settings, credentials }: RunConfiguration) {
   return {
     credentials: {
-      accessKey: environment.MAX_ACCESS_KEY ?? "",
-      secretKey: environment.MAX_SECRET_KEY ?? "",
-      subAccount: environment.MAX_SUB_ACCOUNT?.trim() || "main",
+      accessKey: credentials.MAX_ACCESS_KEY ?? "",
+      secretKey: credentials.MAX_SECRET_KEY ?? "",
+      subAccount: settings.MAX_SUB_ACCOUNT?.trim() || "main",
     },
   };
 }

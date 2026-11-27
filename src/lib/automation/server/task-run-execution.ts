@@ -151,7 +151,7 @@ function createBrowserRuntimeIdentityRecorder(
 
 async function executeSupervisedAppWorkflow(context: ExecutionContext): Promise<TaskRunReport> {
   const { plan, host } = context;
-  const { task, workflowId, launchEnv } = plan;
+  const { task, workflowId } = plan;
   const { definition, runtime } = plan.registration;
 
   previewStructureReports.clear(task.id);
@@ -172,7 +172,7 @@ async function executeSupervisedAppWorkflow(context: ExecutionContext): Promise<
   let workerOutcome: Awaited<ReturnType<typeof runSupervisedAppWorkflow>> | undefined;
   const browserRuntimeIdentity = createBrowserRuntimeIdentityRecorder(context);
   try {
-    const input = plan.registration.inputFromEnvironment(launchEnv);
+    const input = plan.registration.inputFromConfiguration(plan.launchConfiguration);
     const progressReporter = createWorkflowProgressReporter(context, input);
     const pgliteRpc = workflowNeedsPgliteRpc(definition) ? plan.pgliteRpc : undefined;
     const page = runtime.kind === "nonbrowser"
@@ -292,7 +292,7 @@ export function createTaskRunExecution(host: ExecutionHost): TaskRunExecution {
     if (!started) return CANCELLED;
     const execution = run.beginExecution(round.executionId, {
       assistanceRoute: round.assistanceRoute,
-      collectionScope: launchedCollectionScope(plan.task, plan.launchEnv),
+      collectionScope: launchedCollectionScope(plan.task, plan.launchConfiguration),
     });
     try {
       return await executeSupervisedAppWorkflow({ plan, run, execution, round, host });

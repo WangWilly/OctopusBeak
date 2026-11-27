@@ -14,7 +14,7 @@ import type {
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 import { StatementSelectionError } from "../statement-selection.ts";
 
-const [{ taskById }, { inProcessCheckHost, runForCheck, runtimeForCheck }, {
+const [{ taskById }, { inProcessCheckHost, inputForCheck, runForCheck, runtimeForCheck }, {
   appWorkflowRegistration,
   workflowStartUrlForWorkflow,
 }, { YUANTA_TRADE_LOGIN_URL }] = await Promise.all([
@@ -43,7 +43,7 @@ test("Yuanta Trade dispatch uses the typed App workflow and maps credentials", a
   assert.equal(appWorkflowRegistration(task.workflowId)?.definition?.id, "yuanta-trade-statements");
   assert.equal(appWorkflowRegistration(task.workflowId)?.definition?.requiresFinancialCommit, true);
   assert.equal(workflowStartUrlForWorkflow(task.workflowId), YUANTA_TRADE_LOGIN_URL);
-  assert.deepEqual(appWorkflowRegistration(task.workflowId)?.inputFromEnvironment(syntheticEnvironment()), {
+  assert.deepEqual(inputForCheck(task.workflowId, syntheticEnvironment()), {
     credentials: {
       yuanta_trade_user_id: "synthetic-user-id",
       yuanta_trade_password: "synthetic-password",
@@ -53,7 +53,7 @@ test("Yuanta Trade dispatch uses the typed App workflow and maps credentials", a
     statementTypes: ["securities"],
   });
   assert.throws(
-    () => appWorkflowRegistration(task.workflowId)?.inputFromEnvironment({ ...syntheticEnvironment(), [credentialKey("STATEMENT_TYPES")]: "" }),
+    () => inputForCheck(task.workflowId, { ...syntheticEnvironment(), [credentialKey("STATEMENT_TYPES")]: "" }),
     (error: unknown) => error instanceof StatementSelectionError && error.reason === "missing-selection",
   );
 

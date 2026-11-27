@@ -36,7 +36,7 @@ import {
   verificationConfidenceThreshold,
 } from "../src/lib/automation/server/verification-routing.ts";
 import { verificationPlanForContract } from "../src/lib/automation/server/verification-solver.ts";
-import { AUTOMATION_SETTINGS_FILE, readAutomationSettingsFile } from "../src/lib/automation/server/config-files.ts";
+import { AUTOMATION_SETTINGS_FILE, readAutomationSettingsFile, runConfigurationFromEnvironment } from "../src/lib/automation/server/config-files.ts";
 import {
   createHumanAssistanceContract,
   type HumanAssistanceCompletionStatus,
@@ -553,7 +553,7 @@ async function main(args = process.argv.slice(2)) {
       if (!workflowId || !SAFE_WORKFLOW_ID.test(workflowId)) fail("usage");
       const registration = appWorkflowRegistration(workflowId);
       definition = registration?.definition ?? null;
-      input = registration?.inputFromEnvironment(process.env);
+      input = registration?.inputFromConfiguration(runConfigurationFromEnvironment(process.env));
       startUrl = safeUrl(startUrl ?? workflowStartUrlForWorkflow(workflowId));
       browserProfile ??= workflowBrowserProfileForWorkflow(workflowId);
     } else {

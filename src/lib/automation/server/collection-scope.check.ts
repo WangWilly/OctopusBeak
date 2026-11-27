@@ -22,7 +22,7 @@ import {
 } from "./collection-scope.ts";
 import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
 import { createAutomationRuntime } from "./automation-runtime.ts";
-import { automationConfigEnv } from "./config-files.ts";
+import { runConfiguration, type RunConfiguration } from "./config-files.ts";
 import { CHECK_PGLITE_RPC, credentialStoreForCheck, inProcessCheckHost, runForCheck, runnerHostForCheck, settingsStoreForCheck, startForCheck } from "./task-run-check-support.ts";
 import { taskById } from "./tasks.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
@@ -46,18 +46,20 @@ const launchCredentials = {
 };
 
 test("the fingerprint ignores secrets, schedules, and presentation but tracks selection, enablement, and identity", () => {
-  const launch = { ...launchSettings, ...launchCredentials };
+  const launch: RunConfiguration = { settings: launchSettings, credentials: launchCredentials };
   const fingerprint = collectionScopeFingerprint(fubon, launch);
-  const same = (changes: Record<string, string>) =>
-    collectionScopeFingerprint(fubon, { ...launch, ...changes }) === fingerprint;
+  const same = (changes: Partial<RunConfiguration>) => collectionScopeFingerprint(fubon, {
+    settings: { ...launch.settings, ...changes.settings },
+    credentials: { ...launch.credentials, ...changes.credentials },
+  }) === fingerprint;
 
-  assert.ok(same({ [key("PASSWORD")]: "rotated-password" }));
-  assert.ok(same({ [key("ACCOUNT")]: "rotated-account" }));
-  assert.ok(same({ EXCHANGE_RATE_UPDATE_TIME: "18:30", SYSTEM_TIMEZONE: "UTC" }));
-  assert.ok(same({ [key("STATEMENT_TYPES")]: "credit_card, deposit" }));
-  assert.ok(!same({ [key("STATEMENT_TYPES")]: "deposit" }));
-  assert.ok(!same({ [key("ENABLED")]: "false" }));
-  assert.ok(!same({ [key("USER_ID")]: "another-user-id" }));
+  assert.ok(same({ credentials: { [key("PASSWORD")]: "rotated-password" } }));
+  assert.ok(same({ credentials: { [key("ACCOUNT")]: "rotated-account" } }));
+  assert.ok(same({ settings: { EXCHANGE_RATE_UPDATE_TIME: "18:30", SYSTEM_TIMEZONE: "UTC" } }));
+  assert.ok(same({ settings: { [key("STATEMENT_TYPES")]: "credit_card, deposit" } }));
+  assert.ok(!same({ settings: { [key("STATEMENT_TYPES")]: "deposit" } }));
+  assert.ok(!same({ settings: { [key("ENABLED")]: "false" } }));
+  assert.ok(!same({ credentials: { [key("USER_ID")]: "another-user-id" } }));
   assert.doesNotMatch(fingerprint, /synthetic/u);
 });
 
@@ -86,8 +88,8 @@ test("commit admission goes through the runtime's active run to its current exec
       return { summary: null, failure: null };
     },
   });
-  const launch: Record<string, string> = { ...launchSettings, ...launchCredentials };
-  const changed = { ...launch, [key("STATEMENT_TYPES")]: "deposit" };
+  const launch: RunConfiguration = { settings: launchSettings, credentials: launchCredentials };
+  const changed: RunConfiguration = { ...launch, settings: { ...launchSettings, [key("STATEMENT_TYPES")]: "deposit" } };
   let current = launch;
   const admits = (taskRunId: string) => collectionScopeAdmission(runtime.activeRun(taskRunId), () => current);
   const observed: Record<string, string> = {};
@@ -194,7 +196,7 @@ class CommittingFakeWorker extends EventEmitter implements AppWorkflowWorkerHand
       {
         isCommitAdmissible: ({ taskRunId }) => collectionScopeAdmission(
           taskRunId === this.run.taskRunId ? this.run : null,
-          () => automationConfigEnv({ settings: settingsStoreForCheck().read(), credentials: credentialStoreForCheck().read() }),
+          () => runConfiguration(settingsStoreForCheck().read(), credentialStoreForCheck().read()),
         ),
       },
     );
