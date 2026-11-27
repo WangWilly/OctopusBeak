@@ -87,9 +87,9 @@ async function depositRevisions(store: PGliteStore) {
 
 test("MAX states map through one closed table, and an unknown state is never posted", () => {
   assert.deepEqual(
-    [null, "done", "DONE", "rejected", "failed", "canceled", "cancelled", "refunded", "processing", "a-state-max-adds-later", ""]
+    [null, "done", "DONE", "failed", "canceled", "processing", "a-state-max-adds-later", ""]
       .map(maicoinStatementPosting),
-    ["posted", "posted", "posted", "canceled", "canceled", "canceled", "canceled", "canceled", "pending", "pending", "pending"],
+    ["posted", "posted", "posted", "canceled", "canceled", "pending", "pending", "pending"],
   );
 });
 
@@ -113,9 +113,9 @@ test("a processing deposit that MAX completes writes a second revision and no co
   });
 });
 
-test("a deposit MAX rejects is posted and canceled", async () => {
+test("a deposit MAX reports as failed is posted and canceled", async () => {
   await withStore(async (store) => {
-    await commitPGliteCanonicalInvestmentCapture(store, { capture: capture("rejected", [{ ...BTC_DEPOSIT, state: "rejected" }]) });
+    await commitPGliteCanonicalInvestmentCapture(store, { capture: capture("failed", [{ ...BTC_DEPOSIT, state: "failed" }]) });
     assert.deepEqual(await depositRevisions(store), ["posted/canceled"]);
   });
 });

@@ -785,18 +785,18 @@ function deduplicateNativeStatementRows(
 }
 
 /**
- * How MAX booked a statement row, by its `state`. A row without a state, such
- * as a reward or a trade, and a `done` row are posted; a terminal failure is
+ * How MAX booked a statement row, by its `state`. MAX's v3 API gives a
+ * deposit, a withdrawal and an internal transfer one of `processing`, `failed`,
+ * `canceled` or `done`, as the types of its own Node SDK
+ * (maicoin/max-exchange-api-node) list them. A row without a state, such as a
+ * reward or a trade, and a `done` row are posted; `failed` and `canceled` are
  * posted and canceled. Every other state, including one MAX adds later, is
  * pending, so an unknown state is never counted.
  */
 const MAICOIN_STATE_POSTING: ReadonlyMap<string, InvestmentTransactionPosting> = new Map([
   ["done", "posted"],
-  ["rejected", "canceled"],
   ["failed", "canceled"],
   ["canceled", "canceled"],
-  ["cancelled", "canceled"],
-  ["refunded", "canceled"],
 ]);
 
 export function maicoinStatementPosting(state: string | null): InvestmentTransactionPosting {

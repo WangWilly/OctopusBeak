@@ -9,7 +9,7 @@ MaiCoin (MAX) was the only source whose figures bypassed canonical admission. Th
 - The workflow committed first and wrote the log afterwards. The relation resolve ran inside the commit's request, before the log had the new rows, so a new TWD deposit or withdrawal never matched its bank row in the sync that first saw it. A cancel or a crash between the two writes left canonical rows with no log row.
 - The TWD value was a JavaScript float stored as `DOUBLE PRECISION`. The price it used was stored nowhere. A missing daily candle silently borrowed another day's close, and a transient price failure overwrote a good value with none.
 - The log kept raw provider payloads, which PRODUCT.md rules out. Two of its three tables had no reader. Every sync rewrote up to 1000 rows even when nothing changed, and no cleanup covered them.
-- The adapter ignored `state`, so a deposit MAX rejected was a posted `corporate_action_in`.
+- The adapter ignored `state`, so a deposit that failed at MAX was a posted `corporate_action_in`.
 
 ## Decision
 
@@ -18,7 +18,7 @@ MaiCoin (MAX) was the only source whose figures bypassed canonical admission. Th
 **Where each fact lives:**
 
 - The MAX statement transaction's source record payload gains `rowType` (`deposit`, `withdrawal`, `reward`, `convert`, `transfer` or `trade`), `state` (MAX's string, or null) and, when known, `twdValuation`. The route `maicoin/investment/canonical-v1` declares all three as revisable payload fields (ADR 0055). `rowType` is revisable too, because every occurrence admitted before this decision has a payload without it.
-- The posting of the financial fact follows `state` through one closed table in the MAX adapter. No state, or `done`, is posted and normal. `rejected`, `failed`, `canceled`, `cancelled` and `refunded` are posted and canceled. Every other string, including one MAX adds later, is pending and normal, so an unknown state is never counted. A change of state writes the next transaction revision.
+- The posting of the financial fact follows `state` through one closed table in the MAX adapter. MAX's v3 API gives a deposit, a withdrawal and an internal transfer one of four states: `processing`, `failed`, `canceled` and `done`. The source is the type definitions of MAX's own Node SDK, `maicoin/max-exchange-api-node`; MAX's API reference page serves its specification only to a browser. No state, or `done`, is posted and normal. `failed` and `canceled` are posted and canceled. Every other string, including one MAX adds later, is pending and normal, so an unknown state is never counted. A change of state writes the next transaction revision.
 - `investment_transactions.row_type` holds the row type. It is set for MAX and null for every other source. A null on a MAX row means the row was admitted before the column existed; the next commit of that event fills it.
 - `investment_transaction_twd_valuations` holds one valuation per event, written once. If a later capture carries a different valuation for the same event, the stored one stands and the commit still succeeds: a conflict there would stop every later MAX sync over an estimate. It records the exact value in TWD, the price route (`twd`, `direct`, `via-usdt`), the market, the exact daily close of each market it used, the candle's UTC day, and the capture, commit and source record that admitted it.
 
@@ -49,9 +49,9 @@ Old revisions are not rewritten. A previously admitted deposit that MAX never co
 ## Consequences
 
 - A new TWD deposit or withdrawal matches its bank row in the sync that first admits it, because the relation resolve reads the row type the commit just wrote.
-- A deposit MAX has not completed is pending, and one MAX rejected is canceled. Neither counts in Cash flow, in the TWD transfer match, or as income.
+- A deposit MAX has not completed is pending, and one that failed or was canceled is canceled. Neither counts in Cash flow, in the TWD transfer match, or as income.
 - The first sync after upgrade stores one new source record for every MAX statement occurrence, because each payload gains `rowType` and `state`. Later unchanged syncs store none. A row's payload changes again only when MAX changes its state, or once when its day closes and it gains a valuation.
 - A reward or crypto deposit of today stays unresolved in Cash flow until a sync after its UTC day ends.
 - A MAX outage of the public candle endpoint fails the whole sync, where it used to leave values empty.
 - ADR 0146's consequence that a later sync which cannot price an old statement replaces its value with none no longer holds: a written valuation is never removed.
-- A MAX state outside the closed table counts as pending until the table names it. A terminal success state other than `done`, if MAX has one, would leave its rows uncounted.
+- A MAX state outside the closed table counts as pending until the table names it. `done` is the only success state MAX's SDK lists, so a row is left uncounted this way only if MAX adds a state later.
