@@ -69,6 +69,7 @@ import {
 import { readCurrentStateSnapshot } from "./current-state-snapshot-capture.ts";
 import { admitDeposit, stageCanonicalDeposits, type DepositAdmission } from "./canonical-deposit-staging.ts";
 import { collapseSourceWhitespace } from "../lib/automation/source-text.ts";
+import { taipeiInstant } from "../lib/time/timezone.ts";
 
 const depositAccountSelectSelector = 'select[id="form1:comboAccount"]';
 const depositFastFunctionSelector = "a.input_sel.fastFunctionLinks";
@@ -362,7 +363,7 @@ export function inspectFubonDepositResponseMetadata(
 
 export function buildFubonDepositStatementEvidence(
   statements: readonly FubonParsedDepositStatement[],
-  observedAt = new Date().toISOString(),
+  observedAt: string,
   balanceReconciliation?: FubonDepositBalanceReconciliation,
 ): FubonDepositStatementEvidence[] {
   return statements.map((statement) => ({
@@ -1827,6 +1828,7 @@ export async function stageFubonDeposit(
   const statementExclusions: FubonStatementExclusion[] = [];
   const ambiguousAccountNumbers = new Set<string>();
   const continuityByAccountNumber = new Map<string, Promise<AccountIdentityContinuity>>();
+  const observedAt = taipeiInstant(context.now());
   const continuityFor = (accountNumber: string, identityEpochKey: string) => {
     const known = continuityByAccountNumber.get(accountNumber);
     if (known) return known;
@@ -1952,7 +1954,7 @@ export async function stageFubonDeposit(
         deferred.push(entry);
         continue;
       }
-      await admitAccount(account, buildFubonDepositStatementEvidence(statements));
+      await admitAccount(account, buildFubonDepositStatementEvidence(statements, observedAt));
     }
 
     // Read the point-in-time page once, before any USD-coded account is
@@ -1975,7 +1977,7 @@ export async function stageFubonDeposit(
       );
       await admitAccount(
         account,
-        buildFubonDepositStatementEvidence(statements, undefined, reconciliation),
+        buildFubonDepositStatementEvidence(statements, observedAt, reconciliation),
       );
     }
 
