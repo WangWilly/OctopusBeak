@@ -1196,7 +1196,7 @@ function billedForeignCurrencyCell(cell: string): string {
 
 /** 外幣金額/消費地 reads `12.34/USA`; a TWD-booked purchase abroad shows the country alone. */
 function billedForeignAmountCell(cell: string): string {
-  return /^(.+)\/[A-Z]{2,3}$/u.exec(cell)?.[1] ?? cell;
+  return /^(.+)\/[A-Z]{3}$/u.exec(cell)?.[1] ?? cell;
 }
 
 async function readUnbilledRows(
