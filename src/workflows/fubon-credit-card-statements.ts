@@ -1345,20 +1345,9 @@ function fubonStatementKeyForRow(row: CsvRow): string | null {
     : null;
 }
 
-const FUBON_BOOKED_CURRENCY_MARKERS = new Set([
-  "TWD",
-  "NTD",
-  "新臺幣",
-  "新台幣",
-  "台幣",
-]);
-
-function normalizedFubonCurrencyMarker(value: string | undefined): string {
-  return collapseSourceWhitespace(value).replace(/\s+/gu, "").toUpperCase();
-}
-
+/** A card row whose currency cell names TWD carries no foreign evidence: the amount is already booked in TWD. */
 function isFubonBookedCurrencyMarker(value: string | undefined): boolean {
-  return FUBON_BOOKED_CURRENCY_MARKERS.has(normalizedFubonCurrencyMarker(value));
+  return fubonIsoCurrency(collapseSourceWhitespace(value)) === "TWD";
 }
 
 type FubonForeignEvidence = {

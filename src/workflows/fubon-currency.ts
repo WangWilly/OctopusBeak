@@ -1,5 +1,6 @@
+/** Every label Fubon uses for a currency. Deposits and cards read the same list, so one cannot know a label the other does not. */
 const FUBON_SOURCE_CURRENCY_ALIASES: Readonly<Record<string, string>> = {
-  臺幣: "TWD", 台幣: "TWD", 新臺幣: "TWD", 新台幣: "TWD",
+  臺幣: "TWD", 台幣: "TWD", 新臺幣: "TWD", 新台幣: "TWD", NTD: "TWD",
   美金: "USD", 美元: "USD", 日圓: "JPY", 日幣: "JPY", 歐元: "EUR", 人民幣: "CNY",
   港幣: "HKD", 英鎊: "GBP", 澳幣: "AUD", 加幣: "CAD", 新加坡幣: "SGD", 瑞士法郎: "CHF",
   紐幣: "NZD", 南非幣: "ZAR", 泰銖: "THB", 瑞典幣: "SEK",
