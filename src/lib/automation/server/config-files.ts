@@ -203,10 +203,9 @@ function decodeCredentialsRecord(
 
 function credentialsFileText(
   credentials: AutomationCredentialsFile,
-  codec: AutomationCredentialCodec | null,
+  codec: AutomationCredentialCodec,
 ) {
   const cleaned = cleanCredentials(credentials);
-  if (!codec) return `${JSON.stringify(cleaned, null, 2)}\n`;
   return `${JSON.stringify({
     format: AUTOMATION_CREDENTIALS_FORMAT,
     data: codec.encrypt(JSON.stringify(cleaned)),
@@ -232,10 +231,11 @@ export function writeAutomationSettingsFile(path: string, settings: AutomationSe
   atomicWriteFile(path, settingsFileText(settings));
 }
 
+/** Always encrypted: the codec is not optional, so no caller can store Sign-in Details in clear text. */
 export function writeAutomationCredentialsFile(
   path: string,
   credentials: AutomationCredentialsFile,
-  codec: AutomationCredentialCodec | null,
+  codec: AutomationCredentialCodec,
 ) {
   atomicWriteFile(path, credentialsFileText(credentials, codec));
 }
@@ -307,9 +307,8 @@ export function ensureAutomationManagedSecrets({
 }: {
   credentialsPath: string;
   generateFingerprintSecret?: () => string;
-  codec: AutomationCredentialCodec | null;
+  codec: AutomationCredentialCodec;
 }) {
-  requireAutomationCredentialCodec(codec);
   const credentials = readAutomationCredentialsFile(credentialsPath, codec);
   const existing = credentials[FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY];
   if (existing !== undefined) {
