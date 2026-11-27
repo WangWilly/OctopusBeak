@@ -23,6 +23,7 @@ import {
   type CurrentBalanceCaptureMatching,
   type CurrentStateSnapshotDeclaration,
 } from "./current-state-snapshot-capture.ts";
+import { isRecord } from "./json-record.ts";
 
 /**
  * CTBC renders the summary shell first and fills it with this authenticated
@@ -88,13 +89,7 @@ type CtbcCurrentDepositBalanceRow = Readonly<{
   }>;
 }>;
 
-type JsonRecord = Record<string, unknown>;
-
 const DATA_TIME = /^(\d{4})\/(\d{2})\/(\d{2}) (\d{2}):(\d{2}):(\d{2})$/u;
-
-function isRecord(value: unknown): value is JsonRecord {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
 
 function requiredField(
   value: unknown,
