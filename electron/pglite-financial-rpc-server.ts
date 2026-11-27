@@ -274,10 +274,12 @@ export function createPGliteFinancialRpcServer(
     return outcome.then(
       (result): PGliteFinancialResponse => ({ kind: "pglite-financial-response", version: 1, id, ok: true, value: result }),
       async (error) => {
-        // A worker that closed under a cancelled request may have committed it
-        // first, so the caller must not be told the work was cancelled (ADR 0056).
-        const cancelled = controller.signal.aborted
-          && !(error instanceof PGliteFinancialError && error.code === "worker-closed");
+        // A worker that closed under a cancelled request, or had already
+        // answered it with a fatal failure, may have committed it first, so the
+        // caller must not be told the work was cancelled (ADR 0160).
+        const outcomeLost = error instanceof PGliteFinancialError
+          && (error.code === "worker-closed" || (error.code === "operation-failed" && error.category === "fatal"));
+        const cancelled = controller.signal.aborted && !outcomeLost;
         // The inner database worker has no workflow correlation. Capture before
         // wrapping there and let the correlated outer server write the record.
         const diagnosticError = !cancelled

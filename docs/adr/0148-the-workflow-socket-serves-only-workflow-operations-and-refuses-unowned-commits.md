@@ -55,7 +55,7 @@ So the change has no exception for recovery.
 
 The workflow operations are the ones `childRpcCapabilities` and the PGlite workflow client call:
 
-- Financial calls: `financial.overview.current`, `financial.source.admit`, `financial.tdccFundAccounts.list`, `financial.accountIdentity.continuity`.
+- Financial calls: `financial.overview.current`, `financial.source.admit` (a commit since [ADR 0159](./0159-a-source-admission-is-gated-like-a-commit.md)), `financial.tdccFundAccounts.list`, `financial.accountIdentity.continuity`.
 - Financial commits: `financial.source.commit`, `financial.deposit.commit`, `financial.balance.capture`, `financial.einvoice.commit`, `financial.creditCard.commit`, `financial.creditCard.balance`, `financial.loan.commit`, `financial.investment.commit`.
 - Financial resolutions (refused only when the run is not current): `financial.loanRelations.resolve`, `financial.investmentRelations.resolve`.
 - Operational calls: `exchangeRates.readExchangeRates`, `maicoin.finishRun`.

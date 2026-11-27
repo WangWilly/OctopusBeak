@@ -13,10 +13,10 @@ The call layer underneath already knew better. It keeps a cancelled call pending
 
 ## Decision
 
-A request is cancelled only when the worker answers that it was. A request that lost its peer stays a fatal failure, whether or not a cancellation was requested meanwhile.
+A request whose outcome was lost stays a fatal failure, whether or not a cancellation was requested meanwhile. Every other failure of a cancelled request is still a cancellation, because the worker answered it and nothing was committed.
 
 - The workflow run treats `closed`, `connection-failed` and `worker-closed`, and a worker failure of the `fatal` category, as a lost outcome before it looks at its signal.
-- The RPC server answers `cancelled` for a cancelled request unless the failure is `worker-closed`. That one keeps its `fatal` category and its diagnostic.
+- The RPC server answers `cancelled` for a cancelled request unless the failure is `worker-closed`, or a `fatal` failure the next hop had already answered. Those keep their `fatal` category and their diagnostic. The second case matters on the child socket, whose server forwards to the database worker: the worker's fatal answer can cross the cancel frame.
 
 A lost outcome is a fatal item, so the Commit attempt stays unsettled and the run reports commit outcome unknown, as ADR 0056 requires.
 
