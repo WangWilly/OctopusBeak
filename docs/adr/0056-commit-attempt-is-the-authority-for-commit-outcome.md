@@ -2,6 +2,8 @@
 
 Status: accepted
 
+Refined by [ADR 0160](./0160-only-an-answered-cancellation-is-a-cancellation.md): a request that lost its transport under a cancellation is not a cancelled outcome.
+
 ## Decision
 
 Before this decision, whether a run's Canonical Financial Commit happened was inferred from stage events that each workflow emitted by hand around `financialCommit.execute()`. The host, the worker, finalization, progress and the renderer's stage track each matched those event codes with suffix regexes such as `/commit-started$/`. Nine workflows and product collection wrote the codes, with three naming schemes. The same situation was classified differently by different workflows: MaiCoin reported a thrown request as a known `canonical-commit-failed`, while Post reported a returned `failed` result as `commit-outcome-unknown`. Renaming one code would silently turn an unknown outcome into an ordinary failure.

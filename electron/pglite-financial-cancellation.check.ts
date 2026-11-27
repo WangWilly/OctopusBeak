@@ -120,6 +120,37 @@ test("financial cancellation waits for the terminal response and preserves commi
   }
 });
 
+test("a worker that closes under a cancelled request is not reported as a cancellation", async () => {
+  const [clientPort, serverPort] = memoryPair();
+  let enteredResolve!: () => void;
+  const entered = new Promise<void>((resolve) => { enteredResolve = resolve; });
+  const registry = {
+    "financial.source.commit": async (_args: unknown, options?: { signal?: AbortSignal }) => {
+      enteredResolve();
+      await new Promise<never>((_resolve, reject) => {
+        options?.signal?.addEventListener("abort", () => reject(new PGliteFinancialError("worker-closed")), { once: true });
+      });
+    },
+  } as unknown as PGliteFinancialRegistry;
+  const server = createPGliteFinancialRpcServer(serverPort, createPGliteFinancialLocalPort(registry));
+  const client = createPGliteFinancialRpcClient(clientPort);
+  try {
+    const controller = new AbortController();
+    const request = client.request("financial.source.commit", [sourceRequest() as never], { signal: controller.signal });
+    await entered;
+    controller.abort();
+    await assert.rejects(
+      request,
+      (error: unknown) => error instanceof PGliteFinancialError && error.code === "operation-failed" && error.category === "fatal",
+      "the commit may have landed before the worker closed, so the caller must not hear cancelled",
+    );
+  }
+  finally {
+    client.close();
+    await server.close();
+  }
+});
+
 test("unknown financial failures remain fatal across the worker boundary", async () => {
   const [clientPort, serverPort] = memoryPair();
   const registry = {
