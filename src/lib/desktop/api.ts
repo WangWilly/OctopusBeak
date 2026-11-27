@@ -383,7 +383,6 @@ export type OctopusBeakApi = {
     runHistory(): Promise<AutomationTaskHistoryRow[]>;
     openExternalPrerequisite(prerequisiteId: string): Promise<{ ok: true }>;
     runtimeSnapshot(): Promise<AutomationRuntimeSnapshot>;
-    fatalRuntimeSnapshot(): Promise<void>;
     onRuntimeChanged(listener: (snapshot: AutomationRuntimeSnapshot) => void): () => void;
     takeNotificationTarget(): Promise<NotificationTarget | null>;
     onNotificationTargetRequested(listener: () => void): () => void;

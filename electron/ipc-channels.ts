@@ -104,7 +104,6 @@ export const AUTOMATION_SERVICE_CHANNELS = {
   "automation:runHistory": "runHistory",
   "automation:openExternalPrerequisite": "openExternalPrerequisite",
   "automation:runtimeSnapshot": "runtimeSnapshot",
-  "automation:fatalRuntimeSnapshot": "fatalRuntimeSnapshot",
   "automation:takeNotificationTarget": "takeNotificationTarget",
   "automation:previewStructureReport": "previewStructureReport",
   "automation:openPreviewStructureReportIssue": "openPreviewStructureReportIssue",

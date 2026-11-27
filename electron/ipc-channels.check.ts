@@ -24,6 +24,14 @@ test("the renderer can reach no canonical write", () => {
   }
 });
 
+test("the renderer has no channel that reports a fatal and ends the App", () => {
+  for (const table of [AUTOMATION_SERVICE_CHANNELS, SETTINGS_SERVICE_CHANNELS, SPENDING_SERVICE_CHANNELS]) {
+    for (const [channel, method] of Object.entries(table)) {
+      assert.doesNotMatch(`${channel} ${method}`, /fatal/iu, `${channel} must not let a renderer end the App`);
+    }
+  }
+});
+
 test("each forwarded channel requests its own operation with the renderer's arguments", async () => {
   const calls: Array<[string, readonly unknown[]]> = [];
   const port = {

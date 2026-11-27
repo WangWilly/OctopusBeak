@@ -426,9 +426,6 @@ export function createAutomationDesktopService<Owner>(deps: AutomationDesktopSer
         return reportAutomationRuntimeFatal("runtime-snapshot", error);
       }
     },
-    fatalRuntimeSnapshot(): void {
-      reportAutomationRuntimeFatal("renderer-resync");
-    },
     /**
      * Whether the stored Sign-in Details can be read, and whether clearing
      * them now would also need a Canonical Reset: unreadable details take
