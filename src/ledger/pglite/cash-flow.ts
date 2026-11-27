@@ -31,7 +31,7 @@ import { absoluteExact, compareExact, normalizeExact, sameCurrency, type ExactAm
 import { isCategoryApplicable } from "../canonical/transaction-taxonomy.ts";
 import { carriesCurrencyExchangeLabel } from "../canonical/transaction-kind-classifier.ts";
 import { readKnowledgePoint } from "./knowledge-point.ts";
-import { readMaicoinCashFlowIncome } from "./maicoin-statement-log.ts";
+import { readMaicoinCashFlowIncome } from "./maicoin-cash-flow-income.ts";
 import { currentTransactionIdsByFinancialDate, querySpendingReport } from "./spending-facts.ts";
 import { byChunk, bytes, idString, ISO_DATE, pgliteQuery, rows, type PGliteSpendingReader } from "./spending-sql.ts";
 

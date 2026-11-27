@@ -9,9 +9,6 @@ import {
   collectMaicoinSource,
   MAICOIN_STATEMENT_LIMIT,
   MAICOIN_WALLET_TYPES,
-  maicoinRpcChunks,
-  pgliteSnapshotRows,
-  pgliteStatementRows,
   type MaxCredentials,
 } from "../../ledger/sync-maicoin.ts";
 import { defineWorkflow, type WorkflowDefinition } from "./workflow-executor.ts";
@@ -58,29 +55,13 @@ export function createMaicoinWorkflow(): WorkflowDefinition<MaicoinWorkflowInput
   return defineWorkflow({
     id: "sync-maicoin",
     requiresFinancialCommit: true,
-    requiresMaicoinPersistence: true,
   }, async (context, input: MaicoinWorkflowInput) => {
     const credentials = validatedCredentials(input);
-    const persistence = context.maicoinPersistence;
     const syncRunId = context.runId;
-    const startedAt = context.now();
-    let runStarted = false;
-    let runFinished = false;
-    let stage: "preparation" | "collection" | "validation" | "commit" | "operational" = "preparation";
+    let stage: "collection" | "validation" | "commit" = "collection";
 
     try {
       context.signal.throwIfAborted();
-      await persistence.startRun({
-        syncRunId,
-        startedAt,
-        subAccount: credentials.subAccount,
-        walletTypes: MAICOIN_WALLET_TYPES,
-        statementLimit: MAICOIN_STATEMENT_LIMIT,
-        record: { status: "started" },
-      });
-      runStarted = true;
-
-      stage = "collection";
       await context.event("authentication", "advanced", "authenticating");
       await context.event("collection", "advanced", "collecting-wallets");
       let source;
@@ -106,14 +87,13 @@ export function createMaicoinWorkflow(): WorkflowDefinition<MaicoinWorkflowInput
         });
       } catch (error) {
         if (context.signal.aborted) throw cancellationError();
+        // A failed price lookup lands here too, so nothing is written and the next run retries (ADR 0158).
         await context.event("validation", "failed", "source-rejected");
         throw safeError("source-rejected", error);
       }
 
       stage = "validation";
       let captures;
-      let snapshotChunks;
-      let statementChunks;
       try {
         captures = buildMaicoinInvestmentCaptures({
           captureId: syncRunId,
@@ -122,19 +102,8 @@ export function createMaicoinWorkflow(): WorkflowDefinition<MaicoinWorkflowInput
           accountBatches: source.accountBatches,
           statementBatches: source.statementBatches,
           valuationQuotes: source.valuationQuotes,
+          statementValuations: source.statementValuations,
         });
-        snapshotChunks = [...maicoinRpcChunks(pgliteSnapshotRows(
-          syncRunId,
-          source.capturedAt,
-          credentials.subAccount,
-          source.snapshots,
-        ))];
-        statementChunks = [...maicoinRpcChunks(pgliteStatementRows(
-          syncRunId,
-          source.capturedAt,
-          source.statementBatches,
-          source.statementValues,
-        ))];
       } catch (error) {
         await context.event("validation", "failed", "source-rejected");
         throw safeError("source-rejected", error);
@@ -183,71 +152,29 @@ export function createMaicoinWorkflow(): WorkflowDefinition<MaicoinWorkflowInput
           : "canonical-commit-failed");
       }
 
-      stage = "operational";
-      for (const chunk of snapshotChunks)
-        await persistence.appendSnapshots(chunk);
-      for (const chunk of statementChunks)
-        await persistence.appendStatementRows(chunk);
-
+      const accountCount = source.accountBatches.reduce((count, batch) => count + batch.accounts.length, 0);
       const statementRows = source.statementBatches.reduce(
         (count, batch) => count + batch.rows.length,
         0,
       );
-      const summary = {
-        status: "completed",
-        syncRunId,
-        capturedAt: source.capturedAt,
-        walletTypes: source.walletTypes,
-        canonicalInvestmentCaptures: commit.committedCount,
-        accountSnapshots: source.snapshots.length,
-        statementMode: "full",
-        statementRows,
-      } as const;
-      await persistence.finishRun({
-        syncRunId,
-        finishedAt: context.now(),
-        record: summary,
-      });
-      runFinished = true;
-      await context.event("finalization", "completed", "operational-records-persisted", {
-        completed: source.snapshots.length + statementRows,
-        total: source.snapshots.length + statementRows,
+      await context.event("finalization", "completed", "canonical-records-committed", {
+        completed: commit.committedCount,
+        total: captures.length,
       });
       return workflowRunResult({
         status: "completed",
         counts: {
           canonicalCaptureCount: commit.committedCount,
-          accountCount: source.snapshots.length,
+          accountCount,
           statementRowCount: statementRows,
         },
       });
     } catch (error) {
       const cancelled = context.signal.aborted
         || (error instanceof Error && error.message === "Automation task cancelled.");
-      const code = cancelled
-        ? "cancelled"
-        : error instanceof MaicoinWorkflowError
-          ? error.code
-          : stage === "preparation"
-            ? "operational-persistence-failed"
-            : stage === "collection" || stage === "validation"
-              ? "source-rejected"
-              : stage === "commit"
-                ? "canonical-commit-failed"
-                : "operational-persistence-failed";
-      if (runStarted && !runFinished) {
-        await persistence.finishRun({
-          syncRunId,
-          finishedAt: context.now(),
-          record: {
-            status: cancelled ? "cancelled" : "failed",
-            syncRunId,
-            errorCode: code,
-          },
-        }).catch(() => undefined);
-      }
       if (cancelled) throw cancellationError();
-      throw error instanceof MaicoinWorkflowError ? error : safeError(code, error);
+      if (error instanceof MaicoinWorkflowError) throw error;
+      throw safeError(stage === "commit" ? "canonical-commit-failed" : "source-rejected", error);
     }
   });
 }

@@ -19,17 +19,15 @@ import { strictSourceText } from "../../lib/automation/source-text.ts";
 import { createWorkflowExecutor } from "../../lib/automation/workflow-executor.ts";
 import type { WorkflowRunEvent } from "../../lib/automation/run-event.ts";
 import { createTestPGlite } from "./baseline-test-template.ts";
-import { applyPgliteMaicoinOperationalSchema } from "./maicoin-operational.ts";
 import { commitPGliteCanonicalInvestmentCapture } from "./investment.ts";
 import { createPgliteOperationalProvider } from "./operational.ts";
 import { PGliteStore } from "./transaction.ts";
 import { createPGliteFinancialPageActions } from "./spending-command.ts";
 
-test("MaiCoin workflow commits through the injected canonical worker and operational ports", async () => {
+test("MaiCoin workflow commits through the injected canonical worker", async () => {
   const root = await mkdtemp(join(tmpdir(), "maicoin-pglite-workflow-"));
   const database = await createTestPGlite("ledger+operational", { dataDir: join(root, "pglite") });
   const store = new PGliteStore(database);
-  await applyPgliteMaicoinOperationalSchema(store);
   const operational = createPgliteOperationalProvider(store);
   const server = createPGliteChildRpcServer({
     provider: { operational, financial: createPGliteFinancialLocalPort(createPGliteFinancialRegistry(store, createPGliteFinancialPageActions(store))) },
@@ -67,7 +65,6 @@ test("MaiCoin workflow commits through the injected canonical worker and operati
       text: strictSourceText,
       humanAssistance: { request: async () => { throw new Error("MaiCoin does not request assistance."); } },
       financialCommit: createWorkflowFinancialCommitPort(child.workflow),
-      maicoinPersistence: child.operationalProvider.maicoin,
       commitAttempts: { record: async () => undefined },
       events: { append: async (event) => { events.push(event); } },
       now: () => "2026-09-25T00:00:00.000Z",
@@ -83,7 +80,6 @@ test("MaiCoin workflow commits through the injected canonical worker and operati
     assert.equal((await store.query<{ count: number }>(
       "SELECT COUNT(*)::int AS count FROM source_occurrence_group_coverages WHERE capture_id IN (SELECT capture_id FROM source_captures WHERE record_kind = 'investment-source-record')",
     )).rows[0]?.count, 0);
-    assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM maicoin_sync_runs")).rows[0]?.count, 1);
     assert.deepEqual(events.map((event) => event.code).slice(-1), ["run-completed"]);
   } finally {
     globalThis.fetch = originalFetch;

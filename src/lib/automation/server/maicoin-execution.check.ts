@@ -111,7 +111,6 @@ test("MaiCoin worker uses injected financial commit and operational RPC without 
     assert.equal(result.kind, "completed", JSON.stringify(result));
     assert.deepEqual(observedCodes.slice(-1), ["run-completed"]);
     assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM financial_accounts")).rows[0]?.count, 2);
-    assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM maicoin_sync_runs")).rows[0]?.count, 1);
     assert.deepEqual(await readdir(root), ["pglite"], "only the test database remains under its temp root");
   } finally {
     process.chdir(previousDirectory);

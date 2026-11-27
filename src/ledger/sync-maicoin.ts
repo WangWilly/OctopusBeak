@@ -1,14 +1,11 @@
-import { createHash, createHmac, randomUUID } from "node:crypto";
-import type {
-  PGliteMaicoinSnapshot,
-  PGliteMaicoinStatementRow,
-} from "./pglite/maicoin-operational.ts";
+import { createHmac } from "node:crypto";
 import {
   parseMaicoinTickerQuote,
   parseMaicoinProviderDate,
   readMaicoinStatementNativeIdentity,
   maicoinStatementQuerySpecs,
   resolveMaicoinTwdQuote,
+  maicoinStatementRecordKey,
   type MaicoinAccountRecord,
   type MaicoinPublicMarket,
   type MaicoinStatementBatch,
@@ -16,6 +13,9 @@ import {
   type MaicoinTwdQuote,
   type MaicoinWalletAccountBatch,
 } from "./canonical/maicoin-crypto-adapters.ts";
+import { parseExactDecimalLexeme } from "./canonical/exact-decimal-lexeme.ts";
+import type { InvestmentExactAmount, InvestmentTwdValuation } from "./canonical/investment-financial.ts";
+import { decimalToExact, multiplyExact } from "../lib/shared-money/exact-money.ts";
 
 const API_BASE_URL = "https://max-api.maicoin.com";
 export const MAICOIN_STATEMENT_LIMIT = 1000;
@@ -72,26 +72,7 @@ type TickerSnapshot = {
   tickers: Map<string, Ticker>;
 };
 
-export type MaicoinAccountSnapshot = {
-  walletType: WalletType;
-  account: Account;
-  price: PriceQuote;
-  totalQuantity: number;
-  valueTwd: number | null;
-};
-
-type PriceQuote = {
-  market: string | null;
-  currency: string | null;
-  price: number | null;
-  at: string | null;
-  raw: unknown;
-};
-
 type StatementBatch = MaicoinStatementBatch;
-
-type StatementValueMap = Map<string, number | null>;
-type KLine = [number, number | string, number | string, number | string, number | string, number | string];
 
 export class MaxClient {
   #lastNonce = 0;
@@ -302,16 +283,6 @@ function numeric(value: unknown): number | null {
   return Number.isFinite(numberValue) ? numberValue : null;
 }
 
-function amount(value: unknown) {
-  return numeric(value) ?? 0;
-}
-
-function isoFromTimestamp(value: unknown): string | null {
-  const timestamp = numeric(value);
-  if (timestamp === null) return null;
-  return new Date(timestamp < 10_000_000_000 ? timestamp * 1000 : timestamp).toISOString();
-}
-
 function createdAtMillis(row: Record<string, unknown>) {
   const timestamp = numeric(row.created_at) ?? 0;
   return timestamp < 10_000_000_000 ? timestamp * 1000 : timestamp;
@@ -353,15 +324,6 @@ function stableStatementJson(value: unknown): string {
   return JSON.stringify(stableStatementValue(value));
 }
 
-function hashId(...parts: unknown[]) {
-  const hash = createHash("sha256");
-  for (const part of parts) {
-    hash.update(typeof part === "string" ? part : JSON.stringify(part));
-    hash.update("\0");
-  }
-  return hash.digest("hex");
-}
-
 function statementExternalId(
   rowType: MaicoinStatementRowType,
   row: Record<string, unknown>,
@@ -369,64 +331,6 @@ function statementExternalId(
   const identity = readMaicoinStatementNativeIdentity(rowType, row);
   if (identity.kind === "present") return identity.externalId;
   throw new Error(`MAX ${rowType} history row is missing its contract-required ${identity.field} provider ID.`);
-}
-
-function statementIdFor(batch: StatementBatch, row: Record<string, unknown>) {
-  const externalId = statementExternalId(batch.rowType, row);
-  return hashId(
-    batch.endpoint,
-    batch.walletType ?? "",
-    batch.rowType,
-    externalId,
-  );
-}
-
-function totalQuantity(account: Account) {
-  return amount(account.balance) + amount(account.locked) + amount(account.staked);
-}
-
-function priceForCurrency(currency: string, tickers: Map<string, Ticker>): PriceQuote {
-  const normalized = currency.toLowerCase();
-  if (normalized === "twd") {
-    return { market: null, currency: "TWD", price: 1, at: null, raw: null };
-  }
-
-  const direct = tickers.get(`${normalized}twd`);
-  if (direct) return tickerQuote(direct, "TWD");
-
-  if (normalized === "usdt") {
-    return { ...missingQuote(), market: "usdttwd", currency: "TWD" };
-  }
-
-  const viaUsdt = tickers.get(`${normalized}usdt`);
-  const usdtTwd = tickers.get("usdttwd");
-  const viaUsdtPrice = numeric(viaUsdt?.last);
-  const usdtTwdPrice = numeric(usdtTwd?.last);
-  if (viaUsdt && usdtTwd && viaUsdtPrice !== null && usdtTwdPrice !== null) {
-    return {
-      market: `${viaUsdt.market}+${usdtTwd.market}`,
-      currency: "TWD",
-      price: viaUsdtPrice * usdtTwdPrice,
-      at: isoFromTimestamp(Math.max(viaUsdt.at, usdtTwd.at)),
-      raw: [viaUsdt, usdtTwd],
-    };
-  }
-
-  return missingQuote();
-}
-
-function tickerQuote(ticker: Ticker, currency: string): PriceQuote {
-  return {
-    market: ticker.market,
-    currency,
-    price: numeric(ticker.last),
-    at: isoFromTimestamp(ticker.at),
-    raw: ticker,
-  };
-}
-
-function missingQuote(): PriceQuote {
-  return { market: null, currency: null, price: null, at: null, raw: null };
 }
 
 function tickerMarketsForAccounts(accounts: Account[], markets: Set<string>) {
@@ -514,31 +418,15 @@ function valuationQuotesForAccounts(
   return quotes;
 }
 
-async function statementValueMap(
-  client: MaxClient,
-  statement: StatementBatch[],
-  markets: Set<string>,
-): Promise<StatementValueMap> {
-  const cache = new Map<string, Promise<number | null>>();
-  const values: StatementValueMap = new Map();
-  for (const batch of statement) {
-    for (const row of batch.rows) {
-      client.throwIfAborted();
-      values.set(statementIdFor(batch, row), await statementValueTwd(client, markets, cache, batch.rowType, row));
-    }
-  }
-  return values;
-}
-
 export type MaicoinSourceCollection = Readonly<{
   providerEmail: string;
   walletTypes: readonly WalletType[];
   accountBatches: readonly MaicoinWalletAccountBatch[];
   marketRows: readonly MaicoinMarket[];
   statementBatches: readonly MaicoinStatementBatch[];
-  snapshots: readonly MaicoinAccountSnapshot[];
   valuationQuotes: ReadonlyMap<string, MaicoinTwdQuote>;
-  statementValues: ReadonlyMap<string, number | null>;
+  /** Each priced statement row's TWD valuation, by its `transaction` leg's source record key. */
+  statementValuations: ReadonlyMap<string, InvestmentTwdValuation>;
   capturedAt: string;
 }>;
 
@@ -573,10 +461,9 @@ export async function collectMaicoinSource(
     client,
     tickerMarketsForAccounts(accounts, markets),
   );
-  const snapshots = buildSnapshots(accountBatches, tickerSnapshot.tickers);
   const valuationQuotes = valuationQuotesForAccounts(accounts, marketRows, tickerSnapshot);
   const capturedAt = options.now();
-  await options.onWalletsCollected?.(snapshots.length);
+  await options.onWalletsCollected?.(accounts.length);
 
   await options.onStatementsStarted?.();
   const statementBatches = await fetchStatement(
@@ -584,7 +471,7 @@ export async function collectMaicoinSource(
     selection.walletTypes,
     options.statementLimit ?? MAICOIN_STATEMENT_LIMIT,
   );
-  const statementValues = await statementValueMap(client, statementBatches, markets);
+  const statementValuations = await statementTwdValuations(client, statementBatches, markets, capturedAt);
   const statementCount = statementBatches.reduce((count, batch) => count + batch.rows.length, 0);
   await options.onStatementsCollected?.(statementCount);
   options.signal?.throwIfAborted();
@@ -595,106 +482,140 @@ export async function collectMaicoinSource(
     accountBatches,
     marketRows,
     statementBatches,
-    snapshots,
     valuationQuotes,
-    statementValues,
+    statementValuations,
     capturedAt,
   };
 }
 
-async function statementValueTwd(
+const DAY_MS = 86_400_000;
+
+/**
+ * A daily close lookup ends in a close or in no price. No price is
+ * deterministic: the coin has no market, or MAX has no candle for that exact
+ * UTC day. Any other failure throws and fails the collection, so a transient
+ * error never stands in for "no price" and flips a stored payload (ADR 0158).
+ */
+type DailyClose = Readonly<{ kind: "close"; close: InvestmentExactAmount }> | Readonly<{ kind: "none" }>;
+
+const NO_PRICE: DailyClose = { kind: "none" };
+
+/**
+ * The TWD value of each reward and each non-TWD deposit, the rows Cash flow
+ * counts as income (ADR 0146). A row is priced only from a finished UTC day's
+ * close, so its valuation never changes once written; a row of the capture's
+ * own UTC day carries none until a later sync.
+ */
+async function statementTwdValuations(
   client: MaxClient,
-  markets: Set<string>,
-  cache: Map<string, Promise<number | null>>,
-  rowType: string,
+  statement: readonly StatementBatch[],
+  markets: ReadonlySet<string>,
+  capturedAt: string,
+): Promise<Map<string, InvestmentTwdValuation>> {
+  const todayStartMs = Math.floor(Date.parse(capturedAt) / DAY_MS) * DAY_MS;
+  const closes = new Map<string, Promise<DailyClose>>();
+  const close = (market: string, dayStartMs: number): Promise<DailyClose> => {
+    const key = `${market}:${dayStartMs}`;
+    if (!closes.has(key)) closes.set(key, dailyClose(client, market, dayStartMs));
+    return closes.get(key)!;
+  };
+  const valuations = new Map<string, InvestmentTwdValuation>();
+  for (const batch of statement) {
+    if (batch.rowType !== "reward" && batch.rowType !== "deposit") continue;
+    for (const row of batch.rows) {
+      client.throwIfAborted();
+      const valuation = await statementTwdValuation(batch.rowType, row, markets, todayStartMs, close);
+      if (valuation)
+        valuations.set(maicoinStatementRecordKey({
+          endpoint: batch.endpoint,
+          walletType: batch.walletType,
+          rowType: batch.rowType,
+          externalId: statementExternalId(batch.rowType, row),
+          leg: "transaction",
+        }), valuation);
+    }
+  }
+  return valuations;
+}
+
+async function statementTwdValuation(
+  rowType: "reward" | "deposit",
   row: Record<string, unknown>,
-) {
-  const timestamp = createdAtMillis(row);
-  if (!timestamp) return null;
-
-  if (rowType === "trade") {
-    const units = marketUnits(stringValue(row.market));
-    const quotePrice = units ? await historicalPriceTwd(client, markets, cache, units.quote, timestamp) : null;
-    return quotePrice === null ? null : amount(row.funds) * quotePrice;
+  markets: ReadonlySet<string>,
+  todayStartMs: number,
+  close: (market: string, dayStartMs: number) => Promise<DailyClose>,
+): Promise<InvestmentTwdValuation | null> {
+  const coin = stringValue(row.currency)?.trim().toLowerCase();
+  const quantity = exactStatementAmount(row.amount);
+  // The adapter rejects a row without a valid currency or amount.
+  if (!coin || !quantity) return null;
+  if (coin === "twd")
+    return rowType === "reward" ? { route: "twd", value: { ...quantity, currency: "TWD" } } : null;
+  const dayStartMs = Math.floor(createdAtMillis(row) / DAY_MS) * DAY_MS;
+  if (dayStartMs >= todayStartMs) return null;
+  const candleDay = new Date(dayStartMs).toISOString().slice(0, 10);
+  const direct = `${coin}twd`;
+  if (markets.has(direct)) {
+    const price = await close(direct, dayStartMs);
+    return price.kind === "none" ? null : {
+      route: "direct",
+      value: { ...multiplyExact(quantity, price.close), currency: "TWD" },
+      market: direct,
+      close: price.close,
+      candleDay,
+    };
   }
-
-  if (rowType === "convert") {
-    const price = await historicalPriceTwd(client, markets, cache, stringValue(row.from_currency), timestamp);
-    return price === null ? null : amount(row.from_amount) * price;
-  }
-
-  if (rowType === "deposit" || rowType === "reward" || rowType === "withdrawal") {
-    const price = await historicalPriceTwd(client, markets, cache, stringValue(row.currency), timestamp);
-    return price === null ? null : amount(row.amount) * price;
-  }
-
-  return null;
+  const viaUsdt = `${coin}usdt`;
+  if (!markets.has(viaUsdt) || !markets.has("usdttwd")) return null;
+  const [price, usdtTwd] = await Promise.all([close(viaUsdt, dayStartMs), close("usdttwd", dayStartMs)]);
+  if (price.kind === "none" || usdtTwd.kind === "none") return null;
+  return {
+    route: "via-usdt",
+    value: { ...multiplyExact(multiplyExact(quantity, price.close), usdtTwd.close), currency: "TWD" },
+    market: viaUsdt,
+    close: price.close,
+    usdtTwdClose: usdtTwd.close,
+    candleDay,
+  };
 }
 
-async function historicalPriceTwd(
-  client: MaxClient,
-  markets: Set<string>,
-  cache: Map<string, Promise<number | null>>,
-  currency: string | null,
-  timestamp: number,
-) {
-  const normalized = currency?.toLowerCase();
-  if (!normalized) return null;
-  if (normalized === "twd") return 1;
-  const day = dayStartSeconds(timestamp);
-  const key = `${normalized}:${day}`;
-  if (!cache.has(key)) {
-    cache.set(key, historicalPriceTwdUncached(client, markets, normalized, day));
-  }
-  return cache.get(key)!;
-}
-
-async function historicalPriceTwdUncached(
-  client: MaxClient,
-  markets: Set<string>,
-  normalized: string,
-  dayStart: number,
-) {
-  const directMarket = `${normalized}twd`;
-  if (markets.has(directMarket)) return historicalMarketClose(client, directMarket, dayStart);
-
-  const viaUsdtMarket = `${normalized}usdt`;
-  if (!markets.has(viaUsdtMarket) || !markets.has("usdttwd")) return null;
-  const [viaUsdt, usdtTwd] = await Promise.all([
-    historicalMarketClose(client, viaUsdtMarket, dayStart),
-    historicalMarketClose(client, "usdttwd", dayStart),
-  ]);
-  return viaUsdt === null || usdtTwd === null ? null : viaUsdt * usdtTwd;
-}
-
-async function historicalMarketClose(client: MaxClient, market: string, dayStart: number) {
+function exactStatementAmount(value: unknown): InvestmentExactAmount | null {
+  if (typeof value !== "string") return null;
   try {
-    const rows = await client.publicGet<KLine[]>("/api/v3/k", {
-      market,
-      period: 1440,
-      limit: 2,
-      timestamp: dayStart,
-    });
-    const row = rows.find((item) => Number(item[0]) >= dayStart && Number(item[0]) < dayStart + 86400) ?? rows[0];
-    return numeric(row?.[4]);
+    const parsed = parseExactDecimalLexeme(value.trim());
+    return parsed.coefficient < 0n ? null : { coefficient: parsed.coefficient.toString(), scale: parsed.scale };
   } catch {
-    client.throwIfAborted();
     return null;
   }
 }
 
-function dayStartSeconds(timestamp: number) {
-  return Math.floor(timestamp / 86_400_000) * 86_400;
+/** MAX k-line rows are `[startSeconds, open, high, low, close, volume]`. */
+async function dailyClose(client: MaxClient, market: string, dayStartMs: number): Promise<DailyClose> {
+  const dayStart = dayStartMs / 1000;
+  const rows = await client.publicGet<unknown>("/api/v3/k", {
+    market,
+    period: 1440,
+    limit: 2,
+    timestamp: dayStart,
+  });
+  if (!Array.isArray(rows)) throw new Error(`MAX k-line response for ${market} is not an array.`);
+  for (const row of rows) {
+    if (!Array.isArray(row) || row.length < 5) throw new Error(`MAX k-line response for ${market} has a malformed candle.`);
+    const start = Number(row[0]);
+    if (!Number.isSafeInteger(start)) throw new Error(`MAX k-line response for ${market} has a malformed candle time.`);
+    if (start < dayStart || start >= dayStart + 86_400) continue;
+    return { kind: "close", close: candleClose(row[4], market) };
+  }
+  return NO_PRICE;
 }
 
-function marketUnits(market: string | null) {
-  if (!market) return null;
-  for (const quote of ["usdt", "usdc", "twd", "btc", "eth"]) {
-    if (market.endsWith(quote) && market.length > quote.length) {
-      return { base: market.slice(0, -quote.length), quote };
-    }
-  }
-  return null;
+function candleClose(value: unknown, market: string): InvestmentExactAmount {
+  const exact = typeof value === "string"
+    ? exactStatementAmount(value)
+    : typeof value === "number" ? decimalToExact(value) : null;
+  if (!exact || BigInt(exact.coefficient) <= 0n)
+    throw new Error(`MAX k-line response for ${market} has a malformed close.`);
+  return exact;
 }
 
 export async function fetchWalletTypes(
@@ -936,100 +857,6 @@ async function fetchFullTimestampHistory(
   }
   if (!terminalHistory) throw new Error(`MAX statement history for ${endpoint} has no terminal response.`);
   return { rows, history: terminalHistory };
-}
-
-function buildSnapshots(
-  accountBatches: Array<{ walletType: WalletType; accounts: Account[] }>,
-  tickers: Map<string, Ticker>,
-) {
-  const snapshots: MaicoinAccountSnapshot[] = [];
-  for (const batch of accountBatches) {
-    for (const account of batch.accounts) {
-      const price = priceForCurrency(account.currency, tickers);
-      const quantity = totalQuantity(account);
-      snapshots.push({
-        walletType: batch.walletType,
-        account,
-        price,
-        totalQuantity: quantity,
-        valueTwd: price.price === null ? null : quantity * price.price,
-      });
-    }
-  }
-  return snapshots;
-}
-
-export function pgliteSnapshotRows(
-  syncRunId: string,
-  capturedAt: string,
-  subAccount: string,
-  snapshots: readonly MaicoinAccountSnapshot[],
-): PGliteMaicoinSnapshot[] {
-  return snapshots.map((snapshot) => ({
-    snapshotId: randomUUID(), syncRunId, capturedAt, subAccount,
-    walletType: snapshot.walletType,
-    currency: snapshot.account.currency.toLowerCase(),
-    balance: amount(snapshot.account.balance),
-    locked: amount(snapshot.account.locked),
-    staked: numeric(snapshot.account.staked),
-    principal: numeric(snapshot.account.principal),
-    interest: numeric(snapshot.account.interest),
-    totalQuantity: snapshot.totalQuantity,
-    priceMarket: snapshot.price.market,
-    priceCurrency: snapshot.price.currency,
-    price: snapshot.price.price,
-    valueTwd: snapshot.valueTwd,
-    priceAt: snapshot.price.at,
-    rawAccountJson: JSON.stringify(snapshot.account),
-    rawPriceJson: snapshot.price.raw === null ? null : JSON.stringify(snapshot.price.raw),
-  }));
-}
-
-export function pgliteStatementRows(
-  syncRunId: string,
-  capturedAt: string,
-  statement: readonly StatementBatch[],
-  statementValues: ReadonlyMap<string, number | null>,
-): PGliteMaicoinStatementRow[] {
-  return statement.flatMap((batch) => batch.rows.map((row) => {
-    const externalId = statementExternalId(batch.rowType, row);
-    const statementId = statementIdFor(batch, row);
-    return {
-      statementId, syncRunId, capturedAt,
-      endpoint: batch.endpoint,
-      walletType: batch.walletType,
-      rowType: batch.rowType,
-      externalId,
-      occurredAt: isoFromTimestamp(row.created_at),
-      currency: stringValue(row.currency),
-      amount: numeric(row.amount ?? row.volume ?? row.funds),
-      fee: numeric(row.fee),
-      feeCurrency: stringValue(row.fee_currency),
-      market: stringValue(row.market),
-      side: stringValue(row.side),
-      price: numeric(row.price),
-      valueTwd: statementValues.get(statementId) ?? null,
-      rawPayloadJson: JSON.stringify(row),
-    };
-  }));
-}
-
-/** Keep each authenticated socket frame below its 4 MiB transport ceiling. */
-export function* maicoinRpcChunks<T>(rows: readonly T[]): Iterable<readonly T[]> {
-  let chunk: T[] = [];
-  let bytes = 0;
-  for (const row of rows) {
-    const size = Buffer.byteLength(JSON.stringify(row));
-    if (size > 1_000_000) throw new Error("MaiCoin source row exceeds the PGlite RPC limit.");
-    if (chunk.length === 100 || bytes + size > 1_000_000) {
-      yield chunk;
-      chunk = [];
-      bytes = 0;
-    }
-    chunk.push(row);
-    bytes += size;
-  }
-  if (chunk.length > 0) yield chunk;
 }
 
 function stringValue(value: unknown): string | null {

@@ -24,13 +24,13 @@ async function withFixture(run: (fixture: SpendingCategoryFixture) => Promise<vo
   }
 }
 
-type MaxInflow = Readonly<{ coin: string; quantity: string; scale?: number; date: string; valueTwd?: number | null; rowType?: "deposit" | "reward" | "convert"; state?: string | null }>;
+type MaxInflow = Readonly<{ coin: string; quantity: string; scale?: number; date: string; valueTwd?: number | null; rowType?: "deposit" | "reward" | "convert" | null; posting?: "pending" | "canceled" }>;
 
-/** A coin arriving in MAX as the MAX adapter records it: a zero-cash corporate action logged with its statement row. */
+/** A coin arriving in MAX as the MAX adapter records it: a zero-cash corporate action admitted with its row type and TWD valuation. */
 function addMaxInflow(fixture: SpendingCategoryFixture, input: MaxInflow) {
   return fixture.addTransaction({
-    amount: "0", direction: "inflow", date: input.date, scale: input.scale, account: "max", accountStream: MAICOIN,
-    event: { investment: "corporate_action_in", coin: input.coin, quantity: input.quantity, rowType: input.rowType ?? "deposit", valueTwd: input.valueTwd, ...(input.state !== undefined ? { state: input.state } : {}) },
+    amount: "0", direction: "inflow", date: input.date, scale: input.scale, account: "max", accountStream: MAICOIN, posting: input.posting,
+    event: { investment: "corporate_action_in", coin: input.coin, quantity: input.quantity, rowType: input.rowType !== undefined ? input.rowType : "deposit", valueTwd: input.valueTwd },
   });
 }
 
@@ -46,7 +46,7 @@ const rowOf = (report: CashFlowReport, id: string) => report.transactions.find((
 const twd = (coefficient: string, scale: number) => ({ coefficient, scale, currency: "TWD" });
 const NOT_COUNTED = { class: "not_counted", reason: "investment_move" } as const;
 
-test("a MAX reward and an outside crypto deposit count as income at their logged TWD value, rounded half-up to cents", async () => {
+test("a MAX reward and an outside crypto deposit count as income at their admitted TWD value, rounded half-up to cents", async () => {
   await withFixture(async (fixture) => {
     const reward = await addMaxInflow(fixture, { coin: "USDT", quantity: "125", scale: 2, date: "2026-09-04", rowType: "reward", valueTwd: 40.005 });
     const salary = await addMaxInflow(fixture, { coin: "USDT", quantity: "1500", date: "2026-09-10", valueTwd: 48123.4449 });
@@ -124,7 +124,7 @@ test("a TWD deposit and a convert leg stay out of Cash flow", async () => {
   });
 });
 
-test("a qualifying row with no logged value is unresolved, never dropped", async () => {
+test("a qualifying row with no admitted value is unresolved, never dropped", async () => {
   await withFixture(async (fixture) => {
     const reward = await addMaxInflow(fixture, { coin: "USDT", quantity: "3", date: "2026-09-04", rowType: "reward", valueTwd: null });
     const report = await readPGliteCashFlow(fixture.store, SEPTEMBER);
@@ -135,21 +135,20 @@ test("a qualifying row with no logged value is unresolved, never dropped", async
 
 test("a deposit MAX has not completed or has rejected is not income", async () => {
   await withFixture(async (fixture) => {
-    const pending = await addMaxInflow(fixture, { coin: "USDT", quantity: "10", date: "2026-09-04", valueTwd: 320, state: "processing" });
-    const rejected = await addMaxInflow(fixture, { coin: "USDT", quantity: "20", date: "2026-09-05", valueTwd: 640, state: "rejected" });
+    const pending = await addMaxInflow(fixture, { coin: "USDT", quantity: "10", date: "2026-09-04", valueTwd: 320, posting: "pending" });
+    const rejected = await addMaxInflow(fixture, { coin: "USDT", quantity: "20", date: "2026-09-05", valueTwd: 640, posting: "canceled" });
     const done = await addMaxInflow(fixture, { coin: "USDT", quantity: "30", date: "2026-09-06", valueTwd: 960 });
     const report = await readPGliteCashFlow(fixture.store, SEPTEMBER);
-    assert.deepEqual([rowOf(report, pending)?.cashFlow, rowOf(report, rejected)?.cashFlow], [NOT_COUNTED, NOT_COUNTED]);
+    assert.deepEqual([rowOf(report, pending), rowOf(report, rejected)], [undefined, undefined], "an uncounted revision is no Cash flow row");
     assert.deepEqual(rowOf(report, done)?.cashFlow, { class: "inflow", group: "income" });
     assert.deepEqual([report.totals[0]?.inflow.amount, report.totals[0]?.inflow.count], [{ coefficient: "960", scale: 0 }, 1]);
   });
 });
 
-test("a store without the statement log reads every MAX row as not counted", async () => {
+test("a MAX row admitted before its commit recorded a row type is not counted", async () => {
   await withFixture(async (fixture) => {
-    const reward = await addMaxInflow(fixture, { coin: "USDT", quantity: "1", date: "2026-09-04", rowType: "reward", valueTwd: 32 });
-    await fixture.store.query("DROP TABLE maicoin_statement_rows");
-    assert.deepEqual(rowOf(await readPGliteCashFlow(fixture.store, SEPTEMBER), reward)?.cashFlow, NOT_COUNTED);
+    const unknown = await addMaxInflow(fixture, { coin: "USDT", quantity: "1", date: "2026-09-04", rowType: null, valueTwd: 32 });
+    assert.deepEqual(rowOf(await readPGliteCashFlow(fixture.store, SEPTEMBER), unknown)?.cashFlow, NOT_COUNTED);
   });
 });
 

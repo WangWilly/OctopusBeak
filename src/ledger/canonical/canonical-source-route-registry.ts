@@ -467,6 +467,10 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = ([
     contractVersions: ["maicoin/investment/canonical-v1"],
     ruleCombinations: [sameRuleTuple("maicoin/investment/canonical-v1", "maicoin/investment/canonical-v1")],
     nonIsoFinancialDenominations: ["USDT"],
+    // ADR 0158: MAX's state and the day-close valuation change after a row is
+    // admitted, and every row admitted before ADR 0158 lacks all three. None
+    // feeds the record key, which is also the collision key's only input.
+    revisablePayloadFields: ["rowType", "state", "twdValuation"],
   },
   {
     routeKey: "binance/investment/canonical-v1",

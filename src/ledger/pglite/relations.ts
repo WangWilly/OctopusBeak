@@ -22,7 +22,6 @@ import { insertPGliteCanonicalCommit } from "./canonical-commit.ts";
 import { captureSourceRecordIdsSql } from "./capture-manifest.ts";
 import { CASH_FLOW_TRANSFER_WINDOW_DAYS, dayGap } from "../canonical/cash-flow-transfer-rules.ts";
 import { COUNTED_ACCOUNT_SQL, readPGliteCoveredAccountIds } from "./direct-source-precedence.ts";
-import { readMaicoinStatementLog } from "./maicoin-statement-log.ts";
 import { readKnowledgePoint } from "./knowledge-point.ts";
 
 /**
@@ -1467,22 +1466,16 @@ type TransferLeg = Readonly<{
 type MaicoinTwdTransfer = Readonly<{ movement: TransferLeg; bank: TransferLeg }>;
 
 /**
- * The source record keys of MAX deposits and withdrawals. A convert, reward or
- * wallet transfer also moves the TWD cash security, but no bank row mirrors it.
+ * MAX's TWD deposits and withdrawals, by the row type their commit admitted
+ * (ADR 0158). A convert, reward or wallet transfer also moves the TWD cash
+ * security, but no bank row mirrors it.
  */
-async function readMaicoinFundTransferKeys(transaction: PGliteTransaction): Promise<string[]> {
-  return (await readMaicoinStatementLog(transaction, ["deposit", "withdrawal"])).map((entry) => entry.recordKey);
-}
-
 async function readMaicoinTwdMovements(transaction: PGliteTransaction): Promise<TransferLeg[]> {
-  const keys = await readMaicoinFundTransferKeys(transaction);
-  if (keys.length === 0) return [];
   const rows = await query<Row>(
     transaction,
     `SELECT investment.transaction_id, investment.account_id, investment.source_record_id, investment.action,
             investment.quantity_coefficient, investment.quantity_scale, investment.effective_on
        FROM investment_transactions investment
-       JOIN source_records source_record ON source_record.source_record_id = investment.source_record_id
        JOIN investment_securities security ON security.security_id = investment.security_id
        JOIN current_transactions current_row ON current_row.transaction_id = investment.transaction_id
        JOIN transaction_revisions revision ON revision.revision_id = current_row.revision_id
@@ -1490,11 +1483,10 @@ async function readMaicoinTwdMovements(transaction: PGliteTransaction): Promise<
         AND security.security_type = 'cash'
         AND upper(security.producer_security_id) = 'TWD'
         AND investment.action IN ('corporate_action_in','corporate_action_out')
-        AND source_record.provider_key = ANY(?::text[])
+        AND investment.row_type IN ('deposit','withdrawal')
         AND revision.posting_status = 'posted'
         AND revision.economic_status = 'normal'
         AND revision.administrative_state = 'active'`,
-    [keys],
   );
   return rows.map((row) => ({
     transactionId: bytes(row.transaction_id, "MAX movement"),

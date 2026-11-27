@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  collectMaicoinSource,
   fetchAccounts,
   fetchFullStatementRows,
   MaxClient,
@@ -9,6 +10,7 @@ import {
 } from "./sync-maicoin.ts";
 import {
   deriveMaicoinSourceConnectionKey,
+  maicoinStatementRecordKey,
   buildMaicoinInvestmentCapture,
   buildMaicoinInvestmentCaptures,
   parseMaicoinProviderDate,
@@ -519,4 +521,105 @@ test("MAX rewards belong to spot under the confirmed reward wallet contract", ()
     statementBatches: batches.map((batch) => batch.rowType === "reward"
       ? { ...batch, rows: [{ ...reward, wallet_type: "m" }] } : batch),
   }), /conflicts with its spot wallet contract/u);
+});
+
+const PRICING_NOW = "2026-09-25T10:00:00.000Z";
+const PRICING_DATE = new Date(PRICING_NOW).toUTCString();
+const utcDay = (day: string) => Date.parse(`${day}T00:00:00Z`) / 1000;
+type Candle = readonly [number, string | number, string | number, string | number, string | number, string | number];
+
+const pricedDeposits = [
+  { sn: "d-btc", currency: "btc", amount: "0.5", state: "done", created_at: Date.parse("2026-09-20T03:00:00Z") },
+  { sn: "d-twd", currency: "twd", amount: "1000", state: "done", created_at: Date.parse("2026-09-20T04:00:00Z") },
+];
+const pricedRewards = [
+  { uuid: "r-eth", currency: "eth", amount: "2", type: "airdrop", note: "x", created_at: Date.parse("2026-09-21T23:30:00Z") },
+  { uuid: "r-twd", currency: "twd", amount: "5", type: "airdrop", note: "x", created_at: Date.parse("2026-09-22T01:00:00Z") },
+  { uuid: "r-today", currency: "btc", amount: "1", type: "airdrop", note: "x", created_at: Date.parse("2026-09-25T01:00:00Z") },
+];
+
+/** A MAX API whose `/api/v3/k` answers with `candles(market, dayStart)`; a Response is returned as is. */
+function pricingFetch(candles: (market: string, dayStart: number) => readonly Candle[] | Response, kRequests: string[] = []) {
+  const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { Date: PRICING_DATE } });
+  return (async (input: string | URL | Request) => {
+    const url = new URL(input instanceof Request ? input.url : input.toString());
+    if (url.pathname === "/api/v3/info") return json({ email: "owner@example.test", m_wallet_enabled: false });
+    if (url.pathname === "/api/v3/wallet/spot/accounts") return json([{ currency: "twd", balance: "0", locked: "0" }]);
+    if (url.pathname === "/api/v3/markets") return json([
+      { id: "btctwd", base_unit: "btc", quote_unit: "twd", status: "active" },
+      { id: "ethusdt", base_unit: "eth", quote_unit: "usdt", status: "active" },
+      { id: "usdttwd", base_unit: "usdt", quote_unit: "twd", status: "active" },
+    ]);
+    if (url.pathname === "/api/v3/fund_transactions/deposits") return json(pricedDeposits);
+    if (url.pathname === "/api/v3/rewards") return json(pricedRewards);
+    if (url.pathname.endsWith("/trades") || url.pathname.startsWith("/api/v3/fund_transactions/") || url.pathname === "/api/v3/converts") return json([]);
+    if (url.pathname === "/api/v3/k") {
+      const market = url.searchParams.get("market")!;
+      const dayStart = Number(url.searchParams.get("timestamp"));
+      kRequests.push(`${market}@${new Date(dayStart * 1000).toISOString().slice(0, 10)}`);
+      const answer = candles(market, dayStart);
+      return answer instanceof Response ? answer : json(answer);
+    }
+    throw new Error(`Unexpected MAX endpoint: ${url.pathname}`);
+  }) as typeof fetch;
+}
+
+const CLOSES: Readonly<Record<string, string | number>> = {
+  "btctwd@2026-09-20": "3000000.5",
+  "ethusdt@2026-09-21": "2500.25",
+  "usdttwd@2026-09-21": 32.1,
+};
+
+const closes = (market: string, dayStart: number): readonly Candle[] => {
+  const close = CLOSES[`${market}@${new Date(dayStart * 1000).toISOString().slice(0, 10)}`];
+  return close === undefined ? [] : [[dayStart, "1", "1", "1", close, "1"]];
+};
+
+const statementKey = (endpoint: string, rowType: "deposit" | "reward", externalId: string) =>
+  maicoinStatementRecordKey({ endpoint, walletType: null, rowType, externalId, leg: "transaction" });
+
+async function collectPriced(fetcher: typeof fetch) {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = fetcher;
+    return await collectMaicoinSource(credentials, { walletTypes: ["spot"], now: () => PRICING_NOW });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
+test("MAX prices a reward and a non-TWD deposit exactly from a finished UTC day's close, and nothing else", async () => {
+  const kRequests: string[] = [];
+  const source = await collectPriced(pricingFetch(closes, kRequests));
+  assert.deepEqual(new Map(source.statementValuations), new Map([
+    [statementKey("/api/v3/fund_transactions/deposits", "deposit", "sn:d-btc"), {
+      route: "direct", market: "btctwd", close: { coefficient: "30000005", scale: 1 }, candleDay: "2026-09-20",
+      value: { coefficient: "150000025", scale: 2, currency: "TWD" },
+    }],
+    [statementKey("/api/v3/rewards", "reward", "uuid:r-eth"), {
+      route: "via-usdt", market: "ethusdt", close: { coefficient: "250025", scale: 2 },
+      usdtTwdClose: { coefficient: "321", scale: 1 }, candleDay: "2026-09-21",
+      value: { coefficient: "16051605", scale: 2, currency: "TWD" },
+    }],
+    [statementKey("/api/v3/rewards", "reward", "uuid:r-twd"), { route: "twd", value: { coefficient: "5", scale: 0, currency: "TWD" } }],
+  ]), "a TWD deposit needs no value, and today's reward waits for its day to close");
+  assert.deepEqual(kRequests.sort(), ["btctwd@2026-09-20", "ethusdt@2026-09-21", "usdttwd@2026-09-21"], "today's row is never looked up");
+});
+
+test("MAX leaves a row unvalued when MAX has no candle for its exact day, never borrowing another day's", async () => {
+  const source = await collectPriced(pricingFetch((market, dayStart) =>
+    market === "btctwd" ? [[dayStart - 86_400, "1", "1", "1", "2900000", "1"], [dayStart + 86_400, "1", "1", "1", "3100000", "1"]] : closes(market, dayStart)));
+  assert.equal(source.statementValuations.has(statementKey("/api/v3/fund_transactions/deposits", "deposit", "sn:d-btc")), false);
+  assert.equal(source.statementValuations.has(statementKey("/api/v3/rewards", "reward", "uuid:r-eth")), true);
+});
+
+test("a failed MAX price lookup fails the collection instead of recording no price", async () => {
+  for (const failure of [
+    () => new Response("{\"error\":\"bad request\"}", { status: 400 }),
+    () => [[utcDay("2026-09-20"), "1", "1", "1", "not-a-price", "1"]] as const,
+    () => new Response(JSON.stringify({ unexpected: true }), { status: 200 }),
+  ]) {
+    await assert.rejects(collectPriced(pricingFetch((market, dayStart) =>
+      market === "btctwd" ? failure() : closes(market, dayStart))));
+  }
 });
