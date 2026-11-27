@@ -21,15 +21,6 @@ assert.match(source, /buildStackedYAxis\(visibleChart\.totals\.map\(\(point\) =>
 assert.match(source, /yDomain = isSingleSeriesSelected \? \[yAxis\.min, yAxis\.max\] : \[0, yAxis\.max\];/);
 assert.match(source, /yBaseline=\{isSingleSeriesSelected \? null : 0\}/);
 assert.match(source, /transform=\{\{ mode: "domain", axis: "x" \}\}/);
-assert.match(source, /brush=\{\{ axis: "y", clickToReset: true, onBrushEnd: trackYRange \}\}/);
-assert.match(source, /let brushedYDomain: \[number, number\] \| null = null;/);
-assert.match(source, /function trackYRange\(\{ brush \}: \{ brush: \{ active\?: boolean; y: Array<number \| Date \| string \| null> \} \}\) \{/);
-assert.match(source, /brushedYDomain = \[Math\.min\(start, end\), Math\.max\(start, end\)\];/);
-assert.match(source, /yDomain=\{brushedYDomain \?\? yDomain\}/);
-assert.match(source, /function resetYRange\(\) \{/);
-assert.match(source, /\{#if hasYRange\}/);
-assert.match(source, /\{\$t\.spending\.chartReset\}/);
-assert.match(source, /\{#key `\$\{chart\.signature\}:\$\{selectedSeriesKeys\.join\(","\)\}:\$\{yRangeReset\}`\}/);
 assert.match(source, /class="stacked-balance-tooltip-swatch" style:background-color=\{item\.color\}/);
 assert.match(source, /\.stacked-balance-tooltip-swatch\s*\{[^}]*border-radius:\s*999px;/);
 assert.match(source, /function orderedTooltipSeries\(\) \{/);

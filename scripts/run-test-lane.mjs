@@ -23,6 +23,7 @@ export const BROWSER_CHECK_FILES = Object.freeze([
   "scripts/spending-review-modals.check.mjs",
   "scripts/spending-empty-state.check.mjs",
   "scripts/accounts-empty-state.check.mjs",
+  "scripts/balance-chart-zoom.check.mjs",
   "scripts/credential-destinations.check.mjs",
 ]);
 
