@@ -144,8 +144,10 @@ test("a recapture that newly carries a valuation writes exactly one valuation ro
     assert.deepEqual(await counts(store), valued);
     await commitPGliteCanonicalInvestmentCapture(store, { capture: capture("valued-4", [BTC_DEPOSIT]) });
     assert.equal((await counts(store)).valuations, 1, "a commit without a valuation leaves the stored one alone");
-    await assert.rejects(commitPGliteCanonicalInvestmentCapture(store, { capture: capture("valued-5", [BTC_DEPOSIT],
-      new Map([[depositKey("d-btc"), { ...BTC_VALUATION, close: { coefficient: "2", scale: 0 } }]])) }), /valuation conflicts/u);
+    await commitPGliteCanonicalInvestmentCapture(store, { capture: capture("valued-5", [BTC_DEPOSIT],
+      new Map([[depositKey("d-btc"), { ...BTC_VALUATION, close: { coefficient: "2", scale: 0 } }]])) });
+    assert.deepEqual((await store.query("SELECT close_coefficient FROM investment_transaction_twd_valuations")).rows,
+      [{ close_coefficient: "3000000" }], "a close MAX restates later does not replace the admitted valuation or fail the sync");
   });
 });
 

@@ -710,26 +710,17 @@ function valuationColumns(valuation: InvestmentTwdValuation): readonly (string |
 
 /**
  * Write an event's TWD valuation once (ADR 0158). A `legacy-log` row carried
- * over without a price gives way to the first priced one; any other stored
- * row that differs is a conflict.
+ * over without a price gives way to the first priced one. Any other stored
+ * row stands: failing on a close MAX later restates would stop every MAX
+ * sync for good, over an estimate.
  */
 async function persistTwdValuation(transaction: PGliteTransaction, context: InvestmentContext, transactionId: Uint8Array, valuation: InvestmentTwdValuation, citedRecord: () => Uint8Array): Promise<void> {
   const columns = valuationColumns(valuation);
-  const stored = await first<Record<string, unknown>>(transaction, `SELECT ${VALUATION_COLUMNS} FROM investment_transaction_twd_valuations WHERE transaction_id = ?`, [transactionId]);
-  if (!stored) {
+  const stored = await first<{ price_route: string }>(transaction, "SELECT price_route FROM investment_transaction_twd_valuations WHERE transaction_id = ?", [transactionId]);
+  if (!stored)
     await query(transaction, `INSERT INTO investment_transaction_twd_valuations(transaction_id, capture_id, commit_id, source_record_id, ${VALUATION_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [transactionId, context.capture.captureId, context.commitId, citedRecord(), ...columns]);
-    return;
-  }
-  if (stored.price_route === "legacy-log") {
+  else if (stored.price_route === "legacy-log")
     await query(transaction, `UPDATE investment_transaction_twd_valuations SET capture_id = ?, commit_id = ?, source_record_id = ?, ${VALUATION_COLUMNS.split(", ").map((column) => `${column} = ?`).join(", ")} WHERE transaction_id = ?`, [context.capture.captureId, context.commitId, citedRecord(), ...columns, transactionId]);
-    return;
-  }
-  const same = VALUATION_COLUMNS.split(", ").every((column, index) => {
-    const expected = columns[index];
-    const actual = stored[column];
-    return expected === null ? actual === null : actual !== null && String(actual) === String(expected);
-  });
-  if (!same) fail("Investment TWD valuation conflicts with prior canonical evidence.");
 }
 
 function account(capture: InvestmentCaptureInput): PGliteCanonicalFinancialAccountInput {
