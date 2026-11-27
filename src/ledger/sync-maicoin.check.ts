@@ -314,6 +314,20 @@ test("MAX timestamp history overlaps exact provider IDs and rejects ambiguous pa
   );
 });
 
+test("a MAX statement time must be epoch digits or name its own offset", () => {
+  const build = (createdAt: unknown) => buildMaicoinInvestmentCapture({
+    captureId: "sync-run-statement-time",
+    providerEmail: "owner@example.test",
+    subAccount: "main",
+    accountBatches: [{ walletType: "spot", providerDate, accounts: [{ currency: "BTC", balance: "1", locked: "0" }] }],
+    statementBatches: completeStatementBatches(["spot"], [{ sn: "deposit-time", created_at: createdAt, currency: "BTC", amount: "1", state: "done" }]),
+  });
+  for (const accepted of [Date.parse("2026-06-01T10:00:00Z"), String(Date.parse("2026-06-01T10:00:00Z")), "2026-06-01T10:00:00.000Z", "2026-06-01T18:00:00+08:00"])
+    assert.equal(build(accepted).transactions[0]?.effectiveOn, "2026-06-01", String(accepted));
+  for (const refused of ["2026-06-01T10:00:00", "2026-06-01 10:00", "0x19A5F3E4C00", "1.7e12"])
+    assert.throws(() => build(refused), /no valid source timestamp/u, `${refused} depends on the local time zone or is not an epoch`);
+});
+
 test("MAX canonical investment carries complete bounded history independently of snapshot date and requires native IDs", () => {
   const repeated = {
     sn: "deposit-123",

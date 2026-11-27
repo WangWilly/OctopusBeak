@@ -562,12 +562,18 @@ function statementEffectiveAt(row: Record<string, unknown>): string | null {
   const raw = row.created_at ?? row.createdAt ?? row.timestamp;
   const text = statementText(raw);
   if (!text) return null;
-  const numericValue = Number(text);
-  const milliseconds = Number.isFinite(numericValue)
-    ? numericValue < 10_000_000_000
-      ? numericValue * 1000
-      : numericValue
-    : Date.parse(text);
+  // MAX reports epoch milliseconds. A date text is read only when it names
+  // its own offset: without one, `Date.parse` would use this Mac's time zone
+  // and the same row would land on another day elsewhere.
+  let milliseconds: number;
+  if (/^\d+$/u.test(text)) {
+    const epoch = Number(text);
+    milliseconds = epoch < 10_000_000_000 ? epoch * 1000 : epoch;
+  } else if (/(?:Z|[+-]\d{2}:?\d{2})$/iu.test(text)) {
+    milliseconds = Date.parse(text);
+  } else {
+    return null;
+  }
   if (!Number.isFinite(milliseconds) || milliseconds <= 0) return null;
   const result = new Date(milliseconds);
   return Number.isFinite(result.getTime()) ? result.toISOString() : null;

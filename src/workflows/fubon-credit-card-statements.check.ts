@@ -783,7 +783,7 @@ assert.deepEqual(
   })),
   "equivalent local-currency markers must not churn source identity",
 );
-for (const [index, marker] of ["TWD", "twd", "NTD", "新臺幣", "新台幣", "台幣"].entries()) {
+for (const [index, marker] of ["TWD", "twd", "NTD", "新臺幣", "新台幣", "台幣", "臺幣"].entries()) {
   const markerCapture = buildFubonCanonicalCreditCardCaptures({
     ...canonicalBuildOptions,
     captureId: `capture-local-marker-${index}`,

@@ -166,6 +166,10 @@ export function createSettingsDesktopService(deps: SettingsDesktopServiceDeps) {
   let resetting = false;
   // Set once a restore is being asked for; it stays set, since the App restarts.
   let restoring = false;
+  // Counted from before a cleanup's first await until its run returns. The
+  // worker reports a cleanup as running only once it has started, and a reset,
+  // restore or backup delete asked for in between would otherwise pass.
+  let cleanups = 0;
   const assertNoRestore = async (action: string) => {
     if (restoring || await deps.cleanupRestore.requested()) throw new Error(`${action} once a restore is asked for.`);
   };
@@ -196,6 +200,7 @@ export function createSettingsDesktopService(deps: SettingsDesktopServiceDeps) {
       const parts = ledgerResetRequest(request);
       // The renderer's own guards are not the only ones: a cleanup copies, compacts and rewrites the store a reset empties.
       if (resetting) throw new Error("The ledger is already being reset.");
+      if (cleanups > 0) throw new Error("The ledger cannot be reset while a cleanup runs.");
       resetting = true;
       try {
         // A reset removes the Cleanup Backup, which a restore asked for is about to use.
@@ -211,9 +216,14 @@ export function createSettingsDesktopService(deps: SettingsDesktopServiceDeps) {
     async cleanUpLedger(request: unknown): Promise<LedgerCleanupResultDto> {
       const parsed = cleanupRequest(request);
       if (resetting) throw new Error("A cleanup cannot start while the ledger is being reset.");
-      // A cleanup takes a new backup, which replaces the one a restore asked for.
-      await assertNoRestore("A cleanup cannot start");
-      return cleanupResultDto(await deps.ledgerCleanup.run(parsed));
+      cleanups += 1;
+      try {
+        // A cleanup takes a new backup, which replaces the one a restore asked for.
+        await assertNoRestore("A cleanup cannot start");
+        return cleanupResultDto(await deps.ledgerCleanup.run(parsed));
+      } finally {
+        cleanups -= 1;
+      }
     },
     async ledgerCleanupStatus(): Promise<LedgerCleanupStatusDto> {
       const status = await deps.ledgerCleanup.status();
@@ -228,7 +238,7 @@ export function createSettingsDesktopService(deps: SettingsDesktopServiceDeps) {
     },
     async deleteCleanupBackup(): Promise<CleanupBackupDto | null> {
       // A running cleanup may be taking or removing a backup; the renderer's own guard is not the only one.
-      if ((await deps.ledgerCleanup.status()).running) throw new Error("A backup cannot be deleted while a cleanup runs.");
+      if (cleanups > 0 || (await deps.ledgerCleanup.status()).running) throw new Error("A backup cannot be deleted while a cleanup runs.");
       await assertNoRestore("A backup cannot be deleted");
       // At most one exists, but a version before ADR 0156 could leave several; none stays.
       try {
@@ -252,6 +262,7 @@ export function createSettingsDesktopService(deps: SettingsDesktopServiceDeps) {
     async restoreCleanupBackup(): Promise<void> {
       if (resetting) throw new Error("The backup cannot be restored while the ledger is being reset.");
       if (restoring) throw new Error("The backup cannot be restored again once a restore is asked for.");
+      if (cleanups > 0) throw new Error("The backup cannot be restored while a cleanup runs.");
       // Set before anything is read, so a reset or a cleanup asked for meanwhile is refused.
       restoring = true;
       let resume: (() => void) | null = null;
