@@ -200,8 +200,13 @@ function errorReportContext() {
   return {
     appVersion: app.getVersion(),
     osVersion: usageOsVersion(process.getSystemVersion()),
-    locale: app.getLocale().startsWith("zh") ? ("zh-TW" as const) : ("en" as const),
+    locale: systemLocale(),
   };
+}
+
+/** The language of every text the main process shows: Traditional Chinese for a Chinese system, English otherwise. */
+function systemLocale(): "zh-TW" | "en" {
+  return app.getLocale().startsWith("zh") ? "zh-TW" : "en";
 }
 
 /** ADR 0078: unsent failure counts, kept only while usage statistics are on. */
@@ -252,7 +257,7 @@ function notifyCollection(trigger: CollectionTrigger, results: CollectionResult[
   if (appQuitting) return;
   // A person watching the App already sees how their own sync ended.
   if (trigger === "manual" && BrowserWindow.getFocusedWindow()) return;
-  const notice = collectionNotification(results, trigger, app.getLocale().startsWith("zh") ? "zh-TW" : "en");
+  const notice = collectionNotification(results, trigger, systemLocale());
   if (!notice || !Notification.isSupported()) return;
   showNotification(notice, notice.target);
 }
@@ -261,7 +266,7 @@ function notifyCollection(trigger: CollectionTrigger, results: CollectionResult[
 function notifyUpdateReady(version: string) {
   if (appQuitting || !Notification.isSupported()) return;
   showNotification(
-    appUpdateNotification(version, app.getLocale().startsWith("zh") ? "zh-TW" : "en"),
+    appUpdateNotification(version, systemLocale()),
     { route: "settings", focus: "app-updates" },
   );
 }
@@ -426,7 +431,6 @@ async function start() {
   migrateAutomationEnvFile({ envPath: path.join(userData, ".env"), settings: automationSettings, credentials });
   migrateStatementSelectionIds(automationSettings.path);
   const ledgerDataDir = path.join(userData, "data", "pglite");
-  const ledgerLocale = () => (app.getLocale().startsWith("zh") ? "zh-TW" as const : "en" as const);
   /** A day as Settings writes it, in its time zone; the dialogs fall back to the system clock's day. */
   const ledgerDateFormat = (): { formatDate?: (value: Date) => string } => {
     try {
@@ -442,7 +446,7 @@ async function start() {
     current: LEDGER_BASELINE_VERSIONS,
     // Before the worker exists: a backup several launches could not finish opening is the person's call.
     askStuck: ({ takenAt, from }) => askAboutStuckRestore({
-      locale: ledgerLocale(),
+      locale: systemLocale(),
       takenAt,
       from,
       ask: async (options) => (await dialog.showMessageBox(options)).response,
@@ -562,7 +566,7 @@ async function start() {
           }
           : null,
         ...ledgerDateFormat(),
-        locale: app.getLocale().startsWith("zh") ? "zh-TW" : "en",
+        locale: systemLocale(),
         ask: async (options) => {
           const owner = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
           if (owner?.isMinimized()) owner.restore();
@@ -678,7 +682,7 @@ async function start() {
     writeSettings: (patch) => automationSettings.write({ ...automationSettings.read(), ...patch }),
     appVersion: () => app.getVersion(),
     systemVersion: () => process.getSystemVersion(),
-    locale: () => app.getLocale().startsWith("zh") ? "zh-TW" : "en",
+    locale: systemLocale,
     firstLaunch: () => statSync(userData).birthtime,
     readFailures: () => {
       try {
