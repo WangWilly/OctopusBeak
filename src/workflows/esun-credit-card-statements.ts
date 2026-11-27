@@ -48,6 +48,7 @@ import { withAbort } from "./abort.ts";
 import { frameScope, type FrameScope } from "./frame-scope.ts";
 import { signIn, SignInDeadlineError, type FormPlan } from "./sign-in.ts";
 import { collapseSourceWhitespace } from "../lib/automation/source-text.ts";
+import { nextIsoDate } from "./iso-date.ts";
 
 const BANK_ENTRY_URL = "https://ebank.esunbank.com.tw/index.jsp";
 
@@ -238,12 +239,6 @@ function isoDate(value: string): string | undefined {
     date.getUTCDate() !== day
   ) return undefined;
   return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-}
-
-function nextIsoDate(value: string): string {
-  const date = new Date(`${value}T00:00:00.000Z`);
-  date.setUTCDate(date.getUTCDate() + 1);
-  return date.toISOString().slice(0, 10);
 }
 
 /** Build only cycles whose predecessor close date is present as issuer evidence. */

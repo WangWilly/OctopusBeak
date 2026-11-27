@@ -59,6 +59,7 @@ import { fubonEbankSite, type FubonEbankSite, type FubonRoute } from "./fubon-eb
 import { StatementComponentAbsentError } from "../lib/automation/product-collection.ts";
 import { taipeiDate } from "../lib/time/timezone.ts";
 import { collapseSourceWhitespace } from "../lib/automation/source-text.ts";
+import { nextIsoDate } from "./iso-date.ts";
 
 export type FubonStatementPeriodProbe = {
   periodOffset: number;
@@ -1026,12 +1027,6 @@ async function readSettledStatementSummaries(
       paymentCells,
     ),
   ];
-}
-
-function nextIsoDate(value: string): string {
-  const date = new Date(`${value}T00:00:00.000Z`);
-  date.setUTCDate(date.getUTCDate() + 1);
-  return date.toISOString().slice(0, 10);
 }
 
 export function resolveFubonSettledStatementCycles(
