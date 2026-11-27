@@ -4,7 +4,6 @@ import type {
 } from "../automation/server/store.ts";
 import type { ExchangeRatePersistencePort } from "../../ledger/exchange-rates.ts";
 import { isCommitAttemptReport } from "../automation/commit-attempt.ts";
-import type { PGliteMaicoinPersistencePort } from "../../ledger/pglite/maicoin-operational.ts";
 import { isPreviewProduct, type PGlitePreviewFinancialDataPort } from "../../ledger/pglite/preview-financial-data.ts";
 import {
   refusalDiagnosticCode,
@@ -34,7 +33,6 @@ export const PGLITE_OPERATIONAL_RPC_VERSION = 1 as const;
 type OperationalPorts = {
   automation: AutomationPersistencePort;
   exchangeRates: ExchangeRatePersistencePort;
-  maicoin: PGliteMaicoinPersistencePort;
   preview: PGlitePreviewFinancialDataPort;
 };
 type OperationalDomain = keyof OperationalPorts;
@@ -244,32 +242,6 @@ export const PGLITE_OPERATIONAL_CONTRACTS: Readonly<Record<PGliteOperationalOper
       && finiteNumber((row as Record<string, unknown>).twdPerUnit),
     ),
   },
-  "maicoin.startRun": {
-    workflow: "write",
-    accepts: (args) => args.length === 1
-      && stringFields(args[0], ["syncRunId", "startedAt", "subAccount"])
-      && Array.isArray((args[0] as Record<string, unknown>).walletTypes)
-      && ((args[0] as Record<string, unknown>).walletTypes as unknown[]).every(stringValue)
-      && Number.isSafeInteger((args[0] as Record<string, unknown>).statementLimit)
-      && plainRecord((args[0] as Record<string, unknown>).record),
-  },
-  "maicoin.appendSnapshots": {
-    workflow: "write",
-    accepts: (args) => args.length === 1 && Array.isArray(args[0]) && (args[0] as unknown[]).length <= 100
-      && (args[0] as unknown[]).every((row) => stringFields(row,
-        ["snapshotId", "syncRunId", "capturedAt", "subAccount", "walletType", "currency", "rawAccountJson"])),
-  },
-  "maicoin.appendStatementRows": {
-    workflow: "write",
-    accepts: (args) => args.length === 1 && Array.isArray(args[0]) && (args[0] as unknown[]).length <= 100
-      && (args[0] as unknown[]).every((row) => stringFields(row,
-        ["statementId", "syncRunId", "capturedAt", "endpoint", "rowType", "externalId", "rawPayloadJson"])),
-  },
-  "maicoin.finishRun": {
-    workflow: "call",
-    accepts: (args) => args.length === 1 && stringFields(args[0], ["syncRunId", "finishedAt"])
-      && plainRecord((args[0] as Record<string, unknown>).record),
-  },
   "preview.write": {
     workflow: "write",
     accepts: (args) => args.length === 1 && hasOnlyFields(args[0], ["sourceId", "institution", "product", "collection"])
@@ -325,7 +297,7 @@ export type PGliteOperationalRpcServer = {
 /**
  * Install the allowlisted operational command/query server in the worker.
  * Calls run as they arrive, not through the financial work scheduler: run
- * state, preview and MaiCoin writes must not wait behind background reads
+ * state and preview writes must not wait behind background reads
  * (ADR 0118).
  */
 export type PGliteOperationalRpcServerOptions = Readonly<{

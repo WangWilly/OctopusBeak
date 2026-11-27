@@ -536,7 +536,6 @@ export async function seedAppDemo(userData: string) {
       humanAssistance: { request: async () => { throw new Error("MaiCoin does not request assistance."); } },
       financialCommit,
       commitAttempts: { record: async () => undefined },
-      maicoinPersistence: child.operationalProvider.maicoin,
       events: { append: async () => undefined },
       now: () => `${runDate}T01:35:00.000Z`,
     } as never);

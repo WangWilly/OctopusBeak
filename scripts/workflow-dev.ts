@@ -561,7 +561,6 @@ async function main(args = process.argv.slice(2)) {
       input = jsonInputFromEnvironment(flagValue(flags, "--input-env"));
     }
     if (!definition || input === undefined) fail("module-invalid");
-    if (definition.requiresMaicoinPersistence) fail("unsupported-persistence");
 
     const interrupt = abortOnInterrupt();
     let dryRunCount = 0;

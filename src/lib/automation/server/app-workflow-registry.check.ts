@@ -14,7 +14,6 @@ test("a workflow reaches the PGlite RPC exactly when it declares a capability", 
   const cases: readonly [Partial<WorkflowDefinition>, boolean][] = [
     [{}, false],
     [{ requiresFinancialCommit: true }, true],
-    [{ requiresMaicoinPersistence: true }, true],
     [{ requiresTdcc: true }, true],
     [{ requiresExchangeRates: true }, true],
     [{ requiresAccountIdentity: true }, true],

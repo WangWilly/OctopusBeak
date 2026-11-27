@@ -85,8 +85,7 @@ test("main-side PGlite RPC failures record safe correlated original errors befor
   const operationalError = sqlStateFailure();
   const operationalProvider = {
     automation: {},
-    exchangeRates: {},
-    maicoin: { finishRun: async () => { throw operationalError; } },
+    exchangeRates: { readExchangeRates: async () => { throw operationalError; } },
   } as unknown as PGliteOperationalDomains;
   const operationalServer = createPGliteOperationalRpcServer(operationalPorts[1], operationalProvider);
   const operationalClient = createPGliteOperationalRpcClient(operationalPorts[0], undefined, correlation);
@@ -111,17 +110,13 @@ test("main-side PGlite RPC failures record safe correlated original errors befor
       /PGlite financial operation failed/u,
     );
     await assert.rejects(
-      operationalClient.provider.maicoin.finishRun({
-        syncRunId: "run",
-        finishedAt: "2026-09-22T00:00:00.000Z",
-        record: {},
-      } as never),
+      operationalClient.provider.exchangeRates.readExchangeRates(),
       /PGlite operational operation failed/u,
     );
 
     const lines = (await readFile(path, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
     assert.equal(lines.length, 2);
-    assert.deepEqual(lines.map((row) => row.operation), ["financial.source.admit", "maicoin.finishRun"]);
+    assert.deepEqual(lines.map((row) => row.operation), ["financial.source.admit", "exchangeRates.readExchangeRates"]);
     for (const row of lines) {
       assert.equal(row.workflowId, correlation.workflowId);
       assert.equal(row.taskRunId, correlation.taskRunId);

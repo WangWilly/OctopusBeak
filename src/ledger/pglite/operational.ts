@@ -57,10 +57,6 @@ import {
   PGLITE_OPERATIONAL_BASELINE_V3_TO_V4_SQL,
   PGLITE_OPERATIONAL_BASELINE_V4_TO_V5_SQL,
 } from "./operational-sql.ts";
-import {
-  createPGliteMaicoinPersistence,
-  type PGliteMaicoinPersistencePort,
-} from "./maicoin-operational.ts";
 
 export { PGLITE_OPERATIONAL_BASELINE_VERSION };
 
@@ -977,7 +973,6 @@ export function createPgliteOperationalStore(
 export type PGliteOperationalProvider = Readonly<{
   automation: AutomationPersistencePort;
   exchangeRates: ExchangeRatePersistencePort;
-  maicoin: PGliteMaicoinPersistencePort;
   preview: PGlitePreviewFinancialDataPort;
 }>;
 
@@ -988,7 +983,6 @@ export function createPgliteOperationalProvider(
   return Object.freeze({
     automation: operational,
     exchangeRates: operational,
-    maicoin: createPGliteMaicoinPersistence(database),
     preview: createPGlitePreviewFinancialData(database),
   });
 }

@@ -11,7 +11,6 @@ import {
   createPGliteFinancialRegistry,
 } from "../../../../electron/pglite-financial-registry.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
-import { applyPgliteMaicoinOperationalSchema } from "../../../ledger/pglite/maicoin-operational.ts";
 import { createPgliteOperationalProvider } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import { planForCheck } from "./task-run-check-support.ts";
@@ -33,7 +32,6 @@ test("MaiCoin worker uses injected financial commit and operational RPC without 
   const previousDirectory = process.cwd();
   const database = await createTestPGlite("ledger+operational", { dataDir: join(root, "pglite") });
   const store = new PGliteStore(database);
-  await applyPgliteMaicoinOperationalSchema(store);
   const operational = createPgliteOperationalProvider(store);
   const server = createPGliteChildRpcServer({
     provider: { operational, financial: createPGliteFinancialLocalPort(createPGliteFinancialRegistry(store, createPGliteFinancialPageActions(store))) },
