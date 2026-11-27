@@ -6,9 +6,6 @@ function maicoinInput(environment: NodeJS.ProcessEnv) {
       accessKey: environment.MAX_ACCESS_KEY ?? "",
       secretKey: environment.MAX_SECRET_KEY ?? "",
       subAccount: environment.MAX_SUB_ACCOUNT?.trim() || "main",
-      ...(environment.MAX_PROVIDER_EMAIL?.trim()
-        ? { providerEmail: environment.MAX_PROVIDER_EMAIL.trim() }
-        : {}),
     },
   };
 }
