@@ -33,6 +33,11 @@ import { recordedFinancialCommitPort, type CommitAttemptReport } from "../commit
 
 const fubon = taskById("fubon-all-statements")!;
 const key = (...parts: string[]) => ["LIBRETTO", "CLOUD", "FUBON", ...parts].join("_");
+const cathayKey = (...parts: string[]) => ["LIBRETTO", "CLOUD", "CATHAY", ...parts].join("_");
+const anotherSource = {
+  settings: { [cathayKey("ENABLED")]: "true", [cathayKey("STATEMENT_TYPES")]: "domestic" },
+  credentials: { [cathayKey("USER_ID")]: "another-source-user-id" },
+};
 
 const launchSettings = {
   [key("ENABLED")]: "true",
@@ -61,6 +66,7 @@ test("the fingerprint ignores secrets, schedules, and presentation but tracks se
   assert.ok(!same({ settings: { [key("STATEMENT_TYPES")]: "deposit" } }));
   assert.ok(!same({ settings: { [key("ENABLED")]: "false" } }));
   assert.ok(!same({ credentials: { [key("USER_ID")]: "another-user-id" } }));
+  assert.ok(same(anotherSource), "another source's settings and sign-in details are not this run's scope");
   assert.doesNotMatch(fingerprint, /synthetic/u);
 });
 
@@ -309,6 +315,33 @@ test("changing the Statement Selection mid-run refuses the next commit and ends 
     run?.appWorkflowOutcome?.summary?.products?.map((product) => [product.typeId, product.status, product.errorCode]),
     [["deposit", "success", undefined], ["credit_card", "failed", "collection-scope-changed"]],
   );
+});
+
+test("disabling the run's source mid-run refuses the next commit", async () => {
+  const { result, run, commits, attempts } = await runWithMidRunEdit({
+    settings: { [key("ENABLED")]: "false" },
+  });
+  assert.equal(commits, 1);
+  assert.deepEqual(attempts, ["completed", "refused"]);
+  assert.equal(result.status, "failed");
+  assert.equal(run?.appWorkflowOutcome?.errorCode, "collection-scope-changed");
+});
+
+test("changing the run's text sign-in field mid-run refuses the next commit", async () => {
+  const { result, run, commits, attempts } = await runWithMidRunEdit({
+    credentials: { [key("USER_ID")]: "another-user-id" },
+  });
+  assert.equal(commits, 1);
+  assert.deepEqual(attempts, ["completed", "refused"]);
+  assert.equal(result.status, "failed");
+  assert.equal(run?.appWorkflowOutcome?.errorCode, "collection-scope-changed");
+});
+
+test("changing another source's settings and sign-in details mid-run commits normally", async () => {
+  const { result, run, commits } = await runWithMidRunEdit(anotherSource);
+  assert.equal(commits, 2);
+  assert.equal(result.status, "completed");
+  assert.equal(run?.appWorkflowOutcome?.errorCode, null);
 });
 
 test("changing only the password mid-run commits normally", async () => {
