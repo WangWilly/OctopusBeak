@@ -146,3 +146,36 @@ test("canonical products carry daily history only for the accounts they show", (
   assert.deepEqual(product.dailyHistoryByAccount, {});
   assert.deepEqual(product.dailyHistory.map((item) => item.date), ["2026-09-08"]);
 });
+
+test("an account's last update is the Taipei date of its observedAt", () => {
+  const account = (id: string, observedAt: string) => ({
+    id,
+    label: id,
+    institution: "Synthetic",
+    institutionKey: "fubon",
+    product: "Deposit",
+    group: "asset",
+    kind: "deposit",
+    amounts: [],
+    marginAmounts: [],
+    positions: [],
+    transactionCount: 0,
+    observedAt,
+    availability: "awaiting",
+  });
+  const projection = {
+    availability: "available",
+    accounts: [account("stored-utc", "2026-01-31T16:00:00.000Z"), account("taipei", "2026-01-31T23:59:59+08:00")],
+    coveredAccounts: [],
+    positions: [],
+    transactions: [],
+    sourceGaps: [],
+    importedAt: null,
+    knowledgePoint: 1,
+  } as unknown as Parameters<typeof mapCanonicalProduct>[0];
+
+  assert.deepEqual(
+    mapCanonicalProduct(projection, "assets").accounts.map(({ id, lastUpdated }) => ({ id, lastUpdated })),
+    [{ id: "stored-utc", lastUpdated: "2026-02-01" }, { id: "taipei", lastUpdated: "2026-01-31" }],
+  );
+});
