@@ -1,7 +1,10 @@
 import {
-  chmodSync,
+  closeSync,
   existsSync,
+  fchmodSync,
+  fsyncSync,
   mkdirSync,
+  openSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -110,13 +113,40 @@ function readJsonRecord(path: string) {
   return parsed as Record<string, unknown>;
 }
 
+function flushed<T>(path: string, flags: string, mode: number | undefined, write: (descriptor: number) => T): T {
+  const descriptor = openSync(path, flags, mode);
+  try {
+    const result = write(descriptor);
+    fsyncSync(descriptor);
+    return result;
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+/**
+ * Replace a file so that a power loss leaves either the old content or the
+ * new, never an empty or cut file. The content is flushed before the rename
+ * and the folder after it. `credentials.json` holds the Card identity secret,
+ * and losing it costs a Canonical Reset (ADR 0149).
+ */
 export function atomicWriteFile(path: string, text: string, mode = 0o600) {
-  mkdirSync(dirname(path), { recursive: true });
+  const folder = dirname(path);
+  mkdirSync(folder, { recursive: true });
   // Worker threads share the pid, so each write gets its own temporary file.
   const tempPath = `${path}.tmp-${process.pid}-${randomUUID()}`;
-  writeFileSync(tempPath, text, { encoding: "utf8", mode });
-  chmodSync(tempPath, mode);
-  renameSync(tempPath, path);
+  try {
+    flushed(tempPath, "wx", mode, (descriptor) => {
+      writeFileSync(descriptor, text, "utf8");
+      // The process umask can narrow the mode `open` was given.
+      fchmodSync(descriptor, mode);
+    });
+    renameSync(tempPath, path);
+  } catch (error) {
+    rmSync(tempPath, { force: true });
+    throw error;
+  }
+  flushed(folder, "r", undefined, () => undefined);
 }
 
 function cleanSettings(record: Record<string, unknown>): AutomationSettingsFile {

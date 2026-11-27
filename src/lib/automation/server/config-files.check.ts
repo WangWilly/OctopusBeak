@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -9,6 +9,7 @@ import {
   CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY,
   FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY,
   TDCC_HOST_KEYS,
+  atomicWriteFile,
   automationConfigEnv,
   createAutomationCredentialStore,
   createAutomationSettingsStore,
@@ -318,6 +319,20 @@ try {
     assert.equal(readAutomationSettingsFile(unreadableSettingsPath).LIBRETTO_CLOUD_FUBON_ENABLED, false);
     assert.equal(readFileSync(unreadableCredentialsPath, "utf8"), envelope);
     assert.equal(readFileSync(unreadableEnvPath, "utf8"), `${fubonPasswordKey}=legacy-pw\n`);
+  }
+  {
+    const folder = join(dir, "atomic-write");
+    const target = join(folder, "file.json");
+    atomicWriteFile(target, "first\n");
+    atomicWriteFile(target, "second\n");
+    assert.equal(readFileSync(target, "utf8"), "second\n");
+    assert.equal(statSync(target).mode & 0o777, 0o600);
+    assert.deepEqual(readdirSync(folder), ["file.json"], "a finished write leaves no temporary file");
+
+    const occupied = join(folder, "occupied");
+    mkdirSync(join(occupied, "child"), { recursive: true });
+    assert.throws(() => atomicWriteFile(occupied, "blocked\n"), "a folder with content cannot be replaced by a file");
+    assert.deepEqual(readdirSync(folder).sort(), ["file.json", "occupied"], "a failed write removes its temporary file");
   }
 } finally {
   rmSync(dir, { recursive: true, force: true });
