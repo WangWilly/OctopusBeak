@@ -2,6 +2,8 @@
 
 Status: accepted
 
+See [ADR 0162](./0162-the-worker-s-loopback-devtools-endpoint-is-an-accepted-local-exposure.md) for who can reach the loopback DevTools endpoint and why that is accepted.
+
 Refines [ADR 0128](0128-a-task-run-starts-through-one-admission-with-no-await-before-its-claim.md): the runtime is still built once with its provider, and it is now also built with the host its rounds run on. Keeps the per-execution hosted page of [ADR 0067](0067-workflow-execution-owns-per-execution-state.md), the host-call contract table of [ADR 0072](0072-host-calls-go-through-one-contract-table.md) and the PGlite child RPC of [ADR 0115](0115-a-crashed-pglite-worker-restarts-on-the-same-database.md) and [ADR 0118](0118-pglite-worker-rpcs-share-one-call-core.md).
 
 ## Context

@@ -26,7 +26,7 @@ These failures still end the App, as ADR 0150 requires. They now explain first a
 ## Considered options
 
 - **Keep the renderer-triggered exit.** A view that is out of step with the host would fail closed ([PRODUCT.md](../../PRODUCT.md), principle 4). Rejected. A renderer exception ended a collection in flight. The host already reports its own snapshot failures, so the renderer's report acted alone only when the renderer was the broken side, and a reload repairs that side. The host admits every start ([ADR 0128](./0128-a-task-run-starts-through-one-admission-with-no-await-before-its-claim.md)), so a stale page cannot start a second run.
-- **A dialog with no window.** Rejected for the reason above. The ledger recovery dialog of ADR 0150 still falls back to one when no window is open.
+- **A dialog with no window.** Rejected for the reason above. The ledger recovery dialog of ADR 0150, when it opens while the App runs, is a sheet on a window in the same way. The dialogs startup shows before any window exists stay without one: nothing else runs yet, and the App was just opened.
 - **Keep the direct `app.exit(1)` and add the dialog before it.** Rejected. It explains, but still skips the ledger close and orphans running collections.
 
 ## Consequences
