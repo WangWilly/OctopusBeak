@@ -38,14 +38,20 @@ assert.match(
 );
 assert.match(
   source,
-  /const recoverLedger = \(error: unknown\) => \{\s*if \(ledgerRecoveryPending \|\| automationRuntimeFatalHandled \|\| ledgerRestoreSwappingBack\) return;\s*ledgerRecoveryPending = true;[\s\S]*?recoverUnusableLedger\(ledgerDataDir,[\s\S]*?operationalRuntime\.worker\.onError\(\(error\) => \{\s*if \(failLedgerRestore\(error\)\) return;\s*if \(isLedgerUnusable\(error\)\) recoverLedger\(error\);\s*\}\);\s*void automationRuntimeReady\.catch\(\(error\) => \{[\s\S]*?if \(failLedgerRestore\(error\)\) return;\s*if \(isLedgerUnusable\(error\)\) \{\s*recoverLedger\(error\);/u,
+  /const recoverLedger = \(error: unknown\) => \{\s*if \(ledgerRecoveryPending \|\| orderedQuit\.fatalReported\(\) \|\| ledgerRestoreSwappingBack\) return;\s*ledgerRecoveryPending = true;[\s\S]*?recoverUnusableLedger\(ledgerDataDir,[\s\S]*?operationalRuntime\.worker\.onError\(\(error\) => \{\s*if \(failLedgerRestore\(error\)\) return;\s*if \(isLedgerUnusable\(error\)\) recoverLedger\(error\);\s*\}\);\s*void automationRuntimeReady\.catch\(\(error\) => \{[\s\S]*?if \(failLedgerRestore\(error\)\) return;\s*if \(isLedgerUnusable\(error\)\) \{\s*recoverLedger\(error\);/u,
   "an unusable ledger, at startup or after a restart mid-session, asks the person what to do instead of ending the App",
 );
 assert.match(
   source,
-  /if \(automationRuntimeFatalHandled \|\| ledgerRecoveryPending \|\| ledgerRestoreSwappingBack\) return;/u,
+  /fatalIgnored: \(\) => ledgerRecoveryPending \|\| ledgerRestoreSwappingBack,/u,
   "no other fatal report ends the App while the person is choosing",
 );
+assert.match(
+  source,
+  /onAutomationRuntimeFatal: orderedQuit\.reportFatal,/u,
+  "the desktop service's fatal reports take the one fatal path, which explains and then quits in order",
+);
+assert.doesNotMatch(source, /removeListener\("before-quit"/u, "no fatal report skips the ordinary quit");
 assert.match(source, /automationRuntime\?\.abortAll\(\)/u);
 assert.match(
   source,
@@ -86,7 +92,7 @@ assert.match(
   /powerMonitor\.on\("resume", \(\) => services\.wake\(\)\);\s*powerMonitor\.on\("unlock-screen", \(\) => services\.wake\(\)\);/u,
   "schedules read the clock again when the Mac wakes, since timers do not count sleep",
 );
-assert.match(source, /const handleBeforeQuit = createBeforeQuitHandler\(\{\s*cleanup: async \(\) => \{\s*hostServices\?\.stop\(\);/u);
+assert.match(source, /const orderedQuit = createOrderedQuit\(\{\s*cleanup: async \(\) => \{\s*hostServices\?\.stop\(\);/u);
 assert.match(
   source,
   /run: \{\s*schedules: !cdpFixture && !packagedBrowserFixture,\s*usagePing: app\.isPackaged && !cdpFixture && !packagedBrowserFixture,\s*\}/u,
@@ -102,7 +108,7 @@ assert.match(
   /closeDatabaseDeadlineMs: QUIT_CLEANUP_WAIT_MS \+ PGLITE_WORKER_SHUTDOWN_TIMEOUT_MS \+ \d/,
   "the quit deadline leaves the worker its whole shutdown bound after cleanup",
 );
-assert.match(source, /app\.on\("before-quit", handleBeforeQuit\)/);
+assert.match(source, /app\.on\("before-quit", orderedQuit\.beforeQuit\)/);
 assert.match(
   source,
   /hasOccurrenceBeenAttempted:\s*\(occurrenceUtc\)\s*=>\s*operationalRuntime\.provider\.automation\.hasOccurrenceBeenAttempted\(\s*"exchange-rates",\s*occurrenceUtc,?\s*\)/,

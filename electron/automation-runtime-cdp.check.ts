@@ -582,9 +582,10 @@ test("isolated Electron/CDP runtime invariant exits on an unknown active task", 
     if (!browser) return;
     const page = await waitForRendererPage(browser, 10_000);
     await navigateToAutomation(page);
+    // The fatal quit closes the ledger first, within the ordinary quit's bound.
     const result = await Promise.race([
       exited,
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), 5_000)),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 10_000)),
     ]);
     assert.ok(result, "Fatal invariant process did not exit.");
     assertUnknownActiveFatalOutput(output, errorOutput, result!);
