@@ -1,3 +1,4 @@
+import { isTaipeiInstant } from "../../lib/time/timezone.ts";
 import { canonicalDigest } from "./canonical-digest.ts";
 import { combineDomesticDepositDescription } from "./domestic-deposit-description.ts";
 import type { CanonicalSourceEvidence } from "./canonical-source-evidence.ts";
@@ -160,12 +161,6 @@ function validTime(value: string): boolean {
   const [h, m, s] = value.split(":").map(Number);
   return h! < 24 && m! < 60 && s! < 60;
 }
-function validObservedAt(value: string): boolean {
-  return (
-    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?\+08:00$/.test(value) &&
-    Number.isFinite(Date.parse(value))
-  );
-}
 function amountClass(value: string): "zero" | "nonzero" | "invalid" {
   const normalized = cell(value).replace(/,/g, "");
   if (!/^\d+(?:\.\d+)?$/.test(normalized)) return "invalid";
@@ -192,11 +187,7 @@ export function admitCtbcDomesticDepositCaptureEvidence(
     capture.providerGuaranteed !== false
   )
     diagnostics.push("contract-invalid");
-  if (
-    typeof capture?.observedAt !== "string" ||
-    !validObservedAt(capture.observedAt)
-  )
-    diagnostics.push("observed-at-invalid");
+  if (!isTaipeiInstant(capture?.observedAt)) diagnostics.push("observed-at-invalid");
   if (
     typeof capture?.account?.accountId !== "string" ||
     !cell(capture.account.accountId)

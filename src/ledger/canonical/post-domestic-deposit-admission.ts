@@ -1,3 +1,4 @@
+import { isTaipeiInstant } from "../../lib/time/timezone.ts";
 import { canonicalDigest } from "./canonical-digest.ts";
 import {
   assignCanonicalFinancialDepositOccurrenceGroups,
@@ -128,13 +129,6 @@ function validLocalSecond(value: string): boolean {
   return hour! < 24 && minute! < 60 && second! < 60;
 }
 
-function validObservedAt(value: string): boolean {
-  return (
-    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+08:00$/.test(value) &&
-    !Number.isNaN(Date.parse(value))
-  );
-}
-
 function validAmount(value: string): boolean {
   const clean = normalizedCell(value).replace(/,/g, "");
   return clean === "" || /^\d+(?:\.\d+)?$/.test(clean);
@@ -160,11 +154,7 @@ export function admitPostDomesticDepositCaptureEvidence(
     candidate.providerGuaranteed !== false
   )
     diagnostics.push("contract-invalid");
-  if (
-    typeof candidate?.observedAt !== "string" ||
-    !validObservedAt(candidate.observedAt)
-  )
-    diagnostics.push("observed-at-invalid");
+  if (!isTaipeiInstant(candidate?.observedAt)) diagnostics.push("observed-at-invalid");
   if (
     typeof candidate?.account?.value !== "string" ||
     !normalizedCell(candidate.account.value)
