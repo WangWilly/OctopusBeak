@@ -1,4 +1,5 @@
 import { collapseSourceWhitespace } from "../../lib/automation/source-text.ts";
+import { isTaipeiInstant } from "../../lib/time/timezone.ts";
 import { canonicalDigest } from "./canonical-digest.ts";
 import type { TransactionCounterpartyAccountEvidenceInput } from "./counterparty-account-evidence.ts";
 import {
@@ -94,7 +95,7 @@ export const FUBON_DOMESTIC_DEPOSIT_CAPTURE_FIXTURE_V2: FubonDomesticDepositCapt
   {
     evidenceVersion: FUBON_DOMESTIC_DEPOSIT_EVIDENCE_VERSION,
     source: "fubon",
-    observedAt: "2026-01-31T12:00:00.000Z",
+    observedAt: "2026-01-31T20:00:00+08:00",
     account: {
       value: "SYNTHETIC-FUBON-ACCOUNT-VALUE",
       label: "SYNTHETIC FUBON ACCOUNT (012)",
@@ -423,17 +424,6 @@ function validDate(value: string): boolean {
   );
 }
 
-function validObservedAt(value: unknown): value is string {
-  if (typeof value !== "string") return false;
-  const match = value.match(
-    /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/,
-  );
-  if (!match || !validDate(match[1]!)) return false;
-  if (Number(match[2]) > 23 || Number(match[3]) > 59 || Number(match[4]) > 59)
-    return false;
-  return Number.isFinite(Date.parse(value));
-}
-
 function validRange(
   value: unknown,
 ): value is { startDate: string; endDate: string } {
@@ -518,7 +508,7 @@ export function admitFubonDomesticDepositCaptureEvidence(
   if (capture.evidenceVersion !== FUBON_DOMESTIC_DEPOSIT_EVIDENCE_VERSION)
     diagnostic(diagnostics, "evidence-version-invalid");
   if (capture.source !== "fubon") diagnostic(diagnostics, "source-invalid");
-  if (!validObservedAt(capture.observedAt))
+  if (!isTaipeiInstant(capture.observedAt))
     diagnostic(diagnostics, "observed-at-invalid");
 
   const account = capture.account;

@@ -1,4 +1,5 @@
 import { exactToNumber } from "../../shared-money/exact-money.ts";
+import { taipeiDate } from "../../time/timezone.ts";
 import type {
   CanonicalOverviewAccount,
   CanonicalOverviewAmount,
@@ -142,7 +143,7 @@ function mapAccount(account: CanonicalOverviewAccount): AccountRowDto {
       : {}),
     transactionCount: account.transactionCount,
     assetPositionCount: account.positions.length,
-    lastUpdated: account.observedAt ? account.observedAt.slice(0, 10) : null,
+    lastUpdated: account.observedAt ? taipeiDate(account.observedAt) : null,
     valueAvailability: account.availability,
   };
 }

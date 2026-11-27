@@ -336,3 +336,13 @@ test("a continuation needs account-number evidence and an opaque key", () => {
   );
   assert.throws(() => admitWithAccountValue(twdValue, undefined, "not-an-opaque-key"), /opaque source token/u);
 });
+
+test("a Fubon capture's observedAt must be a Taipei instant to the second", () => {
+  for (const observedAt of ["2026-01-31T12:00:00.000Z", "2026-01-31T20:00:00.000+08:00", "2026-01-31T21:00:00+09:00"]) {
+    const raw = structuredClone(fubon.FUBON_DOMESTIC_DEPOSIT_CAPTURE_FIXTURE_V2);
+    raw.observedAt = observedAt;
+    const result = fubon.admitFubonDomesticDepositCaptureEvidence(raw);
+    assert.equal(result.status, "rejected", observedAt);
+    assert.deepEqual(result.diagnostics, ["observed-at-invalid"], observedAt);
+  }
+});

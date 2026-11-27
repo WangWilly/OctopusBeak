@@ -1,3 +1,4 @@
+import { isTaipeiInstant } from "../../lib/time/timezone.ts";
 import { canonicalDigest } from "./canonical-digest.ts";
 // Pure Yuanta domestic-deposit source and financial admission contracts.
 import {
@@ -173,13 +174,6 @@ function sourceDate(value: string): string {
   return normalized;
 }
 
-function validObservedAt(value: unknown): value is string {
-  if (typeof value !== "string") return false;
-  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?\+08:00$/.test(value))
-    return false;
-  return Number.isFinite(Date.parse(value));
-}
-
 function validDigest(value: unknown): value is `sha256:${string}` {
   return typeof value === "string" && /^sha256:[A-Za-z0-9_-]+$/.test(value);
 }
@@ -255,7 +249,7 @@ export function admitYuantaDomesticDepositCaptureEvidence(
   if (capture.evidenceVersion !== YUANTA_DOMESTIC_DEPOSIT_EVIDENCE_VERSION)
     diagnostic(diagnostics, "evidence-version-invalid");
   if (capture.source !== "yuanta") diagnostic(diagnostics, "source-invalid");
-  if (!validObservedAt(capture.observedAt))
+  if (!isTaipeiInstant(capture.observedAt))
     diagnostic(diagnostics, "observed-at-invalid");
   if (
     !capture.account ||

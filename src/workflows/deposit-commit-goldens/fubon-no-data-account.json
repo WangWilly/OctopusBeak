@@ -65,7 +65,7 @@
                   "accountType": "depository",
                   "currency": "TWD"
                 },
-                "observedAt": "2026-09-25T00:00:00.000Z",
+                "observedAt": "2026-09-25T08:00:00+08:00",
                 "scope": {
                   "startDate": "2026-08-26",
                   "endDate": "2026-09-25",
@@ -236,7 +236,7 @@
               "request": {
                 "sourceConnectionKey": "sha256:jnQDK_AB5eSHKb7PBHIKuuqp-8FRfDlmWqC1F0pHppU",
                 "integrationNamespace": "fubon",
-                "observedAt": "2026-09-25T00:00:00.000Z",
+                "observedAt": "2026-09-25T08:00:00+08:00",
                 "counterpartyEvidence": [
                   {
                     "captureId": "fubon-financial-t+0-dpxNUBxz1737-0",
@@ -286,7 +286,7 @@
                   "accountType": "depository",
                   "currency": "TWD"
                 },
-                "observedAt": "2026-09-25T00:00:00.000Z",
+                "observedAt": "2026-09-25T08:00:00+08:00",
                 "scope": {
                   "startDate": "2026-08-26",
                   "endDate": "2026-09-25",
@@ -346,7 +346,7 @@
               "request": {
                 "sourceConnectionKey": "sha256:jnQDK_AB5eSHKb7PBHIKuuqp-8FRfDlmWqC1F0pHppU",
                 "integrationNamespace": "fubon",
-                "observedAt": "2026-09-25T00:00:00.000Z",
+                "observedAt": "2026-09-25T08:00:00+08:00",
                 "counterpartyEvidence": []
               }
             }

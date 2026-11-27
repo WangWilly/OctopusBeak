@@ -5,6 +5,7 @@ import { isProductAccount, mapCanonicalCreditCard, mapCanonicalProduct } from ".
 import { currentNetPosition, valuationDateFor } from "../../lib/shared-ledger/twd-valuation.ts";
 import type { AccountRowDto, CurrencyAmountDto, NetPositionDto, OverviewSummaryDto } from "../../lib/shared-ledger/types.ts";
 import { indexExchangeRates } from "../../lib/shared-money/exchange-rates.ts";
+import { taipeiDate } from "../../lib/time/timezone.ts";
 import type {
   CanonicalOverviewAmount,
   CanonicalOverviewCurrentQueryResult,
@@ -164,7 +165,7 @@ function mapOverview(
     marginAmountLines: account.marginAmounts.map(exactAmountToDto),
     transactionCount: account.transactionCount,
     assetPositionCount: account.positions.length,
-    lastUpdated: account.observedAt ? account.observedAt.slice(0, 10) : null,
+    lastUpdated: account.observedAt ? taipeiDate(account.observedAt) : null,
     valueAvailability: account.availability,
     ...(account.creditCard ? { creditCard: mapCanonicalCreditCard(account.creditCard) } : {}),
   }));

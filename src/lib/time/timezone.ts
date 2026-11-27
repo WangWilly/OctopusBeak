@@ -132,6 +132,17 @@ export function taipeiInstant(instant: string): string {
   return `${new Date(time + TAIPEI_OFFSET_MS).toISOString().slice(0, 19)}+08:00`;
 }
 
+/** Whether a value is exactly the text `taipeiInstant` produces, for a real calendar date and time. */
+export function isTaipeiInstant(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\+08:00$/.exec(value);
+  if (!match) return false;
+  const [year, month, day, hour, minute, second] = match.slice(1).map(Number) as [number, number, number, number, number, number];
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day &&
+    hour <= 23 && minute <= 59 && second <= 59;
+}
+
 /** The calendar date in Asia/Taipei for an instant, as YYYY-MM-DD. */
 export function taipeiDate(instant: string | number | Date): string {
   return new Date(new Date(instant).getTime() + TAIPEI_OFFSET_MS).toISOString().slice(0, 10);

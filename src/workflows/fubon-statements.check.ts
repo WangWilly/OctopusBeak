@@ -359,6 +359,11 @@ try {
     "identical Fubon rows retain two semantic occurrence slots",
   );
   assert.equal(depositItem.command.request.capture.occurrenceGroupCoverage?.length, 1);
+  assert.equal(
+    depositItem.command.request.capture.observedAt,
+    "2026-01-31T20:00:00+08:00",
+    "a Fubon capture carries the injected clock's Taipei instant",
+  );
   assert.deepEqual(await readdir(typedOutputDir), [], "Fubon collection must not create source, output, or log files");
 
   const cancellation = new AbortController();

@@ -1,6 +1,6 @@
 # The snapshot module verifies the provider response and stamps observed time
 
-Status: accepted; amended by [ADR 0110](0110-one-module-verifies-every-provider-response.md), which moves response verification and strict decoding into a module that statement history reads also use
+Status: accepted; amended by [ADR 0110](0110-one-module-verifies-every-provider-response.md), which moves response verification and strict decoding into a module that statement history reads also use; amended by [ADR 0164](0164-a-domestic-deposit-capture-s-observedat-is-one-taipei-instant.md), which gives the CTBC, Post, Fubon and Yuanta domestic deposit admissions one `isTaipeiInstant` validator in place of their own
 
 Builds on [ADR 0092](0092-one-module-captures-every-current-state-snapshot.md) and reverses its one clause that kept "the endpoint and header checks" with each bank's row parser.
 
