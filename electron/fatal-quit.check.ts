@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { automationRuntimeFatalDialog, createOrderedQuit } from "./fatal-quit.ts";
+import { automationRuntimeFatalDialog, createOrderedQuit, routeLedgerFailure } from "./fatal-quit.ts";
+import { LedgerUnusableError } from "./ledger-unusable.ts";
+import type { PGliteViewWorkerClient } from "./pglite-view-worker-client.ts";
+import { MAX_RESTARTS_PER_WINDOW, superviseWorker } from "./pglite-worker-supervisor.ts";
 
 const settle = async () => {
   for (let i = 0; i < 8; i += 1) await new Promise((resolve) => setImmediate(resolve));
@@ -94,4 +97,68 @@ test("the dialog names the stage and code in the system language", () => {
   }
   assert.match(automationRuntimeFatalDialog("zh-TW", FATAL).message, /內部問題/u);
   assert.match(automationRuntimeFatalDialog("en", FATAL).message, /internal problem/u);
+});
+
+/** A worker generation that opens at once and crashes when told to. */
+function crashingWorker() {
+  const listeners = new Set<(error: Error) => void>();
+  const client = {
+    ready: Promise.resolve(),
+    operationalProvider: {} as never,
+    operationalRequest: async () => undefined,
+    financial: { request: async () => undefined, close: () => {} },
+    subscribe: async () => async () => {},
+    onError(listener: (error: Error) => void) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    close: async () => 0,
+  } as unknown as PGliteViewWorkerClient;
+  return { client, crash: (error: Error) => { for (const listener of [...listeners]) listener(error); } };
+}
+
+function routed() {
+  const seen: Array<{ route: "restore" | "unusable" | "fatal"; stage?: string }> = [];
+  const route = routeLedgerFailure("ledger-worker", {
+    restoreFailed: () => false,
+    unusable: () => { seen.push({ route: "unusable" }); },
+    fatal: (details) => { seen.push({ route: "fatal", stage: details.stage }); },
+  });
+  return { seen, route };
+}
+
+test("a supervisor that gives up on a worker that keeps crashing takes the fatal path", async () => {
+  const generations: ReturnType<typeof crashingWorker>[] = [];
+  const supervised = superviseWorker({
+    spawn: () => {
+      const generation = crashingWorker();
+      generations.push(generation);
+      return generation.client;
+    },
+    now: () => 0,
+  });
+  const { seen, route } = routed();
+  supervised.onError(route);
+  await supervised.ready;
+
+  for (let crash = 0; crash <= MAX_RESTARTS_PER_WINDOW; crash += 1) {
+    generations.at(-1)!.crash(new Error(`exited with code ${crash}`));
+    await settle();
+  }
+  assert.equal(generations.length, MAX_RESTARTS_PER_WINDOW + 1, "the supervisor restarted up to its limit and then gave up");
+  assert.deepEqual(seen, [{ route: "fatal", stage: "ledger-worker" }]);
+});
+
+test("a worker failure that is an unusable ledger still asks the person, and a restore failure stays the restore's", () => {
+  const { seen, route } = routed();
+  route(new LedgerUnusableError("refused"));
+  assert.deepEqual(seen, [{ route: "unusable" }]);
+
+  const fatal: string[] = [];
+  routeLedgerFailure("ledger-worker", {
+    restoreFailed: () => true,
+    unusable: () => fatal.push("unusable"),
+    fatal: () => fatal.push("fatal"),
+  })(new Error("restored backup did not open"));
+  assert.deepEqual(fatal, []);
 });

@@ -1,5 +1,7 @@
+import { automationRuntimeFatalDetails } from "../src/lib/automation/runtime-invariants.ts";
 import { createBeforeQuitHandler } from "./automation-shutdown.ts";
 import type { LedgerRecoveryDeps } from "./ledger-recovery.ts";
+import { isLedgerUnusable } from "./ledger-unusable.ts";
 
 /** What a fatal report names: the finite stage and code of `automationRuntimeFatalDetails`, never an error's text. */
 export type AutomationRuntimeFatal = Readonly<{ code: string; stage: string }>;
@@ -93,5 +95,24 @@ export function createOrderedQuit(options: Omit<Parameters<typeof createBeforeQu
         .catch(() => options.log("automation-runtime-fatal-dialog-failed"))
         .then(() => options.quit());
     },
+  };
+}
+
+/**
+ * Where a ledger failure goes, from startup's readiness or from a worker the
+ * supervisor gave up on: a restored backup that did not open is handled by
+ * the restore, an unusable ledger asks the person (ADR 0150), and anything
+ * else is fatal at `stage`.
+ */
+export function routeLedgerFailure(stage: string, routes: Readonly<{
+  /** Returns whether the restore handled it. */
+  restoreFailed(error: unknown): boolean;
+  unusable(error: unknown): void;
+  fatal(details: AutomationRuntimeFatal): void;
+}>) {
+  return (error: unknown) => {
+    if (routes.restoreFailed(error)) return;
+    if (isLedgerUnusable(error)) routes.unusable(error);
+    else routes.fatal(automationRuntimeFatalDetails(stage, error));
   };
 }

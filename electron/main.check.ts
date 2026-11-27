@@ -38,8 +38,8 @@ assert.match(
 );
 assert.match(
   source,
-  /const recoverLedger = \(error: unknown\) => \{\s*if \(ledgerRecoveryPending \|\| orderedQuit\.fatalReported\(\) \|\| ledgerRestoreSwappingBack\) return;\s*ledgerRecoveryPending = true;[\s\S]*?recoverUnusableLedger\(ledgerDataDir,[\s\S]*?operationalRuntime\.worker\.onError\(\(error\) => \{\s*if \(failLedgerRestore\(error\)\) return;\s*if \(isLedgerUnusable\(error\)\) recoverLedger\(error\);\s*\}\);\s*void automationRuntimeReady\.catch\(\(error\) => \{[\s\S]*?if \(failLedgerRestore\(error\)\) return;\s*if \(isLedgerUnusable\(error\)\) \{\s*recoverLedger\(error\);/u,
-  "an unusable ledger, at startup or after a restart mid-session, asks the person what to do instead of ending the App",
+  /const recoverLedger = \(error: unknown\) => \{\s*if \(ledgerRecoveryPending \|\| orderedQuit\.fatalReported\(\) \|\| ledgerRestoreSwappingBack\) return;\s*ledgerRecoveryPending = true;[\s\S]*?recoverUnusableLedger\(ledgerDataDir,[\s\S]*?const ledgerFailure = \(stage: string\) => routeLedgerFailure\(stage, \{\s*restoreFailed: failLedgerRestore,\s*unusable: recoverLedger,\s*fatal: orderedQuit\.reportFatal,\s*\}\);[\s\S]*?operationalRuntime\.worker\.onError\(ledgerFailure\("ledger-worker"\)\);[\s\S]*?void automationRuntimeReady\.catch\(ledgerFailure\("startup-reconcile"\)\);/u,
+  "a ledger failure at startup or from a worker the supervisor gave up on goes through one route: restore, recovery, or the fatal path",
 );
 assert.match(
   source,

@@ -46,7 +46,7 @@ import {
 } from "../src/lib/automation/server/error-report.ts";
 import type { ErrorReportInput } from "../src/lib/automation/error-report-contract.ts";
 import { quitOnTerminationSignals } from "./automation-shutdown.ts";
-import { createOrderedQuit } from "./fatal-quit.ts";
+import { createOrderedQuit, routeLedgerFailure } from "./fatal-quit.ts";
 import { applyOctopusBeakAppIdentity } from "./app-identity.ts";
 import { openSafeStorageCredentialStore } from "./credential-codec.ts";
 import { askAboutStuckRestore, recoverUnusableLedger } from "./ledger-recovery.ts";
@@ -93,7 +93,6 @@ import {
   STORAGE_MIGRATION_URL,
 } from "./app-protocol.ts";
 import { migrateRendererStorage } from "./renderer-storage-migration.ts";
-import { automationRuntimeFatalDetails } from "../src/lib/automation/runtime-invariants.ts";
 import {
   createPGliteOperationalRuntime,
   type PGliteOperationalRuntime,
@@ -581,20 +580,15 @@ async function start() {
       },
     );
   };
-  // A worker restarted mid-session after a crash checks the ledger again and may refuse it too.
-  operationalRuntime.worker.onError((error) => {
-    if (failLedgerRestore(error)) return;
-    if (isLedgerUnusable(error)) recoverLedger(error);
+  const ledgerFailure = (stage: string) => routeLedgerFailure(stage, {
+    restoreFailed: failLedgerRestore,
+    unusable: recoverLedger,
+    fatal: orderedQuit.reportFatal,
   });
-  void automationRuntimeReady.catch((error) => {
-    // Registered before any other reader of this promise, so the flag is set before they report it as fatal.
-    if (failLedgerRestore(error)) return;
-    if (isLedgerUnusable(error)) {
-      recoverLedger(error);
-      return;
-    }
-    orderedQuit.reportFatal(automationRuntimeFatalDetails("startup-reconcile", error));
-  });
+  // The supervisor gave up on a worker that never opened or kept crashing; a restarted one checks the ledger again and may refuse it too.
+  operationalRuntime.worker.onError(ledgerFailure("ledger-worker"));
+  // Registered before any other reader of this promise, so the flag is set before they report it as fatal.
+  void automationRuntimeReady.catch(ledgerFailure("startup-reconcile"));
   const exchangeRates = createExchangeRateScheduler({
     now: () => new Date(),
     setTimer: (callback, ms) => setTimeout(callback, ms),
