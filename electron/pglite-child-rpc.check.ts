@@ -241,7 +241,6 @@ test("the child socket refuses a run-scoped operational write from a run that is
   const provider = {
     operational: {
       preview: { write: record("preview.write") },
-      maicoin: { startRun: record("maicoin.startRun"), finishRun: record("maicoin.finishRun") },
       exchangeRates: { readExchangeRates: record("exchangeRates.readExchangeRates"), upsertExchangeRates: record("exchangeRates.upsertExchangeRates") },
     },
     financial: { request: async () => null },
@@ -260,7 +259,6 @@ test("the child socket refuses a run-scoped operational write from a run that is
     for (const child of [correlated, anonymous]) {
       for (const [operation, args] of [
         ["preview.write", [{ sourceId: "s", institution: "i", product: "p", collection: {} }]],
-        ["maicoin.startRun", [{ syncRunId: "r", startedAt: "2026-09-22T00:00:00.000Z", subAccount: "main", walletTypes: ["spot"], statementLimit: 1, record: {} }]],
         ["exchangeRates.upsertExchangeRates", [[]]],
       ] as const) {
         await assert.rejects(
@@ -272,8 +270,7 @@ test("the child socket refuses a run-scoped operational write from a run that is
     }
     assert.deepEqual(reached, [], "a refused write never reaches the worker");
     await correlated.request("exchangeRates.readExchangeRates", []);
-    await correlated.request("maicoin.finishRun", [{ syncRunId: "r", finishedAt: "2026-09-22T00:00:01.000Z", record: {} }]);
-    assert.deepEqual(reached, ["exchangeRates.readExchangeRates", "maicoin.finishRun"], "reads and closing a run's own row are not gated");
+    assert.deepEqual(reached, ["exchangeRates.readExchangeRates"], "a read is not gated");
   } finally {
     correlated.close();
     anonymous.close();
@@ -301,10 +298,6 @@ test("the workflow surface is exactly what workflows call", () => {
   assert.deepEqual([...WORKFLOW_OPERATIONAL_OPERATIONS].sort(), [
     "exchangeRates.readExchangeRates",
     "exchangeRates.upsertExchangeRates",
-    "maicoin.appendSnapshots",
-    "maicoin.appendStatementRows",
-    "maicoin.finishRun",
-    "maicoin.startRun",
     "preview.write",
   ]);
   assert.deepEqual(
@@ -330,9 +323,6 @@ test("the workflow surface is exactly what workflows call", () => {
     [...WORKFLOW_OPERATIONAL_OPERATIONS].filter((operation) => PGLITE_OPERATIONAL_CONTRACTS[operation].workflow === "write").sort(),
     [
       "exchangeRates.upsertExchangeRates",
-      "maicoin.appendSnapshots",
-      "maicoin.appendStatementRows",
-      "maicoin.startRun",
       "preview.write",
     ],
   );

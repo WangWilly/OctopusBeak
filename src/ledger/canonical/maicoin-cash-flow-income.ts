@@ -1,29 +1,31 @@
 import { CASH_FLOW_TRANSFER_WINDOW_DAYS, dayGap } from "./cash-flow-transfer-rules.ts";
-import { compareExact, decimalToExact, divideExact, multiplyExact, type ExactAmount, type ExactMoney } from "../../lib/shared-money/exact-money.ts";
+import { compareExact, divideExact, multiplyExact, type ExactAmount, type ExactMoney } from "../../lib/shared-money/exact-money.ts";
 
 /**
  * Which MaiCoin (MAX) inflows Cash flow counts as income (ADR 0146): a reward,
  * and a crypto deposit from outside the person's imported accounts, each at
- * the TWD value the MAX sync logged from MAX's daily close.
+ * the TWD value its commit admitted from MAX's daily close (ADR 0158).
  */
 
-/** The logged MAX statement row an investment row came from. */
-export type MaicoinLoggedStatement = Readonly<{
-  rowType: string;
-  currency: string | null;
-  /** `amount × price` at MAX's daily close, as the sync logged it. */
-  valueTwd: number | null;
-  /** MAX's own state for the statement; a reward carries none. */
-  state: string | null;
+/** What the commit admitted beside a MAX investment row. */
+export type MaicoinStatementFacts = Readonly<{
+  /** The statement family; null for a row admitted before ADR 0158 and not yet recaptured. */
+  rowType: string | null;
+  /** The exact TWD value of the row, when a finished day priced it. */
+  valueTwd: ExactMoney | null;
 }>;
 
-/** A MAX `corporate_action_in` with the statement row it came from. */
+/**
+ * A counted MAX `corporate_action_in` with its statement facts. Counted means
+ * its current revision is posted, normal and active, so a deposit MAX has not
+ * completed, or has rejected, never reaches this rule.
+ */
 export type MaicoinInflow = Readonly<{
   transactionId: string;
   coin: string;
   quantity: ExactAmount;
   date: string;
-  statement: MaicoinLoggedStatement;
+  statement: MaicoinStatementFacts;
 }>;
 
 /** A `corporate_action_out` of a coin from another imported investment source, such as a Binance withdrawal. */
@@ -35,21 +37,18 @@ export type MaicoinIncomeGroup = "income" | "income.reward";
 export type MaicoinIncome = Readonly<{ group: MaicoinIncomeGroup; value: ExactMoney | null }>;
 
 /** A TWD deposit comes from a bank, which ADR 0145 matches instead. */
-export function maicoinIncomeGroup(statement: MaicoinLoggedStatement, coin: string): MaicoinIncomeGroup | null {
-  // A deposit MAX has not completed, or has rejected, never arrived.
-  if (statement.state !== null && statement.state !== "done") return null;
+export function maicoinIncomeGroup(statement: MaicoinStatementFacts, coin: string): MaicoinIncomeGroup | null {
   if (statement.rowType === "reward") return "income.reward";
-  if (statement.rowType === "deposit" && statement.state === "done" && (statement.currency ?? coin).toUpperCase() !== "TWD") return "income";
+  if (statement.rowType === "deposit" && coin.toUpperCase() !== "TWD") return "income";
   return null;
 }
 
 const ONE: ExactAmount = { coefficient: "1", scale: 0 };
 
-/** The logged value, rounded half-up to two decimals. */
-export function maicoinValueTwd(valueTwd: number | null): ExactMoney | null {
-  if (valueTwd === null || valueTwd < 0) return null;
-  const exact = decimalToExact(valueTwd);
-  const rounded = exact === null ? null : divideExact(exact, ONE, 2);
+/** The admitted value, rounded half-up to two decimals. */
+export function maicoinValueTwd(valueTwd: ExactMoney | null): ExactMoney | null {
+  if (valueTwd === null || BigInt(valueTwd.coefficient) < 0n) return null;
+  const rounded = divideExact(valueTwd, ONE, 2);
   return rounded === null ? null : { ...rounded, currency: "TWD" };
 }
 

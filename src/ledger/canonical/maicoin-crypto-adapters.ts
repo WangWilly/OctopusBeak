@@ -10,6 +10,8 @@ import type {
   InvestmentExactAmount,
   InvestmentMoney,
   InvestmentTransactionAction,
+  InvestmentTransactionPosting,
+  InvestmentTwdValuation,
 } from "./investment-financial.ts";
 import { deriveSourceConnectionIdentityKey } from "./source-connection-identity.ts";
 
@@ -173,6 +175,8 @@ export type MaicoinInvestmentCaptureBuildInput = {
   accountBatches: readonly MaicoinWalletAccountBatch[];
   statementBatches?: readonly MaicoinStatementBatch[];
   valuationQuotes?: ReadonlyMap<string, MaicoinTwdQuote>;
+  /** Each priced statement row's TWD valuation, by its `transaction` leg's source record key. */
+  statementValuations?: ReadonlyMap<string, InvestmentTwdValuation>;
 };
 
 export class MaicoinCryptoAdapterError extends Error {
@@ -589,9 +593,9 @@ function statementRecordKey(
 }
 
 /**
- * The source record key of one leg of a MAX statement row. A reader that
- * holds the statement row, such as the operational statement log, can name
- * the investment transaction it became.
+ * The source record key of one leg of a MAX statement row. It names the
+ * endpoint, wallet, row type, provider ID and leg only, so a change of state
+ * or valuation keeps the occurrence (ADR 0158).
  */
 export function maicoinStatementRecordKey(input: Readonly<{
   endpoint: string;
@@ -780,11 +784,36 @@ function deduplicateNativeStatementRows(
   return rows;
 }
 
+/**
+ * How MAX booked a statement row, by its `state`. MAX's v3 API reference
+ * (https://max-api.maicoin.com/doc/v3.html) gives a fund-transaction deposit,
+ * withdrawal and transfer one of `processing`, `failed`, `canceled` or `done`;
+ * `/api/v3/rewards` and `/api/v3/converts` return no state. A row without a
+ * state and a `done` row are posted; `failed` and `canceled` are posted and
+ * canceled. Every other state, including one MAX adds later, is
+ * pending, so an unknown state is never counted.
+ */
+const MAICOIN_STATE_POSTING: ReadonlyMap<string, InvestmentTransactionPosting> = new Map([
+  ["done", "posted"],
+  ["failed", "canceled"],
+  ["canceled", "canceled"],
+]);
+
+export function maicoinStatementPosting(state: string | null): InvestmentTransactionPosting {
+  return state === null ? "posted" : MAICOIN_STATE_POSTING.get(state.trim().toLowerCase()) ?? "pending";
+}
+
+function statementState(row: Record<string, unknown>): string | null {
+  return typeof row.state === "string" ? row.state : null;
+}
+
 function statementTransaction(
   accountKey: string,
   leg: MaicoinStatementLeg,
   sourceRecordKey: string,
+  valuation: InvestmentTwdValuation | undefined,
 ): MaicoinCanonicalStatementTransaction {
+  const state = statementState(leg.row);
   return {
     producerSecurityId: leg.producerSecurityId,
     sourceRecordKey,
@@ -800,6 +829,10 @@ function statementTransaction(
     effectiveOn: leg.effectiveOn,
     description: statementDescription(leg.row),
     fundingEvidence: { kind: "unresolved", sourceRecordKey },
+    posting: maicoinStatementPosting(state),
+    rowType: leg.batch.rowType,
+    state,
+    ...(valuation ? { twdValuation: valuation } : {}),
   };
 }
 
@@ -966,11 +999,10 @@ function statementTransactionsForBatch(
     } as const;
     legs.push({ batch, row, leg: "transaction", producerSecurityId: securityCurrency, action, quantity, cashEffect: zeroCashEffect, effectiveOn });
   }
-  return legs.map((leg) => statementTransaction(
-    accountKey,
-    leg,
-    statementRecordKey(batch, leg.row, leg.leg),
-  ));
+  return legs.map((leg) => {
+    const sourceRecordKey = statementRecordKey(batch, leg.row, leg.leg);
+    return statementTransaction(accountKey, leg, sourceRecordKey, input.statementValuations?.get(sourceRecordKey));
+  });
 }
 
 function securityType(currencyCode: string): "cash" | "cryptocurrency" {

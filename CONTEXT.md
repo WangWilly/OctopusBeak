@@ -580,7 +580,7 @@ The Financial page, shown as 「收支流水」, that answers where a person's m
 _Avoid_: Spending, income statement, net flow page
 
 **Unresolved cash-flow kind**:
-The Cash flow bucket for a transaction whose absent Transaction Kind leaves its inclusion undecided, unless its account already decides it, as an investment account does. A MaiCoin reward or crypto deposit that counts as income but has no logged TWD value joins it too. It is shown with its count and amount beside inflow and outflow and joins neither, rather than being counted by direction or dropped.
+The Cash flow bucket for a transaction whose absent Transaction Kind leaves its inclusion undecided, unless its account already decides it, as an investment account does. A MaiCoin reward or crypto deposit that counts as income but has no admitted TWD valuation yet joins it too, as a row of the current UTC day does until its day closes (ADR 0158). It is shown with its count and amount beside inflow and outflow and joins neither, rather than being counted by direction or dropped.
 _Avoid_: Unknown kind, uncategorized, other outflow
 
 **Cash-flow transfer link**:

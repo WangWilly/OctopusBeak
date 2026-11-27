@@ -1,6 +1,6 @@
 # MAX rewards and outside crypto deposits count as income
 
-Status: accepted
+Status: accepted; where the row type, state and value live, and how the value is priced, amended by [ADR 0158](./0158-the-max-commit-carries-row-type-state-and-twd-valuation.md)
 
 Amends [ADR 0138](./0138-investment-and-loan-accounts-decide-their-own-cash-flow.md).
 
@@ -11,14 +11,14 @@ ADR 0138 also deferred valuing a reward, and said a value would sit beside the t
 **A MAX inflow counts as Cash flow income when all of these hold:**
 
 - It is a `corporate_action_in` on a MAX account.
-- Its source record key names a statement row in the MAX statement log, `maicoin_statement_rows`.
-- That statement row is a `reward`, or a `deposit` in a currency other than TWD that MAX reports as `done`. A deposit still processing, or one MAX rejected, never arrived. A reward carries no state.
+- Its source record key names a statement row in the MAX statement log, `maicoin_statement_rows`. (Amended by [ADR 0158](./0158-the-max-commit-carries-row-type-state-and-twd-valuation.md): its row is `deposit` or `reward` in `investment_transactions.row_type`.)
+- That statement row is a `reward`, or a `deposit` in a currency other than TWD that MAX reports as `done`. A deposit still processing, or one MAX rejected, never arrived. A reward carries no state. (Amended by [ADR 0158](./0158-the-max-commit-carries-row-type-state-and-twd-valuation.md): the row type is `investment_transactions.row_type`, and MAX's state decides the revision's posting, so only a counted revision qualifies.)
 
 A reward counts in the `income.reward` group. A deposit counts in the `income` group. The row keeps its Kind, `investment.corporate_action`, and its booked direction.
 
-**The amount is the statement's logged `value_twd`, in TWD.** The MAX sync computes it as the statement amount times a price. The price is MAX's daily candle close for the row's UTC day. A coin with no TWD market is priced through USDT. Cash flow rounds the value half-up to two decimals and keeps it as an exact amount. The value is an estimate from MAX's own daily close, not the price at the moment the coin arrived. The person accepted that estimate, because a period with crypto salary otherwise shows no income at all. The list, the account change, the detail and the CSV show the row at this amount.
+**The amount is the statement's logged `value_twd`, in TWD.** (Amended by [ADR 0158](./0158-the-max-commit-carries-row-type-state-and-twd-valuation.md): the amount is the exact valuation in `investment_transaction_twd_valuations`, priced only from a finished UTC day's close.) The MAX sync computes it as the statement amount times a price. The price is MAX's daily candle close for the row's UTC day. A coin with no TWD market is priced through USDT. Cash flow rounds the value half-up to two decimals and keeps it as an exact amount. The value is an estimate from MAX's own daily close, not the price at the moment the coin arrived. The person accepted that estimate, because a period with crypto salary otherwise shows no income at all. The list, the account change, the detail and the CSV show the row at this amount.
 
-A sync upserts each statement by its own id, so the log holds the latest copy and the latest value. A statement counts once.
+A sync upserts each statement by its own id, so the log holds the latest copy and the latest value. A statement counts once. (Amended by [ADR 0158](./0158-the-max-commit-carries-row-type-state-and-twd-valuation.md): a valuation is written once per event.)
 
 **A crypto deposit that is the person's own transfer does not count.** It is their own transfer when it matches one outflow from another imported investment account, and that match is unique. The outflow must be:
 
@@ -32,7 +32,7 @@ The match must be unique on both sides. The deposit fits no other outflow, and t
 
 **A qualifying row with no logged value is unresolved.** It joins Cash flow's unresolved bucket, so it never drops out silently.
 
-**The read stays in the Cash flow query.** The decision is a pure function. The read joins the investment rows to the statement log by source record key, the same join ADR 0145 uses. It reads the log only when a MAX inflow is in the rows it classifies, and only around their dates. Kinds, the projection and the stored data do not change. Spending does not change.
+**The read stays in the Cash flow query.** The decision is a pure function. The read joins the investment rows to the statement log by source record key, the same join ADR 0145 uses. It reads the log only when a MAX inflow is in the rows it classifies, and only around their dates. (Amended by [ADR 0158](./0158-the-max-commit-carries-row-type-state-and-twd-valuation.md): the read takes the row type and valuation from the investment row and the valuation table.) Kinds, the projection and the stored data do not change. Spending does not change.
 
 Cash flow inclusion policy `cash-flow-by-kind` moves to v3.
 
@@ -46,10 +46,10 @@ Cash flow inclusion policy `cash-flow-by-kind` moves to v3.
 
 ## Consequences
 
-- A MAX row synced before the statement log existed has no row type. It stays out until the next MAX sync logs its history again.
+- A MAX row synced before the statement log existed has no row type. It stays out until the next MAX sync logs its history again. (Amended by [ADR 0158](./0158-the-max-commit-carries-row-type-state-and-twd-valuation.md): the next MAX commit fills the row type.)
 - An own transfer from a wallet the person has not imported counts as income. The person cannot mark it otherwise yet.
 - An own transfer with an ambiguous match counts as income.
 - A Cash flow search across every period finds an amount by its stored value. A MAX income row stores zero, so an amount search outside the shown period does not find its TWD value.
 - A reward worth less than half a cent counts as zero.
 - A Cash flow search across every period also picks rows by the label their Kind gives. A MAX income row's Kind is an investment move, so a search for its income or reward label outside the shown period does not find it.
-- A later sync that cannot price an old statement replaces its value with none, and the row moves to unresolved.
+- A later sync that cannot price an old statement replaces its value with none, and the row moves to unresolved. (No longer holds, by [ADR 0158](./0158-the-max-commit-carries-row-type-state-and-twd-valuation.md): a written valuation is never removed, and a failed price lookup fails the sync.)

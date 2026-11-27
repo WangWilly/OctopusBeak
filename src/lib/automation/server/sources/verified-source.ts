@@ -59,7 +59,6 @@ export type VerifiedWorkflow = Readonly<
   Pick<
     WorkflowDefinition,
     | "requiresFinancialCommit"
-    | "requiresMaicoinPersistence"
     | "requiresTdcc"
     | "requiresAccountIdentity"
     | "attachedPreviewProducts"

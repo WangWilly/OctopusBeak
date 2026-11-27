@@ -53,23 +53,6 @@ const CASES: Record<PGliteOperationalOperation, Readonly<{ accepted: readonly un
     accepted: [[{ rateDate: "2026-10-27", currency: "USD", twdPerUnit: 32, source: "check", fetchedAt: at }]],
     refused: [[{ rateDate: "2026-10-27", currency: "USD", twdPerUnit: Number.NaN, source: "check", fetchedAt: at }]],
   },
-  "maicoin.startRun": {
-    accepted: [{ syncRunId: "sync", startedAt: at, subAccount: "main", walletTypes: ["spot"], statementLimit: 10, record: {} }],
-    refused: [{ syncRunId: "sync", startedAt: at, subAccount: "main", walletTypes: ["spot"], statementLimit: 1.5, record: {} }],
-  },
-  "maicoin.appendSnapshots": {
-    accepted: [[{
-      snapshotId: "s", syncRunId: "sync", capturedAt: at, subAccount: "main", walletType: "spot", currency: "BTC", rawAccountJson: "{}",
-    }]],
-    refused: [Array.from({ length: 101 }, () => ({}))],
-  },
-  "maicoin.appendStatementRows": {
-    accepted: [[{
-      statementId: "s", syncRunId: "sync", capturedAt: at, endpoint: "e", rowType: "r", externalId: "x", rawPayloadJson: "{}",
-    }]],
-    refused: [[{ statementId: "s" }]],
-  },
-  "maicoin.finishRun": { accepted: [{ syncRunId: "sync", finishedAt: at, record: {} }], refused: [{ syncRunId: "sync", finishedAt: at }] },
   "preview.write": {
     accepted: [{ sourceId: "preview-source", institution: "bank", product: "deposit", collection: {} }],
     refused: [{ sourceId: "preview-source", institution: "bank", product: "deposit", collection: {}, sql: "DROP" }],

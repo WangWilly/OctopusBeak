@@ -17,7 +17,8 @@ import {
  * Transaction Kind, its direction and its account's stream. Totals stay per
  * currency. v2 (ADR 0138) adds the two account rules in `cashFlowRule`. v3
  * (ADR 0146) counts a MAX reward or outside crypto deposit as income, which
- * the Cash flow read decides from the MAX statement log.
+ * the Cash flow read decides from the row type and TWD valuation the MAX
+ * commit admitted (ADR 0158).
  */
 export const CASH_FLOW_INCLUSION_POLICY = Object.freeze({
   id: "cash-flow-by-kind",

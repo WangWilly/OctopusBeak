@@ -1,8 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { createTestPGlite } from "./baseline-test-template.ts";
 import { PGliteStore } from "./transaction.ts";
-import { applyPgliteMaicoinOperationalSchema } from "./maicoin-operational.ts";
-import { maicoinStatementRecordKey } from "../canonical/maicoin-crypto-adapters.ts";
+import { decimalToExact } from "../../lib/shared-money/exact-money.ts";
 import { refreshPGliteCurrentProjectionInTransaction } from "./projection.ts";
 import {
   commitPGliteCanonicalEInvoiceCapture,
@@ -38,6 +37,8 @@ export type FixtureTransactionInput = Readonly<{
   account?: string;
   /** Credit-card facts: a consume date makes the transaction's date a purchase date. */
   card?: FixtureCardFacts;
+  /** How the revision is booked: posted and normal by default; canceled is posted and canceled. */
+  posting?: "posted" | "pending" | "canceled";
   /** Where a new `account` lives; omitted means a card of the fixture's own source. */
   accountStream?: Readonly<{ namespace: string; stream: string; accountType: "depository" | "investment" | "loan"; institutionKey?: string }>;
   /** The investment action or loan event kind its writer records beside the transaction. */
@@ -46,23 +47,22 @@ export type FixtureTransactionInput = Readonly<{
     /**
      * A MaiCoin TWD cash movement as the MAX adapter records it: the TWD is a
      * quantity and the cash effect is zero. `rowType` is the MAX statement it
-     * came from, logged as the sync logs it; a deposit or withdrawal by default.
+     * came from, as its commit admits it; a deposit or withdrawal by default.
      */
     | Readonly<{ investment: "corporate_action_in" | "corporate_action_out"; twdQuantity: string; rowType?: "deposit" | "withdrawal" | "convert" | "reward" }>
     /**
      * A coin moving in or out of an exchange account as a corporate action. A
-     * MaiCoin row is logged like a TWD movement, with `valueTwd` and MAX's
-     * `state` ("done" for a deposit or withdrawal unless given); a Binance
-     * row is not logged.
+     * MaiCoin row carries its row type like a TWD movement, and `valueTwd`, its
+     * admitted TWD valuation; a Binance row carries neither.
      */
     | Readonly<{
       investment: "corporate_action_in" | "corporate_action_out";
       coin: string;
       quantity: string;
       source?: "maicoin" | "binance";
-      rowType?: "deposit" | "withdrawal" | "convert" | "reward";
+      /** Null is a row admitted before its commit recorded a row type. */
+      rowType?: "deposit" | "withdrawal" | "convert" | "reward" | null;
       valueTwd?: number | null;
-      state?: string | null;
     }>;
 }>;
 
@@ -277,7 +277,7 @@ export async function createSpendingCategoryFixture() {
       [bankCapture, sourceCommit],
     );
     const coinEvent = "twdQuantity" in event
-      ? { investment: event.investment, coin: "TWD", quantity: event.twdQuantity, source: "maicoin" as const, rowType: event.rowType, valueTwd: null, state: undefined }
+      ? { investment: event.investment, coin: "TWD", quantity: event.twdQuantity, source: "maicoin" as const, rowType: event.rowType, valueTwd: null }
       : "coin" in event ? event : null;
     if (coinEvent) {
       const source = coinEvent.source ?? "maicoin";
@@ -292,30 +292,22 @@ export async function createSpendingCategoryFixture() {
           [coinSecurity, source, securityKey, coinEvent.coin, coinEvent.coin === "TWD" ? "cash" : "cryptocurrency"],
         );
       }
+      const rowType = source === "maicoin"
+        ? coinEvent.rowType !== undefined ? coinEvent.rowType : coinEvent.investment === "corporate_action_in" ? "deposit" : "withdrawal"
+        : null;
       await transaction.query(
         `INSERT INTO investment_transactions(transaction_id, capture_id, commit_id, account_id, security_id, source_record_id, action,
-           quantity_coefficient, quantity_scale, cash_coefficient, cash_scale, cash_currency, effective_on, funding_evidence_json)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, '0', 0, 'TWD', $10, '{"kind":"unresolved"}')`,
-        [ids.transactionId, bankCapture, ids.commitId, ids.accountId, coinSecurity, ids.recordId, coinEvent.investment, coinEvent.quantity, input.scale ?? 0, input.date ?? "2026-09-01"],
+           quantity_coefficient, quantity_scale, cash_coefficient, cash_scale, cash_currency, effective_on, funding_evidence_json, row_type)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, '0', 0, 'TWD', $10, '{"kind":"unresolved"}', $11)`,
+        [ids.transactionId, bankCapture, ids.commitId, ids.accountId, coinSecurity, ids.recordId, coinEvent.investment, coinEvent.quantity, input.scale ?? 0, input.date ?? "2026-09-01", rowType],
       );
-      if (source !== "maicoin") return;
-      const rowType = coinEvent.rowType ?? (coinEvent.investment === "corporate_action_in" ? "deposit" : "withdrawal");
-      const statement = { endpoint: `/fixture/${rowType}`, walletType: null, rowType, externalId: `fixture-${Buffer.from(ids.recordId).toString("hex")}`, leg: rowType === "convert" ? (coinEvent.investment === "corporate_action_in" ? "to" : "from") : "transaction" };
-      await transaction.query("UPDATE source_records SET provider_key = $1 WHERE source_record_id = $2", [maicoinStatementRecordKey(statement), ids.recordId]);
-      await transaction.query(
-        `INSERT INTO maicoin_sync_runs(sync_run_id, started_at, sub_account, wallet_types_json, statement_enabled, statement_limit, record_json)
-         VALUES ('fixture-run', '2026-09-30T00:00:00Z', 'fixture', '[]', 1, 100, '{}') ON CONFLICT DO NOTHING`,
-      );
-      const state = coinEvent.state !== undefined ? coinEvent.state : rowType === "deposit" || rowType === "withdrawal" ? "done" : null;
-      await transaction.query(
-        `INSERT INTO maicoin_statement_rows(statement_id, sync_run_id, captured_at, endpoint, wallet_type, row_type, external_id, occurred_at, currency, amount, value_twd, raw_payload_json)
-         VALUES ($1, 'fixture-run', '2026-09-30T00:00:00Z', $2, NULL, $3, $1, $4, $5, $6, $7, $8)`,
-        // An early-morning Taipei time, which MAX logs in UTC on the day before.
-        [statement.externalId, statement.endpoint, rowType,
-          new Date(Date.parse(`${input.date ?? "2026-09-01"}T04:00:00+08:00`)).toISOString(),
-          coinEvent.coin.toLowerCase(), Number(coinEvent.quantity) / 10 ** (input.scale ?? 0), coinEvent.valueTwd ?? null,
-          JSON.stringify(state === null ? {} : { state })],
-      );
+      const value = coinEvent.valueTwd === undefined || coinEvent.valueTwd === null ? null : decimalToExact(coinEvent.valueTwd);
+      if (source === "maicoin" && value)
+        await transaction.query(
+          `INSERT INTO investment_transaction_twd_valuations(transaction_id, capture_id, commit_id, source_record_id, value_coefficient, value_scale, value_currency, price_route)
+           VALUES ($1, $2, $3, $4, $5, $6, 'TWD', 'legacy-log')`,
+          [ids.transactionId, bankCapture, ids.commitId, ids.recordId, value.coefficient, value.scale],
+        );
       return;
     }
     if (!security) {
@@ -358,8 +350,6 @@ export async function createSpendingCategoryFixture() {
     const commitId = uuidBytes();
     const ordinal = ++captureCount;
     const date = input.date ?? "2026-09-01";
-    if (input.event && ("twdQuantity" in input.event || ("coin" in input.event && (input.event.source ?? "maicoin") === "maicoin")))
-      await applyPgliteMaicoinOperationalSchema(store);
     await store.transaction(async (transaction) => {
       const accountId = await accountFor(transaction, input.account, input.accountStream);
       const sequence = Number((await transaction.query<{ value: number | string }>("SELECT COALESCE(MAX(commit_sequence), 0) + 1 AS value FROM canonical_commits")).rows[0]?.value ?? 1);
@@ -386,11 +376,12 @@ export async function createSpendingCategoryFixture() {
            posting_rule_version, description, economic_status, administrative_state, semantic_rule_version,
            effective_on, transaction_date_time_local, time_zone, time_precision, time_origin,
            effective_time_basis, effective_time_rule_version, utc_instant_utc_us
-         ) VALUES ($1, $2, $3, $4, $5, $15, $6, $7, $8, $9, 'posted', 'human-attested', 'statement-posted-history',
-                   $10, $11, 'normal', 'active', $10, $12, $13, 'Asia/Taipei', 'second', 'source_reported',
+         ) VALUES ($1, $2, $3, $4, $5, $15, $6, $7, $8, $9, $16, 'human-attested', 'statement-posted-history',
+                   $10, $11, $17, 'active', $10, $12, $13, 'Asia/Taipei', 'second', 'source_reported',
                    'accounting', $10, $14)`,
         [revisionId, transactionId, recordId, bankCapture, commitId, input.amount, input.scale ?? 0, input.currency ?? "TWD",
-          input.direction ?? "outflow", BANK_ROUTE, input.description ?? `Fixture purchase ${ordinal}`, date, `${date}T12:00:00`, ordinal, revisionNumber],
+          input.direction ?? "outflow", BANK_ROUTE, input.description ?? `Fixture purchase ${ordinal}`, date, `${date}T12:00:00`, ordinal, revisionNumber,
+          input.posting === "pending" ? "pending" : "posted", input.posting === "canceled" ? "canceled" : "normal"],
       );
       await transaction.query(
         `INSERT INTO assertions(assertion_id, transaction_id, field_name, target_kind, origin, producer_id, rule_lineage, revision_id, value_text, created_commit_id)

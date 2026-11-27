@@ -12,6 +12,7 @@ import {
 import { PREVIEW_FIXTURE_SOURCE, PREVIEW_PRODUCTS_FIXTURE_SOURCE, previewProductsFixtureWrites } from "../src/lib/preview-sources/fixture-source.ts";
 import { applyPgliteBaseline } from "../src/ledger/pglite/baseline.ts";
 import { applyPgliteCaptureManifestSchema } from "../src/ledger/pglite/capture-manifest.ts";
+import { applyPgliteInvestmentStatementFactsSchema } from "../src/ledger/pglite/investment-statement-facts.ts";
 import type { TypedWorkflowOutcome } from "../src/lib/automation/server/typed-workflow-outcome.ts";
 import {
   commitCathay,
@@ -190,6 +191,7 @@ export async function seedDesktopCdpFixture(
     if (options.tdccOutcome) {
       await applyPgliteBaseline(database);
       await applyPgliteCaptureManifestSchema(store);
+      await applyPgliteInvestmentStatementFactsSchema(store);
       await commitCathay(store);
       await commitTdccSettlement(store, "013");
       await commitTdccSettlement(store, "812");

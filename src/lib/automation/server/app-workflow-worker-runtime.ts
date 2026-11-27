@@ -121,7 +121,6 @@ export function childRpcCapabilities(descriptor: PGliteWorkflowRpc | undefined):
       return {
         ports: servedPorts(definition, {
           financialCommit: createWorkflowFinancialCommitPort(child.workflow),
-          maicoinPersistence: child.operationalProvider.maicoin,
           tdcc: {
             session: tdccSession,
             admittedFundAccounts: (connection) => child.financial.request("financial.tdccFundAccounts.list", [connection]),

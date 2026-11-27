@@ -11,7 +11,6 @@ import {
   createPGliteFinancialRegistry,
 } from "../../../../electron/pglite-financial-registry.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
-import { applyPgliteMaicoinOperationalSchema } from "../../../ledger/pglite/maicoin-operational.ts";
 import { createPgliteOperationalProvider } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import { planForCheck } from "./task-run-check-support.ts";
@@ -33,7 +32,6 @@ test("MaiCoin worker uses injected financial commit and operational RPC without 
   const previousDirectory = process.cwd();
   const database = await createTestPGlite("ledger+operational", { dataDir: join(root, "pglite") });
   const store = new PGliteStore(database);
-  await applyPgliteMaicoinOperationalSchema(store);
   const operational = createPgliteOperationalProvider(store);
   const server = createPGliteChildRpcServer({
     provider: { operational, financial: createPGliteFinancialLocalPort(createPGliteFinancialRegistry(store, createPGliteFinancialPageActions(store))) },
@@ -111,7 +109,6 @@ test("MaiCoin worker uses injected financial commit and operational RPC without 
     assert.equal(result.kind, "completed", JSON.stringify(result));
     assert.deepEqual(observedCodes.slice(-1), ["run-completed"]);
     assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM financial_accounts")).rows[0]?.count, 2);
-    assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM maicoin_sync_runs")).rows[0]?.count, 1);
     assert.deepEqual(await readdir(root), ["pglite"], "only the test database remains under its temp root");
   } finally {
     process.chdir(previousDirectory);

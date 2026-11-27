@@ -117,7 +117,6 @@ export const MAICOIN_SOURCE: VerifiedSource = {
   },
   workflow: verifiedWorkflow({
     requiresFinancialCommit: true,
-    requiresMaicoinPersistence: true,
     runtime: NONBROWSER,
     input: { extra: maicoinInput },
     async load() {

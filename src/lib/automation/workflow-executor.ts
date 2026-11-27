@@ -11,7 +11,6 @@ import type {
 import type { PGliteWorkflowAdmissionReason } from "../../ledger/pglite/workflow-client.ts";
 import type { SourceTextPort } from "./source-text.ts";
 import type { TypedWorkflowErrorCode } from "./workflow-failures.ts";
-import type { PGliteMaicoinPersistencePort } from "../../ledger/pglite/maicoin-operational.ts";
 import type { ExchangeRatePersistencePort } from "../../ledger/exchange-rates.ts";
 import type { OverviewPageDto } from "../overview/types.ts";
 import type { AttachedPreviewSource } from "../preview-sources/attached-products.ts";
@@ -121,7 +120,6 @@ export type WorkflowContext = Readonly<{
   text: SourceTextPort;
   verification: WorkflowVerificationPort;
   financialCommit?: WorkflowFinancialCommitPort;
-  maicoinPersistence?: PGliteMaicoinPersistencePort;
   tdcc?: WorkflowTdccPort;
   exchangeRates?: WorkflowExchangeRatePort;
   accountIdentity?: WorkflowAccountIdentityPort;
@@ -145,7 +143,6 @@ export type WorkflowOutput = WorkflowRunResult | void;
 export type WorkflowDefinition<Input = unknown, Output extends WorkflowOutput = WorkflowOutput> = Readonly<{
   id: string;
   requiresFinancialCommit: boolean;
-  requiresMaicoinPersistence?: boolean;
   requiresTdcc?: boolean;
   requiresExchangeRates?: boolean;
   requiresAccountIdentity?: boolean;
@@ -173,7 +170,6 @@ export type WorkflowExecutorPorts = Readonly<{
   text: SourceTextPort;
   humanAssistance: WorkflowHumanAssistancePort;
   financialCommit?: WorkflowFinancialCommitPort;
-  maicoinPersistence?: PGliteMaicoinPersistencePort;
   tdcc?: WorkflowTdccPort;
   exchangeRates?: WorkflowExchangeRatePort;
   accountIdentity?: WorkflowAccountIdentityPort;
@@ -189,7 +185,6 @@ export type WorkflowExecutorPorts = Readonly<{
 /** Each capability a definition can require: the flag that requires it and the port that serves it. */
 const WORKFLOW_CAPABILITIES = {
   financialCommit: { flag: "requiresFinancialCommit", label: "Canonical Financial Commit" },
-  maicoinPersistence: { flag: "requiresMaicoinPersistence", label: "MaiCoin operational persistence" },
   tdcc: { flag: "requiresTdcc", label: "TDCC session" },
   exchangeRates: { flag: "requiresExchangeRates", label: "Exchange rates" },
   accountIdentity: { flag: "requiresAccountIdentity", label: "Account identity" },

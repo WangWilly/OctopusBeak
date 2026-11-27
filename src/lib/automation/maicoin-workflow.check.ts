@@ -52,7 +52,6 @@ function validMaxFetch(options: { missingWalletDate?: "spot" | "m" } = {}) {
 function ports(options: {
   events: WorkflowRunEvent[];
   commits: unknown[][];
-  records: { started: unknown[]; snapshots: unknown[]; statements: unknown[]; finished: unknown[] };
 }): WorkflowExecutorPorts {
   return {
     browser: { withPage: async () => { throw new Error("MaiCoin must not use a browser."); } },
@@ -81,12 +80,6 @@ function ports(options: {
         };
       },
     },
-    maicoinPersistence: {
-      async startRun(value) { options.records.started.push(value); },
-      async appendSnapshots(value) { options.records.snapshots.push(...value); },
-      async appendStatementRows(value) { options.records.statements.push(...value); },
-      async finishRun(value) { options.records.finished.push(value); },
-    },
     commitAttempts: { record: async () => undefined },
     events: { async append(event) { options.events.push(event); } },
     now: () => "2026-09-25T00:00:00.000Z",
@@ -97,14 +90,11 @@ function createRun(executorPorts: WorkflowExecutorPorts) {
   return createWorkflowExecutor([createMaicoinWorkflow()], executorPorts);
 }
 
-test("MaiCoin executes through injected commit and operational ports without file outputs", async () => {
+test("MaiCoin executes through one Canonical Financial Commit without file outputs", async () => {
   const originalFetch = globalThis.fetch;
   const state = {
     events: [] as WorkflowRunEvent[],
     commits: [] as unknown[][],
-    records: { started: [], snapshots: [], statements: [], finished: [] } as {
-      started: unknown[]; snapshots: unknown[]; statements: unknown[]; finished: unknown[];
-    },
   };
   try {
     globalThis.fetch = validMaxFetch() as typeof fetch;
@@ -121,9 +111,6 @@ test("MaiCoin executes through injected commit and operational ports without fil
     assert.equal(result.counts.statementRowCount, 0);
     assert.equal(state.commits.length, 1);
     assert.equal(state.commits[0]?.length, 2);
-    assert.equal(state.records.started.length, 1);
-    assert.equal(state.records.snapshots.length, 2);
-    assert.equal(state.records.finished.length, 1);
     assert.deepEqual(state.events.map((event) => event.code), [
       "run-started",
       "authenticating",
@@ -134,11 +121,11 @@ test("MaiCoin executes through injected commit and operational ports without fil
       "source-complete",
       "canonical-commit-started",
       "canonical-commit-completed",
-      "operational-records-persisted",
+      "canonical-records-committed",
       "run-completed",
     ]);
-    assert.equal(JSON.stringify(state.records).includes("secret-access"), false);
-    assert.equal(JSON.stringify(state.records).includes("secret-key"), false);
+    assert.equal(JSON.stringify(state.commits).includes("secret-access"), false);
+    assert.equal(JSON.stringify(state.commits).includes("secret-key"), false);
     const task = taskById("sync-maicoin");
     assert.equal(task?.id, "sync-maicoin");
     assert.equal(Object.hasOwn(task ?? {}, "command"), false);
@@ -152,9 +139,6 @@ test("incomplete MAX wallet source is rejected before Canonical Financial Commit
   const state = {
     events: [] as WorkflowRunEvent[],
     commits: [] as unknown[][],
-    records: { started: [], snapshots: [], statements: [], finished: [] } as {
-      started: unknown[]; snapshots: unknown[]; statements: unknown[]; finished: unknown[];
-    },
   };
   try {
     globalThis.fetch = validMaxFetch({ missingWalletDate: "m" }) as typeof fetch;
@@ -165,8 +149,6 @@ test("incomplete MAX wallet source is rejected before Canonical Financial Commit
       new AbortController().signal,
     ));
     assert.equal(state.commits.length, 0);
-    assert.equal(state.records.snapshots.length, 0);
-    assert.equal(state.records.finished.length, 1);
     assert.equal(state.events.some((event) => event.code === "source-rejected"), true);
   } finally {
     globalThis.fetch = originalFetch;
@@ -178,9 +160,6 @@ test("a thrown commit request is recorded as an unknown outcome without its erro
   const state = {
     events: [] as WorkflowRunEvent[],
     commits: [] as unknown[][],
-    records: { started: [], snapshots: [], statements: [], finished: [] } as {
-      started: unknown[]; snapshots: unknown[]; statements: unknown[]; finished: unknown[];
-    },
   };
   try {
     globalThis.fetch = validMaxFetch() as typeof fetch;
@@ -197,26 +176,21 @@ test("a thrown commit request is recorded as an unknown outcome without its erro
       "maicoin-run-commit-failure",
       { credentials: { accessKey: "a", secretKey: "b", subAccount: "main" } },
       new AbortController().signal,
-    ));
-    assert.equal(state.records.snapshots.length, 0);
-    assert.deepEqual(
-      (state.records.finished[0] as { record: { errorCode: string } }).record.errorCode,
-      "commit-outcome-unknown",
-    );
-    assert.equal(JSON.stringify(state.records).includes("sensitive provider response"), false);
+    ), (error: unknown) => {
+      assert.equal((error as { code?: unknown }).code, "commit-outcome-unknown");
+      assert.equal(String((error as Error).message).includes("sensitive provider response"), false);
+      return true;
+    });
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("an unrecorded commit start commits nothing and is recorded as an operational failure", async () => {
+test("an unrecorded commit start commits nothing and fails as an operational failure", async () => {
   const originalFetch = globalThis.fetch;
   const state = {
     events: [] as WorkflowRunEvent[],
     commits: [] as unknown[][],
-    records: { started: [], snapshots: [], statements: [], finished: [] } as {
-      started: unknown[]; snapshots: unknown[]; statements: unknown[]; finished: unknown[];
-    },
   };
   try {
     globalThis.fetch = validMaxFetch() as typeof fetch;
@@ -228,26 +202,19 @@ test("an unrecorded commit start commits nothing and is recorded as an operation
       "maicoin-run-unrecorded-start",
       { credentials: { accessKey: "a", secretKey: "b", subAccount: "main" } },
       new AbortController().signal,
-    ));
+    ), (error: unknown) => (error as { code?: unknown }).code === "operational-persistence-failed");
     assert.equal(state.commits.length, 0, "the canonical request never starts");
-    assert.equal(
-      (state.records.finished[0] as { record: { errorCode: string } }).record.errorCode,
-      "operational-persistence-failed",
-    );
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("MaiCoin cancellation aborts MAX requests, skips commit, and records cancellation", async () => {
+test("MaiCoin cancellation aborts MAX requests, skips commit, and reports cancellation", async () => {
   const originalFetch = globalThis.fetch;
   const controller = new AbortController();
   const state = {
     events: [] as WorkflowRunEvent[],
     commits: [] as unknown[][],
-    records: { started: [], snapshots: [], statements: [], finished: [] } as {
-      started: unknown[]; snapshots: unknown[]; statements: unknown[]; finished: unknown[];
-    },
   };
   let requestStarted!: () => void;
   const started = new Promise<void>((resolve) => { requestStarted = resolve; });
@@ -270,7 +237,6 @@ test("MaiCoin cancellation aborts MAX requests, skips commit, and records cancel
     controller.abort(new Error("test cancellation"));
     await assert.rejects(running);
     assert.equal(state.commits.length, 0);
-    assert.deepEqual((state.records.finished[0] as { record: { status: string } }).record.status, "cancelled");
     assert.equal(state.events.some((event) => event.code === "run-cancelled"), true);
   } finally {
     globalThis.fetch = originalFetch;

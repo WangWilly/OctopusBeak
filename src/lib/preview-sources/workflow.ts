@@ -39,7 +39,7 @@ export function takePreviewObservations(error: unknown): readonly PreviewRespons
 
 export type PreviewWorkflowContext = Omit<
   WorkflowContext,
-  "financialCommit" | "maicoinPersistence" | "tdcc" | "previewWrite"
+  "financialCommit" | "tdcc" | "previewWrite"
 > & Readonly<{ preview: PreviewSourceWriter }>;
 
 export type PreviewWorkflowInput = Readonly<{
@@ -111,7 +111,7 @@ export function previewWorkflowDefinition(
     requiresPreviewWrite: true,
   }, async (context, input: PreviewWorkflowInput): Promise<ProductRunResult> => {
     const port = context.previewWrite;
-    const { financialCommit: _commit, maicoinPersistence: _maicoin, tdcc: _tdcc, previewWrite: _port, ...rest } = context;
+    const { financialCommit: _commit, tdcc: _tdcc, previewWrite: _port, ...rest } = context;
     const observations: PreviewResponseObservation[] = [];
     const write = boundPreviewWriter(port, { sourceId: source.id, institution: source.institution });
     try {

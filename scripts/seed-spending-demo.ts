@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { PGlite } from "@electric-sql/pglite";
 import { applyPgliteBaseline } from "../src/ledger/pglite/baseline.ts";
 import { applyPgliteCaptureManifestSchema } from "../src/ledger/pglite/capture-manifest.ts";
+import { applyPgliteInvestmentStatementFactsSchema } from "../src/ledger/pglite/investment-statement-facts.ts";
 import { applyPgliteOperationalBaseline } from "../src/ledger/pglite/operational.ts";
 import { PGliteStore } from "../src/ledger/pglite/transaction.ts";
 import { commitPGliteCanonicalEInvoiceCapture } from "../src/ledger/pglite/einvoice.ts";
@@ -369,6 +370,7 @@ export async function seedSpendingDemo(userData: string) {
   try {
     await applyPgliteBaseline(database);
     await applyPgliteCaptureManifestSchema(store);
+    await applyPgliteInvestmentStatementFactsSchema(store);
     await applyPgliteOperationalBaseline(store);
 
     // E-Invoice: one complete four-month capture, exactly as the workflow assembles it.
