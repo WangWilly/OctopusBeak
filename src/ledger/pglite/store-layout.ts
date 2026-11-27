@@ -3,6 +3,7 @@ import { applyPgliteBaseline } from "./baseline.ts";
 import { applyPgliteCaptureManifestSchema } from "./capture-manifest.ts";
 import { applyPgliteCardIdentitySecretSchema } from "./card-identity-secret.ts";
 import { applyPgliteCashFlowTransferSchema } from "./cash-flow-transfer.ts";
+import { applyPgliteInvestmentStatementFactsSchema } from "./investment-statement-facts.ts";
 import { applyPgliteKindDuplicateCleanup } from "./kind-duplicate-cleanup.ts";
 import { applyPgliteKindRederivation } from "./kind-rederivation.ts";
 import { applyPgliteMaicoinOperationalSchema } from "./maicoin-operational.ts";
@@ -25,6 +26,7 @@ export async function installFinancialStore(db: PGlite): Promise<PGliteStore> {
   await applyPgliteBaseline(db);
   const store = new PGliteStore(db);
   await applyPgliteCaptureManifestSchema(store);
+  await applyPgliteInvestmentStatementFactsSchema(store);
   await applyPgliteOperationalBaseline(store);
   await applyPgliteMaicoinOperationalSchema(store);
   await applyPglitePreviewFinancialDataSchema(store);

@@ -73,6 +73,25 @@ export function investmentTransactionDirection(action: string): "inflow" | "outf
       throw new Error(`Unsupported investment transaction action: ${action}`);
   }
 }
+/**
+ * The statement family of a MAX event. Its action collapses deposit, reward,
+ * convert and wallet transfer into one corporate action, so the commit keeps
+ * the family beside it (ADR 0158).
+ */
+export type InvestmentStatementRowType = "deposit" | "withdrawal" | "reward" | "convert" | "transfer" | "trade";
+export const INVESTMENT_STATEMENT_ROW_TYPES: readonly InvestmentStatementRowType[] = ["deposit", "withdrawal", "reward", "convert", "transfer", "trade"];
+/** How the provider booked an investment event. */
+export type InvestmentTransactionPosting = "posted" | "pending" | "canceled";
+export const INVESTMENT_TRANSACTION_POSTINGS: readonly InvestmentTransactionPosting[] = ["posted", "pending", "canceled"];
+/**
+ * The TWD value of one investment event at the close of a finished UTC day
+ * (ADR 0158). A TWD amount needs no price; any other coin is priced from its
+ * TWD market or from its USDT market times USDT/TWD.
+ */
+export type InvestmentTwdValuation =
+  | Readonly<{ route: "twd"; value: InvestmentMoney }>
+  | Readonly<{ route: "direct"; value: InvestmentMoney; market: string; close: InvestmentExactAmount; candleDay: string }>
+  | Readonly<{ route: "via-usdt"; value: InvestmentMoney; market: string; close: InvestmentExactAmount; usdtTwdClose: InvestmentExactAmount; candleDay: string }>;
 /** The quantity direction of a Passbook movement. It has no cash leg by definition. */
 export type PassbookMovementAction = "buy" | "sell";
 export const PASSBOOK_MOVEMENT_ACTIONS: readonly PassbookMovementAction[] = ["buy", "sell"];
@@ -195,6 +214,14 @@ export type InvestmentCaptureInput = {
     /** Provider memo/description; null means the source did not provide one. */
     description?: string | null;
     fundingEvidence: InvestmentFundingEvidence;
+    /** Absent means posted. It is derived from `state`, so it stays out of the source payload. */
+    posting?: InvestmentTransactionPosting;
+    /** MAX only (ADR 0158): the statement family. */
+    rowType?: InvestmentStatementRowType;
+    /** MAX only: MAX's own state string; null when the row carries none. */
+    state?: string | null;
+    /** MAX only: present when the event's TWD value is known from a finished day. */
+    twdValuation?: InvestmentTwdValuation;
   }>;
   /**
    * Passbook movements change Security quantity only. They carry no cash
@@ -405,6 +432,42 @@ export function assertInvestmentCashBoundary(
     throw new CanonicalInvestmentAdmissionError(
       "Passbook movements come only from an Intermediary source.",
     );
+}
+
+function exactAmountValid(value: InvestmentExactAmount | undefined): boolean {
+  return !!value && INTEGER.test(value.coefficient) && Number.isSafeInteger(value.scale) && value.scale >= 0;
+}
+
+function twdValuationValid(valuation: InvestmentTwdValuation): boolean {
+  if (!exactAmountValid(valuation.value) || valuation.value.currency !== "TWD") return false;
+  if (valuation.route === "twd") return true;
+  if (!DATE.test(valuation.candleDay) || !/^[a-z0-9]+$/u.test(valuation.market) || !exactAmountValid(valuation.close)) return false;
+  return valuation.route === "direct" || (valuation.route === "via-usdt" && exactAmountValid(valuation.usdtTwdClose));
+}
+
+/**
+ * ADR 0158: only MAX reports a statement family, a state and a TWD valuation
+ * beside an investment event, and posting other than `posted` comes with them.
+ * Checked at admission and at the database commit boundary.
+ */
+export function assertInvestmentStatementFacts(
+  capture: Pick<InvestmentCaptureInput, "sourceId" | "transactions">,
+): void {
+  for (const transaction of capture.transactions) {
+    const carries = transaction.rowType !== undefined || transaction.state !== undefined ||
+      transaction.twdValuation !== undefined || transaction.posting !== undefined;
+    if (!carries) continue;
+    if (capture.sourceId !== "maicoin")
+      throw new CanonicalInvestmentAdmissionError("Investment statement facts are a MAX contract.");
+    if (!transaction.rowType || !INVESTMENT_STATEMENT_ROW_TYPES.includes(transaction.rowType))
+      throw new CanonicalInvestmentAdmissionError("A MAX investment event requires its statement family.");
+    if (transaction.state !== undefined && transaction.state !== null && typeof transaction.state !== "string")
+      throw new CanonicalInvestmentAdmissionError("A MAX statement state must be text or null.");
+    if (transaction.posting !== undefined && !INVESTMENT_TRANSACTION_POSTINGS.includes(transaction.posting))
+      throw new CanonicalInvestmentAdmissionError("Investment posting is unsupported.");
+    if (transaction.twdValuation !== undefined && !twdValuationValid(transaction.twdValuation))
+      throw new CanonicalInvestmentAdmissionError("A MAX TWD valuation must be exact TWD priced from a named daily close.");
+  }
 }
 
 export function admitCanonicalInvestmentCapture(
@@ -737,6 +800,7 @@ export function admitCanonicalInvestmentCapture(
     }
   }
   assertInvestmentCashBoundary(capture);
+  assertInvestmentStatementFacts(capture);
   const movementKeys = new Set<string>();
   const sourceRecordKeys = new Set(capture.transactions.map((transaction) => transaction.sourceRecordKey));
   for (const movement of capture.passbookMovements ?? []) {

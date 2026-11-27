@@ -15,8 +15,8 @@ import type {
   PGliteCanonicalBalanceObservationInput,
   PGliteCanonicalFinancialFactInput,
 } from "./source-admission-validation.ts";
-import type { InvestmentCaptureInput } from "../canonical/investment-financial.ts";
-import { assertInvestmentCashBoundary, assertInvestmentHoldingSourceLots, investmentTransactionDirection, isInvestmentSecurityIdentityValid, PASSBOOK_MOVEMENT_ACTIONS } from "../canonical/investment-financial-admission.ts";
+import type { InvestmentCaptureInput, InvestmentTransactionPosting, InvestmentTwdValuation } from "../canonical/investment-financial.ts";
+import { assertInvestmentCashBoundary, assertInvestmentHoldingSourceLots, assertInvestmentStatementFacts, investmentTransactionDirection, isInvestmentSecurityIdentityValid, PASSBOOK_MOVEMENT_ACTIONS } from "../canonical/investment-financial-admission.ts";
 import { TDCC_FUND_CONTRACT, TDCC_FUND_ROUTE, TDCC_FUND_STREAM, TDCC_INVESTMENT_CONTRACT, TDCC_INVESTMENT_ROUTE } from "../canonical/tdcc-investment-contract.ts";
 import { TDCC_NAMESPACE } from "../canonical/tdcc-settlement-contract.ts";
 import type { TdccAdmittedFundAccount } from "../canonical/tdcc-investment-admission.ts";
@@ -152,7 +152,7 @@ function sourceRecords(capture: InvestmentCaptureInput): CanonicalSourceRecord[]
       kind: "holding-measurement" }));
   }
   for (const transaction of capture.transactions) {
-    const { transactionKey: _transactionKey, ...sourceFact } = transaction;
+    const { transactionKey: _transactionKey, posting: _posting, ...sourceFact } = transaction;
     records.push(recordEnvelope(capture, transaction, { kind: "investment-transaction", ...sourceFact }));
   }
   for (const movement of capture.passbookMovements ?? [])
@@ -217,7 +217,15 @@ function captureSource(capture: InvestmentCaptureInput): CanonicalSourceEvidence
   };
 }
 
+/** The revision statuses of each way a provider books an investment event. */
+const POSTING_FACT: Readonly<Record<InvestmentTransactionPosting, Pick<PGliteCanonicalFinancialFactInput, "postingStatus" | "economicStatus">>> = {
+  posted: { postingStatus: "posted", economicStatus: "normal" },
+  pending: { postingStatus: "pending", economicStatus: "normal" },
+  canceled: { postingStatus: "posted", economicStatus: "canceled" },
+};
+
 function financialFact(capture: InvestmentCaptureInput, transaction: InvestmentCaptureInput["transactions"][number]): PGliteCanonicalFinancialFactInput {
+  const posting = POSTING_FACT[transaction.posting ?? "posted"];
   const local = `${transaction.effectiveOn}T00:00:00`;
   const epoch = Date.parse(`${local}+08:00`);
   if (!Number.isFinite(epoch)) fail("Investment transaction effective time is invalid.");
@@ -230,12 +238,12 @@ function financialFact(capture: InvestmentCaptureInput, transaction: InvestmentC
     amount: money,
     currency: money.currency,
     direction: investmentTransactionDirection(transaction.action),
-    postingStatus: "posted",
+    postingStatus: posting.postingStatus,
     postingOrigin: "provider_booked_history",
     postingBasis: "statement-posted-history",
     postingRuleVersion: capture.contractVersion,
     description: transaction.description ?? null,
-    economicStatus: "normal",
+    economicStatus: posting.economicStatus,
     administrativeState: "active",
     semanticRuleVersion: capture.contractVersion,
     effectiveOn: transaction.effectiveOn,
@@ -466,6 +474,7 @@ function validateCapture(capture: InvestmentCaptureInput): void {
     } else if (transaction.fundingEvidence.kind !== "unresolved") fail("Investment funding evidence kind is unsupported.");
   }
   assertInvestmentCashBoundary(capture);
+  assertInvestmentStatementFacts(capture);
   const movementKeys = new Set<string>();
   for (const movement of capture.passbookMovements ?? []) {
     requireToken(movement.sourceRecordKey, "Passbook movement source record key");
@@ -565,6 +574,20 @@ async function planInvestmentCitations(transaction: PGliteTransaction, capture: 
     [accountId, JSON.stringify(capture.transactions.map((row) => row.sourceRecordKey))]))
       written.add(row.source_sequence);
   for (const row of capture.transactions) if (!written.has(row.sourceRecordKey)) cited.add(row.sourceRecordKey);
+  const valued = capture.transactions.filter((row) => row.twdValuation !== undefined);
+  const storedRoutes = new Map<string, string>();
+  if (accountId && valued.length > 0)
+    for (const row of await query<{ source_sequence: string; price_route: string }>(transaction, `
+      SELECT financial.source_sequence, valuation.price_route
+        FROM financial_transactions financial
+        JOIN investment_transaction_twd_valuations valuation ON valuation.transaction_id = financial.transaction_id
+       WHERE financial.account_id = ? AND financial.source_sequence IN (SELECT jsonb_array_elements_text(?::jsonb))`,
+    [accountId, JSON.stringify(valued.map((row) => row.sourceRecordKey))]))
+      storedRoutes.set(row.source_sequence, row.price_route);
+  for (const row of valued) {
+    const route = storedRoutes.get(row.sourceRecordKey);
+    if (route === undefined || route === "legacy-log") cited.add(row.sourceRecordKey);
+  }
   const movements = new Set<string>();
   if (accountId && (capture.passbookMovements?.length ?? 0) > 0)
     for (const row of await query<{ movement_key: string }>(transaction,
@@ -640,12 +663,20 @@ async function persistExtensions(transaction: PGliteTransaction, context: Invest
       effectiveOn: investmentTransaction.effectiveOn,
       fundingEvidenceJson: stableJson(investmentTransaction.fundingEvidence),
     };
-    const existing = await first<{ security_id: unknown; action: string; quantity_coefficient: string; quantity_scale: number | string; cash_coefficient: string; cash_scale: number | string; cash_currency: string; effective_on: string; funding_evidence_json: string }>(transaction, "SELECT security_id, action, quantity_coefficient, quantity_scale, cash_coefficient, cash_scale, cash_currency, effective_on, funding_evidence_json FROM investment_transactions WHERE transaction_id = ?", [bytes(committed.transactionId, "Investment transaction")]);
+    const transactionId = bytes(committed.transactionId, "Investment transaction");
+    const rowType = investmentTransaction.rowType ?? null;
+    const existing = await first<{ security_id: unknown; action: string; quantity_coefficient: string; quantity_scale: number | string; cash_coefficient: string; cash_scale: number | string; cash_currency: string; effective_on: string; funding_evidence_json: string; row_type: string | null }>(transaction, "SELECT security_id, action, quantity_coefficient, quantity_scale, cash_coefficient, cash_scale, cash_currency, effective_on, funding_evidence_json, row_type FROM investment_transactions WHERE transaction_id = ?", [transactionId]);
     if (existing) {
       if (!Buffer.from(bytes(existing.security_id, "Investment Security")).equals(Buffer.from(expected.security)) || existing.action !== expected.action || existing.quantity_coefficient !== expected.quantityCoefficient || Number(existing.quantity_scale) !== expected.quantityScale || existing.cash_coefficient !== expected.cashCoefficient || Number(existing.cash_scale) !== expected.cashScale || existing.cash_currency !== expected.cashCurrency || existing.effective_on !== expected.effectiveOn || existing.funding_evidence_json !== expected.fundingEvidenceJson) fail("Investment transaction extension conflicts with prior canonical evidence.");
-      continue;
+      // A NULL row type was admitted before the column existed (ADR 0158).
+      if (existing.row_type === null && rowType !== null)
+        await query(transaction, "UPDATE investment_transactions SET row_type = ? WHERE transaction_id = ?", [rowType, transactionId]);
+      else if (existing.row_type !== rowType) fail("Investment transaction extension conflicts with prior canonical evidence.");
+    } else {
+      await query(transaction, `INSERT INTO investment_transactions(transaction_id, capture_id, commit_id, account_id, security_id, source_record_id, action, quantity_coefficient, quantity_scale, cash_coefficient, cash_scale, cash_currency, effective_on, funding_evidence_json, row_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [transactionId, context.capture.captureId, context.commitId, context.accountId, expected.security, cites(sourceRecordId, "an investment transaction"), expected.action, expected.quantityCoefficient, expected.quantityScale, expected.cashCoefficient, expected.cashScale, expected.cashCurrency, expected.effectiveOn, expected.fundingEvidenceJson, rowType]);
     }
-    await query(transaction, `INSERT INTO investment_transactions(transaction_id, capture_id, commit_id, account_id, security_id, source_record_id, action, quantity_coefficient, quantity_scale, cash_coefficient, cash_scale, cash_currency, effective_on, funding_evidence_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [bytes(committed.transactionId, "Investment transaction"), context.capture.captureId, context.commitId, context.accountId, expected.security, cites(sourceRecordId, "an investment transaction"), expected.action, expected.quantityCoefficient, expected.quantityScale, expected.cashCoefficient, expected.cashScale, expected.cashCurrency, expected.effectiveOn, expected.fundingEvidenceJson]);
+    if (investmentTransaction.twdValuation)
+      await persistTwdValuation(transaction, context, transactionId, investmentTransaction.twdValuation, () => cites(sourceRecordId, "a TWD valuation"));
   }
   for (const movement of capture.passbookMovements ?? []) {
     const sourceRecordId = records.get(movement.sourceRecordKey);
@@ -664,6 +695,41 @@ async function persistExtensions(transaction: PGliteTransaction, context: Invest
     const existing = await first<{ observation_id: unknown }>(transaction, "SELECT observation_id FROM investment_margin_balance_observations WHERE account_id = ? AND effective_on = ? AND coefficient = ? AND scale = ? AND currency = ?", [context.accountId, capture.margin.effectiveOn, capture.margin.amount.coefficient, capture.margin.amount.scale, capture.margin.amount.currency]);
     if (!existing) await query(transaction, `INSERT INTO investment_margin_balance_observations(observation_id, capture_id, commit_id, account_id, source_record_id, balance_kind, coefficient, scale, currency, effective_on) VALUES (?, ?, ?, ?, ?, 'margin_loan', ?, ?, ?, ?)`, [uuidBytes(), context.capture.captureId, context.commitId, context.accountId, cites(sourceRecordId, "a margin balance"), capture.margin.amount.coefficient, capture.margin.amount.scale, capture.margin.amount.currency, capture.margin.effectiveOn]);
   }
+}
+
+const VALUATION_COLUMNS = "value_coefficient, value_scale, value_currency, price_route, market, close_coefficient, close_scale, usdt_twd_close_coefficient, usdt_twd_close_scale, candle_day";
+
+function valuationColumns(valuation: InvestmentTwdValuation): readonly (string | number | null)[] {
+  const value = [valuation.value.coefficient, valuation.value.scale, valuation.value.currency, valuation.route] as const;
+  switch (valuation.route) {
+    case "twd": return [...value, null, null, null, null, null, null];
+    case "direct": return [...value, valuation.market, valuation.close.coefficient, valuation.close.scale, null, null, valuation.candleDay];
+    case "via-usdt": return [...value, valuation.market, valuation.close.coefficient, valuation.close.scale, valuation.usdtTwdClose.coefficient, valuation.usdtTwdClose.scale, valuation.candleDay];
+  }
+}
+
+/**
+ * Write an event's TWD valuation once (ADR 0158). A `legacy-log` row carried
+ * over without a price gives way to the first priced one; any other stored
+ * row that differs is a conflict.
+ */
+async function persistTwdValuation(transaction: PGliteTransaction, context: InvestmentContext, transactionId: Uint8Array, valuation: InvestmentTwdValuation, citedRecord: () => Uint8Array): Promise<void> {
+  const columns = valuationColumns(valuation);
+  const stored = await first<Record<string, unknown>>(transaction, `SELECT ${VALUATION_COLUMNS} FROM investment_transaction_twd_valuations WHERE transaction_id = ?`, [transactionId]);
+  if (!stored) {
+    await query(transaction, `INSERT INTO investment_transaction_twd_valuations(transaction_id, capture_id, commit_id, source_record_id, ${VALUATION_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [transactionId, context.capture.captureId, context.commitId, citedRecord(), ...columns]);
+    return;
+  }
+  if (stored.price_route === "legacy-log") {
+    await query(transaction, `UPDATE investment_transaction_twd_valuations SET capture_id = ?, commit_id = ?, source_record_id = ?, ${VALUATION_COLUMNS.split(", ").map((column) => `${column} = ?`).join(", ")} WHERE transaction_id = ?`, [context.capture.captureId, context.commitId, citedRecord(), ...columns, transactionId]);
+    return;
+  }
+  const same = VALUATION_COLUMNS.split(", ").every((column, index) => {
+    const expected = columns[index];
+    const actual = stored[column];
+    return expected === null ? actual === null : actual !== null && String(actual) === String(expected);
+  });
+  if (!same) fail("Investment TWD valuation conflicts with prior canonical evidence.");
 }
 
 function account(capture: InvestmentCaptureInput): PGliteCanonicalFinancialAccountInput {

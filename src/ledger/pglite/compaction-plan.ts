@@ -194,6 +194,7 @@ const CITING_COLUMNS: ReadonlyMap<string, CitingColumn> = new Map<string, Citing
     "investment_holding_observations.source_record_id",
     "investment_margin_balance_observations.source_record_id",
     "investment_passbook_movements.source_record_id",
+    "investment_transaction_twd_valuations.source_record_id",
     "investment_transactions.source_record_id",
     "loan_repayment_settlement_group_members.source_record_id",
     "loan_transaction_facts.source_record_id",
