@@ -66,7 +66,7 @@ test("MaiCoin worker uses injected financial commit and operational RPC without 
       startedAt: new Date().toISOString(),
     });
     // The runner resolves the plan before it executes a round, so the run never starts.
-    assert.throws(() => planForCheck(task, { pgliteRpc: undefined, launchEnv: {} }), /PGlite workflow transport is unavailable/u);
+    assert.throws(() => planForCheck(task, { pgliteRpc: undefined, environment: {} }), /PGlite workflow transport is unavailable/u);
     const unstarted = await operational.automation.taskRunById(taskRunId);
     assert.equal(unstarted?.status, "preparing", "missing transport refuses before the run starts");
     assert.deepEqual(unstarted?.events, []);

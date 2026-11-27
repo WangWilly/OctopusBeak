@@ -23,7 +23,7 @@ registerHooks({
   },
 });
 
-const [{ taskById }, { inProcessCheckHost, runForCheck, runtimeForCheck }, {
+const [{ taskById }, { inProcessCheckHost, inputForCheck, runForCheck, runtimeForCheck }, {
   appWorkflowRegistration,
   workflowBrowserProfileForWorkflow,
   workflowStartUrlForWorkflow,
@@ -54,7 +54,7 @@ test("Cathay task dispatch resolves the typed App registration and preserves sel
   assert.equal(definition?.requiresFinancialCommit, true);
   assert.equal(workflowStartUrlForWorkflow(task.workflowId), LOGIN_URL);
   assert.equal(workflowBrowserProfileForWorkflow(task.workflowId), "cathay-login");
-  assert.deepEqual(appWorkflowRegistration(task.workflowId)?.inputFromEnvironment(syntheticEnvironment()), {
+  assert.deepEqual(inputForCheck(task.workflowId, syntheticEnvironment()), {
     credentials: {
       cathay_user_id: "synthetic-user-id",
       cathay_account: "synthetic-account",
@@ -64,14 +64,14 @@ test("Cathay task dispatch resolves the typed App registration and preserves sel
     attachedPreviewProducts: [],
   });
   assert.throws(
-    () => appWorkflowRegistration(task.workflowId)?.inputFromEnvironment({
+    () => inputForCheck(task.workflowId, {
       ...syntheticEnvironment(),
       LIBRETTO_CLOUD_CATHAY_STATEMENT_TYPES: "domestic,unknown",
     }),
     /Unknown Cathay statement type: unknown/u,
   );
   assert.throws(
-    () => appWorkflowRegistration(task.workflowId)?.inputFromEnvironment({
+    () => inputForCheck(task.workflowId, {
       ...syntheticEnvironment(),
       LIBRETTO_CLOUD_CATHAY_STATEMENT_TYPES: undefined,
     }),

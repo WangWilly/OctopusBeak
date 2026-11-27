@@ -473,24 +473,44 @@ export function migrateStatementSelectionIds(settingsPath: string): AutomationSe
 }
 
 /**
- * A workflow's environment: the process's own variables (PATH and the like)
- * with every key settings.json or credentials.json owns taken from those
- * stores alone, so a variable set in the launching shell never stands in for
- * a setting or credential the App does not hold.
+ * What a run launches with: the stored settings and the stored credentials
+ * its workflow declares, and nothing from the process environment, so a
+ * variable set in the launching shell never stands in for a setting or
+ * credential the App does not hold (ADR 0163).
  */
-export function automationConfigEnv({
-  baseEnv,
-  settings,
-  credentials,
-}: {
-  baseEnv: NodeJS.ProcessEnv;
-  settings: AutomationSettingsFile;
-  credentials: AutomationCredentialsFile;
-}) {
-  const env: NodeJS.ProcessEnv = { ...baseEnv };
-  for (const key of [...automationSettingKeys, ...automationSecretKeys]) delete env[key];
-  Object.assign(env, settingsToEnv(settings), credentials);
-  for (const key of HOST_ONLY_SECRET_KEYS) delete env[key];
-  if (env.NODE_ENV === "production") env.NODE_ENV = "development";
-  return env;
+export type RunConfiguration = Readonly<{
+  settings: Readonly<Record<string, string>>;
+  credentials: Readonly<Record<string, string>>;
+}>;
+
+export function runConfiguration(
+  settings: AutomationSettingsFile,
+  credentials: AutomationCredentialsFile,
+  credentialKeys: readonly string[],
+): RunConfiguration {
+  return Object.freeze({
+    settings: Object.freeze(settingsToEnv(settings)),
+    credentials: Object.freeze(Object.fromEntries(credentialKeys.flatMap((key) =>
+      HOST_ONLY_SECRET_KEYS.has(key) || credentials[key] === undefined ? [] : [[key, credentials[key]]]))),
+  });
+}
+
+/**
+ * A configuration from one flat `KEY=value` map, for the developer script
+ * that reads the shell on purpose and for checks that state one: each
+ * settings key becomes a setting and every other entry a credential, kept
+ * only when `credentialKeys` names it.
+ */
+export function runConfigurationFromEnvironment(
+  environment: Readonly<Record<string, string | undefined>>,
+  credentialKeys: readonly string[],
+): RunConfiguration {
+  const settings: AutomationSettingsFile = {};
+  const credentials: AutomationCredentialsFile = {};
+  for (const [key, value] of Object.entries(environment)) {
+    if (value === undefined) continue;
+    if (automationSettingKeys.has(key)) settings[key] = value;
+    else credentials[key] = value;
+  }
+  return runConfiguration(settings, credentials, credentialKeys);
 }

@@ -9,6 +9,7 @@ import {
   previewRunOutput,
   type PreviewProductCollectors,
 } from "./product-collection.ts";
+import type { RunConfiguration } from "../automation/server/config-files.ts";
 import type { PreviewSource } from "./registry.ts";
 import { previewSourceKeys, previewTaskId } from "./source-id.ts";
 import { previewVisibilityFromEnvironment, visibleProducts } from "./visibility.ts";
@@ -93,12 +94,12 @@ export function selectedAttachedPreviewProducts(
 
 export function previewWorkflowInput(
   source: PreviewSource,
-  environment: NodeJS.ProcessEnv,
+  { settings, credentials }: RunConfiguration,
 ): PreviewWorkflowInput {
   return {
     startUrl: source.startUrl,
-    credentials: Object.fromEntries(previewSourceKeys(source).map((key) => [key, environment[key] ?? ""])),
-    products: selectedPreviewProducts(source, environment),
+    credentials: Object.fromEntries(previewSourceKeys(source).map((key) => [key, credentials[key] ?? ""])),
+    products: selectedPreviewProducts(source, settings),
   };
 }
 

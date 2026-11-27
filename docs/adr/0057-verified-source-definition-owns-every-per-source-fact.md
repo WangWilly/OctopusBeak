@@ -2,6 +2,8 @@
 
 Status: accepted
 
+Amended by [ADR 0163](0163-a-run-launches-with-a-typed-configuration-holding-its-own-credentials.md): no environment variable reaches a run, so the settings no longer need to take precedence over one, and a definition's input reads a typed run configuration instead of an environment.
+
 ## Decision
 
 Before this decision, one [Verified source](../../CONTEXT.md)'s facts were hand-kept in about ten tables keyed by task id or integration namespace. They included the credential group and task in `tasks.ts`, the workflow registry's start URL and environment-to-input mapping, `BANK_STATEMENT_CAPABILITIES`, `expected-sources`, `TASK_LOGOS` and `TASK_NAMESPACES`, the two CAPTCHA routing sets, `taskLabels` in i18n, and the default settings in `electron/runtime.cjs`. Adding TDCC edited seven non-test files. The HNCB credential keys and login URL were each written twice, and tasks found their credential group by array position.

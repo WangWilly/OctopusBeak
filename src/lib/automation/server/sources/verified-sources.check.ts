@@ -7,6 +7,7 @@ import { requiredWorkflowCapabilities } from "../../workflow-executor.ts";
 import { COLLECTION_PRODUCT_TYPE_IDS } from "../../product-collection.ts";
 import { appWorkflowRegistration } from "../app-workflow-registry.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../config-files.ts";
+import { inputForCheck } from "../task-run-check-support.ts";
 import { DEFAULT_AUTOMATION_SETTINGS } from "../tasks.ts";
 import { TDCC_FUND_STREAM } from "../../../../ledger/canonical/tdcc-investment-contract.ts";
 import { VERIFIED_SOURCES } from "./index.ts";
@@ -93,7 +94,7 @@ test("first-run settings start every source disabled", () => {
 });
 
 test("workflow input is derived from the sign-in fields and selections", () => {
-  assert.deepEqual(appWorkflowRegistration("hncb-statements")?.inputFromEnvironment({
+  assert.deepEqual(inputForCheck("hncb-statements", {
     LIBRETTO_CLOUD_HNCB_USER_ID: "example-id",
     LIBRETTO_CLOUD_HNCB_ACCOUNT: "example-code",
     LIBRETTO_CLOUD_HNCB_STATEMENT_TYPES: "deposit,credit_card",
@@ -103,7 +104,7 @@ test("workflow input is derived from the sign-in fields and selections", () => {
     statementTypes: ["deposit"],
     attachedPreviewProducts: ["credit_card"],
   });
-  assert.deepEqual(appWorkflowRegistration("fubon-all-statements")?.inputFromEnvironment({
+  assert.deepEqual(inputForCheck("fubon-all-statements", {
     LIBRETTO_CLOUD_FUBON_STATEMENT_TYPES: "loan",
     [CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY]: "secret",
   }), {
@@ -112,11 +113,11 @@ test("workflow input is derived from the sign-in fields and selections", () => {
     statementTypes: ["loan"],
     attachedPreviewProducts: [],
   });
-  assert.deepEqual(appWorkflowRegistration("sync-tdcc")?.inputFromEnvironment({ LIBRETTO_CLOUD_TDCC_STATEMENT_TYPES: "fund" }), { statementTypes: ["fund"] });
-  assert.deepEqual(appWorkflowRegistration("sync-maicoin")?.inputFromEnvironment({ MAX_SUB_ACCOUNT: " " }), {
+  assert.deepEqual(inputForCheck("sync-tdcc", { LIBRETTO_CLOUD_TDCC_STATEMENT_TYPES: "fund" }), { statementTypes: ["fund"] });
+  assert.deepEqual(inputForCheck("sync-maicoin", { MAX_SUB_ACCOUNT: " " }), {
     credentials: { accessKey: "", secretKey: "", subAccount: "main" },
   });
-  assert.deepEqual(appWorkflowRegistration("sync-binance")?.inputFromEnvironment({ LIBRETTO_CLOUD_BINANCE_API_KEY: "example-key" }), {
+  assert.deepEqual(inputForCheck("sync-binance", { LIBRETTO_CLOUD_BINANCE_API_KEY: "example-key" }), {
     credentials: { binance_api_key: "example-key", binance_api_secret: "" },
   });
 });

@@ -4,6 +4,7 @@ import {
   appWorkflowRegistration,
   workflowStartUrlForWorkflow,
 } from "./app-workflow-registry.ts";
+import { inputForCheck } from "./task-run-check-support.ts";
 import { taskById } from "./tasks.ts";
 
 const LOGIN_URL = "https://netbank.hncb.com.tw/netbank/servlet/TrxDispatcher?trx=com.lb.wibc.trx.Login&state=prompt&Recognition=private";
@@ -25,7 +26,7 @@ test("HNCB statements resolve to the App-owned typed workflow", () => {
   assert.equal(definition?.id, "hncb-statements");
   assert.equal(definition?.requiresFinancialCommit, true);
   assert.equal(workflowStartUrlForWorkflow(task.workflowId), LOGIN_URL);
-  assert.deepEqual(appWorkflowRegistration(task.workflowId)?.inputFromEnvironment(syntheticEnvironment()), {
+  assert.deepEqual(inputForCheck(task.workflowId, syntheticEnvironment()), {
     credentials: {
       hncb_user_id: "synthetic-user-id",
       hncb_account: "synthetic-account",

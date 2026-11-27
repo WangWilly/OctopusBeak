@@ -255,7 +255,7 @@ test("runner progress spans selected product stages, survives a same-run retry, 
       startingProgress.delete(taskRunId);
       const execution = createTaskRunExecution(inProcessCheckHost({ scriptedWorker: (start) =>
         new SequencedWorkflowWorker(start, input.steps, input.terminal, onEventAcknowledged) }));
-      const outcome = await execution(planForCheck(task, { launchEnv }), input.run, firstRoundForCheck({
+      const outcome = await execution(planForCheck(task, { environment: launchEnv }), input.run, firstRoundForCheck({
         attempt: input.attempt,
         maxAttempts: 3,
       }));

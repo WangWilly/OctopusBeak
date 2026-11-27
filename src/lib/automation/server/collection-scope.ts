@@ -10,24 +10,24 @@ import { offeredStatementTypes } from "./settings.ts";
 import { AUTOMATION_CREDENTIAL_GROUPS, type AutomationTask } from "./tasks.ts";
 import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
 import type { WorkflowWriteAdmission } from "../../pglite-rpc/workflow-admission.ts";
-
-type ScopeEnvironment = Readonly<Record<string, string | undefined>>;
+import type { RunConfiguration } from "./config-files.ts";
 
 export function collectionScopeFingerprint(
   task: Pick<AutomationTask, "credentialGroupId">,
-  environment: ScopeEnvironment,
+  { settings, credentials }: RunConfiguration,
 ): string {
   const registered = AUTOMATION_CREDENTIAL_GROUPS.find((candidate) => candidate.id === task.credentialGroupId);
-  const group = registered && offeredStatementTypes(registered, previewVisibilityFromEnvironment(environment, PREVIEW_SOURCES));
+  const group = registered && offeredStatementTypes(registered, previewVisibilityFromEnvironment(settings, PREVIEW_SOURCES));
   const scope = group
     ? {
-      enabled: automationFlagEnabled(environment[group.enabledKey]),
+      enabled: automationFlagEnabled(settings[group.enabledKey]),
       statementTypes: isStatementSelectionGroup(group)
-        ? selectStatementTypes(group, environment, "display").selectedIds
+        ? selectStatementTypes(group, settings, "display").selectedIds
         : [],
+      // A text sign-in field is a credential, or a setting such as the MAX sub-account.
       identity: group.credentialFields
         .filter((field) => field.input === "text")
-        .map((field) => [field.key, environment[field.key]?.trim() ?? ""]),
+        .map((field) => [field.key, (credentials[field.key] ?? settings[field.key])?.trim() ?? ""]),
     }
     : null;
   return createHash("sha256").update(JSON.stringify(scope)).digest("hex");
@@ -36,18 +36,18 @@ export function collectionScopeFingerprint(
 /** The Collection scope version a Workflow execution was launched with (ADR 0067). */
 export type LaunchedCollectionScope = Readonly<{
   /** False once the Collection scope version changed; it stays false for the rest of the execution. */
-  current(currentEnvironment: () => ScopeEnvironment): boolean;
+  current(currentConfiguration: () => RunConfiguration): boolean;
 }>;
 
 export function launchedCollectionScope(
   task: Pick<AutomationTask, "credentialGroupId">,
-  launchEnvironment: ScopeEnvironment,
+  launchConfiguration: RunConfiguration,
 ): LaunchedCollectionScope {
-  const launchFingerprint = collectionScopeFingerprint(task, launchEnvironment);
+  const launchFingerprint = collectionScopeFingerprint(task, launchConfiguration);
   let refused = false;
   return {
-    current(currentEnvironment) {
-      if (!refused && collectionScopeFingerprint(task, currentEnvironment()) !== launchFingerprint) {
+    current(currentConfiguration) {
+      if (!refused && collectionScopeFingerprint(task, currentConfiguration()) !== launchFingerprint) {
         refused = true;
       }
       return !refused;
@@ -57,15 +57,16 @@ export function launchedCollectionScope(
 
 /**
  * Write admission for the PGlite child RPC: the run's current execution
- * checks its launched Collection scope version. Only a current execution
- * writes, so anything else is `run-not-current` (ADR 0148).
+ * checks its launched Collection scope version against the configuration
+ * its task would launch with now. Only a current execution writes, so
+ * anything else is `run-not-current` (ADR 0148).
  */
 export function collectionScopeAdmission(
-  run: Pick<ActiveAutomationTaskRun, "currentExecution"> | null,
-  currentEnvironment: () => ScopeEnvironment,
+  run: Pick<ActiveAutomationTaskRun, "taskId" | "currentExecution"> | null,
+  currentConfiguration: (taskId: string) => RunConfiguration,
 ): WorkflowWriteAdmission {
   const scope = run?.currentExecution()?.collectionScope();
-  if (!scope) return "run-not-current";
-  return scope.current(currentEnvironment) ? "admitted" : "scope-changed";
+  if (!run || !scope) return "run-not-current";
+  return scope.current(() => currentConfiguration(run.taskId)) ? "admitted" : "scope-changed";
 }
 

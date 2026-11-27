@@ -13,9 +13,9 @@ import type { WorkflowRunEvent } from "../run-event.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "./config-files.ts";
 import { withAppWorkflowHostPage } from "./app-browser-host.ts";
 import { taskById } from "./tasks.ts";
-import { inProcessCheckHost, runForCheck, runtimeForCheck } from "./task-run-check-support.ts";
+import { inProcessCheckHost, inputForCheck, runForCheck, runtimeForCheck } from "./task-run-check-support.ts";
 import { fixedCapabilities } from "./app-workflow-worker-runtime.ts";
-import { appWorkflowRegistration, workflowStartUrlForWorkflow } from "./app-workflow-registry.ts";
+import { workflowStartUrlForWorkflow } from "./app-workflow-registry.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 import { fakeProviderReply } from "../../../workflows/provider-response-reader.fixtures.ts";
 
@@ -167,7 +167,7 @@ test("E.SUN App task dispatch maps credentials, hosted URL, events, and commit",
   assert.equal(Object.hasOwn(task, "script"), false);
   assert.equal(Object.hasOwn(task, "command"), false);
   assert.equal(workflowStartUrlForWorkflow(task.workflowId), BANK_ENTRY_URL);
-  assert.deepEqual(appWorkflowRegistration(task.workflowId)?.inputFromEnvironment(testEnvironment()), {
+  assert.deepEqual(inputForCheck(task.workflowId, testEnvironment()), {
     credentials: {
       esun_user_id: "synthetic-user-id",
       esun_account: "synthetic-account",
@@ -177,7 +177,7 @@ test("E.SUN App task dispatch maps credentials, hosted URL, events, and commit",
     statementTypes: ["credit_card"],
     attachedPreviewProducts: [],
   });
-  assert.deepEqual(appWorkflowRegistration(task.workflowId)?.inputFromEnvironment({
+  assert.deepEqual(inputForCheck(task.workflowId, {
     ...testEnvironment(),
     [["LIBRETTO", "CLOUD", "ESUN", "STATEMENT", "TYPES"].join("_")]: "deposit",
   }), {
@@ -190,12 +190,12 @@ test("E.SUN App task dispatch maps credentials, hosted URL, events, and commit",
     statementTypes: [],
     attachedPreviewProducts: [],
   }, "an attached-only selection selects no verified product, and Preview features off drop the attachment");
-  assert.deepEqual((appWorkflowRegistration(task.workflowId)?.inputFromEnvironment({
+  assert.deepEqual((inputForCheck(task.workflowId, {
     ...testEnvironment(),
     PREVIEW_FEATURES_ENABLED: "true",
     [["LIBRETTO", "CLOUD", "ESUN", "STATEMENT", "TYPES"].join("_")]: "credit_card,deposit",
   }) as { statementTypes?: unknown; attachedPreviewProducts?: unknown }), {
-    ...appWorkflowRegistration(task.workflowId)?.inputFromEnvironment(testEnvironment()) as object,
+    ...inputForCheck(task.workflowId, testEnvironment()) as object,
     statementTypes: ["credit_card"],
     attachedPreviewProducts: ["deposit"],
   });

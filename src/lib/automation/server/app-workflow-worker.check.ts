@@ -33,7 +33,7 @@ import {
   runAppWorkflowWorkerThread,
 } from "./app-workflow-worker-runtime.ts";
 import { chromiumThreadHost } from "./execution-host.ts";
-import { appWorkflowRegistration } from "./app-workflow-registry.ts";
+import { inputForCheck } from "./task-run-check-support.ts";
 import { ATTACHED_PREVIEW_PRODUCTS } from "../../preview-sources/attached-products.ts";
 import type { WorkflowPreviewWritePort } from "../../preview-sources/workflow.ts";
 import { createPGliteChildRpcServer } from "../../../../electron/pglite-child-rpc.ts";
@@ -653,7 +653,7 @@ test("the Chromium thread host hands a browser workflow's thread its own page's 
     await server.ready;
     const ctbcStart = {
       ...start,
-      input: appWorkflowRegistration(FIXTURE_WORKFLOW_ID)?.inputFromEnvironment({
+      input: inputForCheck(FIXTURE_WORKFLOW_ID, {
         [["LIBRETTO", "CLOUD", "CTBC", "USER", "ID"].join("_")]: "synthetic-user-id",
         [["LIBRETTO", "CLOUD", "CTBC", "ACCOUNT"].join("_")]: "synthetic-account",
         [["LIBRETTO", "CLOUD", "CTBC", "PASSWORD"].join("_")]: "synthetic-password",

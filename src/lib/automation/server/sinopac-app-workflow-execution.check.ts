@@ -11,9 +11,9 @@ import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import type { WorkflowBrowserPort, WorkflowFinancialCommitPort } from "../workflow-executor.ts";
 import { SINOPAC_LOGIN_URL } from "../../../workflows/sinopac-statements.ts";
 import { taskById } from "./tasks.ts";
-import { inProcessCheckHost, runForCheck, runtimeForCheck } from "./task-run-check-support.ts";
+import { inProcessCheckHost, inputForCheck, runForCheck, runtimeForCheck } from "./task-run-check-support.ts";
 import { fixedCapabilities } from "./app-workflow-worker-runtime.ts";
-import { appWorkflowRegistration, workflowStartUrlForWorkflow } from "./app-workflow-registry.ts";
+import { workflowStartUrlForWorkflow } from "./app-workflow-registry.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 import { fakeProviderReply } from "../../../workflows/provider-response-reader.fixtures.ts";
 
@@ -150,7 +150,7 @@ test("SinoPac App task dispatches through typed workflow and injected financial 
   assert.equal(Object.hasOwn(task, "script"), false);
   assert.equal(Object.hasOwn(task, "command"), false);
   assert.equal(workflowStartUrlForWorkflow(task.workflowId), SINOPAC_LOGIN_URL);
-  assert.deepEqual(appWorkflowRegistration(task.workflowId)?.inputFromEnvironment(syntheticEnvironment()), {
+  assert.deepEqual(inputForCheck(task.workflowId, syntheticEnvironment()), {
     credentials: {
       sinopac_user_id: "synthetic-user-id",
       sinopac_account: "synthetic-account",

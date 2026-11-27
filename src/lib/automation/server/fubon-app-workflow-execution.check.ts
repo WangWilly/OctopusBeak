@@ -24,7 +24,7 @@ registerHooks({
   },
 });
 
-const [{ taskById }, { inProcessCheckHost, runForCheck, runtimeForCheck }, {
+const [{ taskById }, { inProcessCheckHost, inputForCheck, runForCheck, runtimeForCheck }, {
   appWorkflowRegistration,
   workflowStartUrlForWorkflow,
 }] = await Promise.all([
@@ -54,7 +54,7 @@ test("Fubon task dispatch uses the App-owned typed workflow and maps its sign-in
   assert.equal(appWorkflowRegistration(task.workflowId)?.definition?.requiresFinancialCommit, true);
   assert.equal(appWorkflowRegistration(task.workflowId)?.definition?.requiresAccountIdentity, true);
   assert.equal(workflowStartUrlForWorkflow(task.workflowId), LOGIN_URL);
-  assert.deepEqual(appWorkflowRegistration(task.workflowId)?.inputFromEnvironment(syntheticEnvironment()), {
+  assert.deepEqual(inputForCheck(task.workflowId, syntheticEnvironment()), {
     managedIdentitySecret: "synthetic-fubon-managed-secret",
     credentials: {
       fubon_user_id: "synthetic-user-id",
@@ -65,7 +65,7 @@ test("Fubon task dispatch uses the App-owned typed workflow and maps its sign-in
     attachedPreviewProducts: [],
   });
   assert.throws(
-    () => appWorkflowRegistration(task.workflowId)?.inputFromEnvironment({
+    () => inputForCheck(task.workflowId, {
       ...syntheticEnvironment(),
       LIBRETTO_CLOUD_FUBON_STATEMENT_TYPES: "deposit,unknown",
     }),

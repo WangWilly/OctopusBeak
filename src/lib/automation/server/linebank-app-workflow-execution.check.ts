@@ -11,9 +11,9 @@ import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import type { WorkflowBrowserPort, WorkflowFinancialCommitPort } from "../workflow-executor.ts";
 import { linebankEpochMillisecondsFromSourceDateTime } from "../../../ledger/canonical/linebank-domestic-deposit.ts";
 import { taskById } from "./tasks.ts";
-import { inProcessCheckHost, runForCheck, runtimeForCheck } from "./task-run-check-support.ts";
+import { inProcessCheckHost, inputForCheck, runForCheck, runtimeForCheck } from "./task-run-check-support.ts";
 import { fixedCapabilities } from "./app-workflow-worker-runtime.ts";
-import { appWorkflowRegistration, workflowStartUrlForWorkflow } from "./app-workflow-registry.ts";
+import { workflowStartUrlForWorkflow } from "./app-workflow-registry.ts";
 import { StatementSelectionError } from "../statement-selection.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
@@ -212,7 +212,7 @@ test("LINE Bank App task dispatches through the typed browser host and injected 
   assert.equal(Object.hasOwn(task, "script"), false);
   assert.equal(Object.hasOwn(task, "command"), false);
   assert.equal(workflowStartUrlForWorkflow(task.workflowId), LOGIN_URL);
-  assert.deepEqual(appWorkflowRegistration(task.workflowId)?.inputFromEnvironment(syntheticEnvironment()), {
+  assert.deepEqual(inputForCheck(task.workflowId, syntheticEnvironment()), {
     credentials: {
       linebank_user_id: "synthetic-user-id",
       linebank_account: "synthetic-account",
@@ -223,7 +223,7 @@ test("LINE Bank App task dispatches through the typed browser host and injected 
     currencyFilters: [],
   });
   assert.throws(
-    () => appWorkflowRegistration(task.workflowId)?.inputFromEnvironment({ ...syntheticEnvironment(), LIBRETTO_CLOUD_LINEBANK_STATEMENT_TYPES: "" }),
+    () => inputForCheck(task.workflowId, { ...syntheticEnvironment(), LIBRETTO_CLOUD_LINEBANK_STATEMENT_TYPES: "" }),
     (error: unknown) => error instanceof StatementSelectionError && error.reason === "missing-selection",
   );
 

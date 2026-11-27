@@ -22,7 +22,8 @@ import {
 } from "./collection-scope.ts";
 import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
 import { createAutomationRuntime } from "./automation-runtime.ts";
-import { automationConfigEnv } from "./config-files.ts";
+import type { RunConfiguration } from "./config-files.ts";
+import { taskRunConfiguration } from "./task-run-plan.ts";
 import { CHECK_PGLITE_RPC, credentialStoreForCheck, inProcessCheckHost, runForCheck, runnerHostForCheck, settingsStoreForCheck, startForCheck } from "./task-run-check-support.ts";
 import { taskById } from "./tasks.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
@@ -32,6 +33,11 @@ import { recordedFinancialCommitPort, type CommitAttemptReport } from "../commit
 
 const fubon = taskById("fubon-all-statements")!;
 const key = (...parts: string[]) => ["LIBRETTO", "CLOUD", "FUBON", ...parts].join("_");
+const cathayKey = (...parts: string[]) => ["LIBRETTO", "CLOUD", "CATHAY", ...parts].join("_");
+const anotherSource = {
+  settings: { [cathayKey("ENABLED")]: "true", [cathayKey("STATEMENT_TYPES")]: "domestic" },
+  credentials: { [cathayKey("USER_ID")]: "another-source-user-id" },
+};
 
 const launchSettings = {
   [key("ENABLED")]: "true",
@@ -46,18 +52,21 @@ const launchCredentials = {
 };
 
 test("the fingerprint ignores secrets, schedules, and presentation but tracks selection, enablement, and identity", () => {
-  const launch = { ...launchSettings, ...launchCredentials };
+  const launch: RunConfiguration = { settings: launchSettings, credentials: launchCredentials };
   const fingerprint = collectionScopeFingerprint(fubon, launch);
-  const same = (changes: Record<string, string>) =>
-    collectionScopeFingerprint(fubon, { ...launch, ...changes }) === fingerprint;
+  const same = (changes: Partial<RunConfiguration>) => collectionScopeFingerprint(fubon, {
+    settings: { ...launch.settings, ...changes.settings },
+    credentials: { ...launch.credentials, ...changes.credentials },
+  }) === fingerprint;
 
-  assert.ok(same({ [key("PASSWORD")]: "rotated-password" }));
-  assert.ok(same({ [key("ACCOUNT")]: "rotated-account" }));
-  assert.ok(same({ EXCHANGE_RATE_UPDATE_TIME: "18:30", SYSTEM_TIMEZONE: "UTC" }));
-  assert.ok(same({ [key("STATEMENT_TYPES")]: "credit_card, deposit" }));
-  assert.ok(!same({ [key("STATEMENT_TYPES")]: "deposit" }));
-  assert.ok(!same({ [key("ENABLED")]: "false" }));
-  assert.ok(!same({ [key("USER_ID")]: "another-user-id" }));
+  assert.ok(same({ credentials: { [key("PASSWORD")]: "rotated-password" } }));
+  assert.ok(same({ credentials: { [key("ACCOUNT")]: "rotated-account" } }));
+  assert.ok(same({ settings: { EXCHANGE_RATE_UPDATE_TIME: "18:30", SYSTEM_TIMEZONE: "UTC" } }));
+  assert.ok(same({ settings: { [key("STATEMENT_TYPES")]: "credit_card, deposit" } }));
+  assert.ok(!same({ settings: { [key("STATEMENT_TYPES")]: "deposit" } }));
+  assert.ok(!same({ settings: { [key("ENABLED")]: "false" } }));
+  assert.ok(!same({ credentials: { [key("USER_ID")]: "another-user-id" } }));
+  assert.ok(same(anotherSource), "another source's settings and sign-in details are not this run's scope");
   assert.doesNotMatch(fingerprint, /synthetic/u);
 });
 
@@ -86,8 +95,8 @@ test("commit admission goes through the runtime's active run to its current exec
       return { summary: null, failure: null };
     },
   });
-  const launch: Record<string, string> = { ...launchSettings, ...launchCredentials };
-  const changed = { ...launch, [key("STATEMENT_TYPES")]: "deposit" };
+  const launch: RunConfiguration = { settings: launchSettings, credentials: launchCredentials };
+  const changed: RunConfiguration = { ...launch, settings: { ...launchSettings, [key("STATEMENT_TYPES")]: "deposit" } };
   let current = launch;
   const admits = (taskRunId: string) => collectionScopeAdmission(runtime.activeRun(taskRunId), () => current);
   const observed: Record<string, string> = {};
@@ -194,7 +203,7 @@ class CommittingFakeWorker extends EventEmitter implements AppWorkflowWorkerHand
       {
         isCommitAdmissible: ({ taskRunId }) => collectionScopeAdmission(
           taskRunId === this.run.taskRunId ? this.run : null,
-          () => automationConfigEnv({ baseEnv: process.env, settings: settingsStoreForCheck().read(), credentials: credentialStoreForCheck().read() }),
+          (taskId) => taskRunConfiguration(taskId, settingsStoreForCheck().read(), credentialStoreForCheck().read()),
         ),
       },
     );
@@ -306,6 +315,33 @@ test("changing the Statement Selection mid-run refuses the next commit and ends 
     run?.appWorkflowOutcome?.summary?.products?.map((product) => [product.typeId, product.status, product.errorCode]),
     [["deposit", "success", undefined], ["credit_card", "failed", "collection-scope-changed"]],
   );
+});
+
+test("disabling the run's source mid-run refuses the next commit", async () => {
+  const { result, run, commits, attempts } = await runWithMidRunEdit({
+    settings: { [key("ENABLED")]: "false" },
+  });
+  assert.equal(commits, 1);
+  assert.deepEqual(attempts, ["completed", "refused"]);
+  assert.equal(result.status, "failed");
+  assert.equal(run?.appWorkflowOutcome?.errorCode, "collection-scope-changed");
+});
+
+test("changing the run's text sign-in field mid-run refuses the next commit", async () => {
+  const { result, run, commits, attempts } = await runWithMidRunEdit({
+    credentials: { [key("USER_ID")]: "another-user-id" },
+  });
+  assert.equal(commits, 1);
+  assert.deepEqual(attempts, ["completed", "refused"]);
+  assert.equal(result.status, "failed");
+  assert.equal(run?.appWorkflowOutcome?.errorCode, "collection-scope-changed");
+});
+
+test("changing another source's settings and sign-in details mid-run commits normally", async () => {
+  const { result, run, commits } = await runWithMidRunEdit(anotherSource);
+  assert.equal(commits, 2);
+  assert.equal(result.status, "completed");
+  assert.equal(run?.appWorkflowOutcome?.errorCode, null);
 });
 
 test("changing only the password mid-run commits normally", async () => {

@@ -62,11 +62,7 @@ export function sameVisibility(left: PreviewVisibility, right: PreviewVisibility
   return render(left) === render(right);
 }
 
-/**
- * The visibility a workflow launch environment implies. The launch
- * environment carries the settings file, so the group flags and the Preview
- * features flag are read from it like any other setting.
- */
+/** The visibility a run's settings imply: the group flags and the Preview features flag. */
 export function previewVisibilityFromEnvironment(
   environment: Readonly<Record<string, string | undefined>>,
   sources: readonly PreviewVisibilitySource[],

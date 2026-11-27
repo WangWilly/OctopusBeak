@@ -16,6 +16,7 @@ const { currentPreviewVisibility, offeredAutomationSources } = await import("../
 const { buildAutomationPageModel } = await import("../automation/server/page-model.ts");
 const { scheduledCollectionTaskIds } = await import("../automation/server/scheduled-collection.ts");
 const { appWorkflowRegistration } = await import("../automation/server/app-workflow-registry.ts");
+const { inputForCheck } = await import("../automation/server/task-run-check-support.ts");
 const { createWorkflowExecutor } = await import("../automation/workflow-executor.ts");
 const { assertPreviewRegistry } = await import("./registry.ts");
 const { PREVIEW_FIXTURE_SOURCE } = await import("./fixture-source.ts");
@@ -64,13 +65,13 @@ test("a registry entry derives its sign-in group, task, and preview-only workflo
   const definition = appWorkflowRegistration("preview-synthetic")?.definition;
   assert.equal(definition?.requiresFinancialCommit, false, "a preview workflow never receives the canonical commit");
   assert.equal(definition?.requiresPreviewWrite, true);
-  assert.deepEqual(appWorkflowRegistration("preview-synthetic")?.inputFromEnvironment({ PREVIEW_SYNTHETIC_USER_ID: "u", PREVIEW_FEATURES_ENABLED: "true" }), {
+  assert.deepEqual(inputForCheck("preview-synthetic", { PREVIEW_SYNTHETIC_USER_ID: "u", PREVIEW_FEATURES_ENABLED: "true" }), {
     startUrl: "https://preview-fixture.invalid/",
     credentials: { PREVIEW_SYNTHETIC_USER_ID: "u" },
     products: ["deposit"],
   }, "a single product is the selection");
   assert.deepEqual(
-    (appWorkflowRegistration("preview-synthetic")?.inputFromEnvironment({ PREVIEW_SYNTHETIC_USER_ID: "u" }) as { products: unknown }).products,
+    (inputForCheck("preview-synthetic", { PREVIEW_SYNTHETIC_USER_ID: "u" }) as { products: unknown }).products,
     [],
     "Preview features off offers no product",
   );
@@ -242,10 +243,10 @@ test("a covered product is left out of a source's selection, and a verified run 
   const cathay = { LIBRETTO_CLOUD_CATHAY_STATEMENT_TYPES: "domestic,credit_card", LIBRETTO_CLOUD_CATHAY_ENABLED: "true" };
   assert.deepEqual(selectedAttachedPreviewProducts("cathay", { ...cathay, PREVIEW_FEATURES_ENABLED: "true" }), ["credit_card"]);
   assert.deepEqual(selectedAttachedPreviewProducts("cathay", cathay), [], "Preview features off collects no attached product");
-  const input = appWorkflowRegistration("cathay-all-statements")?.inputFromEnvironment({ ...cathay, PREVIEW_FEATURES_ENABLED: "true" }) as Record<string, unknown>;
+  const input = inputForCheck("cathay-all-statements", { ...cathay, PREVIEW_FEATURES_ENABLED: "true" }) as Record<string, unknown>;
   assert.deepEqual(input.statementTypes, ["domestic"], "the verified selection tolerates the attached id without collecting it");
   assert.deepEqual(input.attachedPreviewProducts, ["credit_card"]);
-  assert.deepEqual((appWorkflowRegistration("cathay-all-statements")?.inputFromEnvironment(cathay) as Record<string, unknown>).attachedPreviewProducts, []);
+  assert.deepEqual((inputForCheck("cathay-all-statements", cathay) as Record<string, unknown>).attachedPreviewProducts, []);
   assert.equal(appWorkflowRegistration("cathay-all-statements")?.definition?.attachedPreviewProducts?.sourceId, "cathay");
   assert.equal(appWorkflowRegistration("hncb-statements")?.definition?.attachedPreviewProducts?.sourceId, "hncb");
   assert.equal(appWorkflowRegistration("sinopac-statements")?.definition?.attachedPreviewProducts?.sourceId, "sinopac");
@@ -255,7 +256,7 @@ test("a covered product is left out of a source's selection, and a verified run 
 
 test("a Preview source's device identity is created with its sign-in details, reaches its run, and goes with Sign-in Erasure", async () => {
   const { automationSaveCredentials } = await import("../automation/server/automation-desktop-service.ts");
-  const { automationConfigEnv } = await import("../automation/server/config-files.ts");
+  const { taskRunConfiguration } = await import("../automation/server/task-run-plan.ts");
   const { credentialStoreForCheck, settingsStoreForCheck } = await import("../automation/server/task-run-check-support.ts");
   const { eraseSignInDetails } = await import("../automation/server/sign-in-erasure.ts");
   const { NEWNEWBANK_KEY } = await import("./newnewbank-source.ts");
@@ -266,8 +267,8 @@ test("a Preview source's device identity is created with its sign-in details, re
   assert.match(created ?? "", /^[0-9a-f]{64}$/u);
   automationSaveCredentials(credentials, settings, { [NEWNEWBANK_KEY.password]: "changed", [NEWNEWBANK_KEY.deviceId]: "0".repeat(64) });
   assert.equal(credentials.read()[NEWNEWBANK_KEY.deviceId], created, "a later save keeps it, and the renderer cannot set it");
-  const input = appWorkflowRegistration("preview-newnewbank-deposit")?.inputFromEnvironment(
-    automationConfigEnv({ baseEnv: {}, settings: { ...settings.read(), PREVIEW_FEATURES_ENABLED: true }, credentials: credentials.read() })) as { credentials: Record<string, string> };
+  const input = appWorkflowRegistration("preview-newnewbank-deposit")?.inputFromConfiguration(
+    taskRunConfiguration("preview-newnewbank-deposit", { ...settings.read(), PREVIEW_FEATURES_ENABLED: true }, credentials.read())) as { credentials: Record<string, string> };
   assert.equal(input.credentials[NEWNEWBANK_KEY.deviceId], created);
   eraseSignInDetails({ credentials, userDataDirectory: workDirectory });
   assert.equal(credentials.read()[NEWNEWBANK_KEY.deviceId], undefined);
