@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-const source = readFileSync(
-  new URL("./AutomationDashboard.svelte", import.meta.url),
-  "utf8",
-);
+const source = ["./AutomationDashboard.svelte", "./SignInDetailsSheet.svelte"]
+  .map((path) => readFileSync(new URL(path, import.meta.url), "utf8"))
+  .join("\n");
 /** The source from one anchor up to the next; both anchors must exist, or the slice would check nothing. */
 function sourceBetween(start: string, end: string) {
   const from = source.indexOf(start);
